@@ -112,52 +112,35 @@ class GatewayChatModel(BaseChatModel):
     ) -> GatewayChatModel:
         """Bind tools to the model, returning a new instance (LangChain convention).
 
-        Converts tools to Anthropic format:
-            {"name": "...", "description": "...", "input_schema": {...}}
+        Converts tools to OpenAI format (gateway proxy converts to Bedrock):
+            {"type": "function", "function": {"name": "...", "parameters": {...}}}
 
         Supports tool_choice:
-            - "any"          → force tool use (Anthropic: {"type": "any"})
-            - "auto"         → model decides (Anthropic: {"type": "auto"})
-            - "tool_name"    → force specific tool (Anthropic: {"type": "tool", "name": "..."})
-            - dict           → passed through as-is
+            - "any"/"required" → force tool use
+            - "auto"           → model decides
+            - "none"           → no tool use
+            - "tool_name"      → force specific tool
+            - dict             → passed through as-is
         """
         from langchain_core.utils.function_calling import convert_to_openai_tool
 
-        anthropic_tools = []
-        for i, t in enumerate(tools):
-            # Log raw tool info before conversion
-            raw_name = getattr(t, "name", None) or getattr(t, "__name__", None)
-            logger.error(">>> TOOL[%d] raw: type=%s name=%s", i, type(t).__name__, raw_name)
+        openai_tools = [convert_to_openai_tool(t) for t in tools]
+        logger.info("Bound %d tools: %s", len(openai_tools),
+                     [t.get("function", {}).get("name", "?") for t in openai_tools])
 
-            oai = convert_to_openai_tool(t)
-            logger.error(">>> TOOL[%d] openai_converted: %s", i, json.dumps(oai, default=str)[:500])
-
-            func = oai.get("function", oai)
-            name = func.get("name", "") or getattr(t, "name", "") or getattr(t, "__name__", "")
-            if not name:
-                logger.error(">>> TOOL[%d] SKIPPED — no name found", i)
-                continue
-            anthropic_tools.append({
-                "name": name,
-                "description": func.get("description", "") or getattr(t, "description", ""),
-                "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
-            })
-        logger.error(">>> BOUND %d tools: %s", len(anthropic_tools), [t["name"] for t in anthropic_tools])
-
-        # Normalize tool_choice to Anthropic format
-        anthropic_tool_choice = None
+        # Normalize tool_choice (pass through as-is — gateway handles conversion)
+        resolved_tool_choice = None
         if tool_choice is not None:
             if isinstance(tool_choice, dict):
-                anthropic_tool_choice = tool_choice
+                resolved_tool_choice = tool_choice
             elif tool_choice in ("any", "required"):
-                anthropic_tool_choice = {"type": "any"}
+                resolved_tool_choice = {"type": "any"}
             elif tool_choice == "auto":
-                anthropic_tool_choice = {"type": "auto"}
+                resolved_tool_choice = {"type": "auto"}
             elif tool_choice == "none":
-                anthropic_tool_choice = None
+                resolved_tool_choice = None
             elif isinstance(tool_choice, str):
-                # Specific tool name
-                anthropic_tool_choice = {"type": "tool", "name": tool_choice}
+                resolved_tool_choice = {"type": "tool", "name": tool_choice}
 
         # Apply model_settings kwargs (temperature, max_tokens overrides)
         updates: dict[str, Any] = {}
@@ -167,11 +150,10 @@ class GatewayChatModel(BaseChatModel):
             updates["max_tokens"] = kwargs.pop("max_tokens")
 
         new = self.model_copy(update=updates) if updates else self.model_copy()
-        # PrivateAttr fields are not copied by model_copy — set them manually
         new._token_manager = self._token_manager
         new._response_parser = self._response_parser
-        new._bound_tools = anthropic_tools
-        new._tool_choice = anthropic_tool_choice
+        new._bound_tools = openai_tools
+        new._tool_choice = resolved_tool_choice
         new._sync_client = self._sync_client
         new._async_client = self._async_client
         return new
@@ -220,11 +202,10 @@ class GatewayChatModel(BaseChatModel):
         if self.temperature is not None:
             body["temperature"] = self.temperature
 
-        logger.error(
-            ">>> REQUEST BODY tools_count=%d  tool_names=%s  bound_tools_id=%s",
+        logger.debug(
+            "REQUEST BODY tools_count=%d  tool_names=%s",
             len(body.get("tools", [])),
-            [t.get("name", "???") for t in body.get("tools", [])],
-            id(self._bound_tools),
+            [t.get("function", {}).get("name", "???") for t in body.get("tools", [])],
         )
 
         return body
@@ -429,8 +410,8 @@ class GatewayChatModel(BaseChatModel):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        logger.error(
-            ">>> _agenerate CALLED with %d messages, kwargs=%s, _bound_tools=%d",
+        logger.debug(
+            "_agenerate CALLED with %d messages, kwargs=%s, _bound_tools=%d",
             len(messages), list(kwargs.keys()), len(self._bound_tools),
         )
         body = self._build_request_body(messages, stream=False)
@@ -438,14 +419,14 @@ class GatewayChatModel(BaseChatModel):
             body["stop"] = stop
         url, headers, body = await self._gateway_request_async(body)
 
-        logger.error(
-            ">>> FULL REQUEST  url=%s\n>>> HEADERS=%s\n>>> BODY=%s",
+        logger.debug(
+            "FULL REQUEST  url=%s  HEADERS=%s  BODY=%s",
             url, json.dumps(headers), json.dumps(body, default=str)[:3000],
         )
 
         resp = await self._async_client.post(url, json=body, headers=headers)
 
-        logger.error(">>> RESPONSE status=%d  body=%s", resp.status_code, resp.text[:2000])
+        logger.debug("RESPONSE status=%d  body=%s", resp.status_code, resp.text[:2000])
 
         if resp.status_code != 200:
             resp.raise_for_status()
@@ -602,4 +583,3 @@ def _langchain_messages_to_dicts(
             result.append({"role": msg.type, "content": msg.content})
 
     return result
-    return msg.type
