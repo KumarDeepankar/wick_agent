@@ -117,47 +117,140 @@ class GatewayChatModel(BaseChatModel):
         messages: list[BaseMessage],
         stream: bool = False,
     ) -> dict[str, Any]:
-        """Convert LangChain messages to request body via the response parser."""
+        """Build the JSON payload sent to the gateway.
+
+        Edit this method directly to match your gateway's expected format.
+        Default builds an OpenAI-compatible body:
+          {
+            "model": "anthropic.claude-3-5-sonnet",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 4096,
+            "stream": false
+          }
+        """
         msg_dicts = _langchain_messages_to_dicts(messages)
-        return self._response_parser.format_messages(
-            msg_dicts,
-            model=self.model_name,
-            tools=self._bound_tools or None,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            stream=stream,
-        )
 
-    def _build_headers(self, token: str | None) -> dict[str, str]:
-        """Build HTTP headers, including auth token if available."""
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        return headers
+        body: dict[str, Any] = {
+            "model": self.model_name,
+            "messages": msg_dicts,
+            "stream": stream,
+        }
+        if self._bound_tools:
+            body["tools"] = self._bound_tools
+        if self.temperature is not None:
+            body["temperature"] = self.temperature
+        if self.max_tokens is not None:
+            body["max_tokens"] = self.max_tokens
 
-    def _resolve_token_sync(self) -> str | None:
-        """Resolve token: static_token → token_manager → None."""
-        if self.static_token:
-            return self.static_token
-        if self._token_manager:
-            return self._token_manager.get_token_sync()
-        return None
+        return body
 
-    async def _resolve_token_async(self) -> str | None:
-        """Resolve token: static_token → token_manager → None."""
-        if self.static_token:
-            return self.static_token
-        if self._token_manager:
-            return await self._token_manager.get_token()
-        return None
+    def _gateway_request(self, body: dict[str, Any]) -> tuple[str, dict[str, str], dict[str, Any]]:
+        """Build URL + headers + body for a gateway POST call.
 
-    @property
-    def _chat_endpoint(self) -> str:
-        """Full URL to the chat completions endpoint."""
+        ── EDIT THIS METHOD to customize your gateway request. ──
+
+        Called on EVERY request (sync and async). Returns:
+            (url, headers, body)
+
+        Token is fetched fresh each call. Modify _fetch_bearer_token()
+        to plug in your own auth logic.
+        """
+        # 1. Token (refreshed every call)
+        token = self._fetch_bearer_token()
+        if not token and self.static_token:
+            token = self.static_token
+        if not token and self._token_manager:
+            token = self._token_manager.get_token_sync()
+
+        # 2. URL
         url = self.gateway_url.rstrip("/")
         if not url.endswith("/chat/completions"):
             url = f"{url}/chat/completions"
-        return url
+
+        # 3. Headers
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        return url, headers, body
+
+    async def _gateway_request_async(self, body: dict[str, Any]) -> tuple[str, dict[str, str], dict[str, Any]]:
+        """Async version of _gateway_request (for async token managers)."""
+        token = self._fetch_bearer_token()
+        if not token and self.static_token:
+            token = self.static_token
+        if not token and self._token_manager:
+            token = await self._token_manager.get_token()
+
+        url = self.gateway_url.rstrip("/")
+        if not url.endswith("/chat/completions"):
+            url = f"{url}/chat/completions"
+
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        return url, headers, body
+
+    def _fetch_bearer_token(self) -> str | None:
+        """Your custom token logic — called on EVERY request.
+
+        Return a bearer token string, or None to fall through
+        to static_token / token_manager.
+
+        Example:
+            def _fetch_bearer_token(self) -> str | None:
+                resp = httpx.post("https://your-auth-server/token", data={
+                    "grant_type": "client_credentials",
+                    "client_id": "my-id",
+                    "client_secret": "my-secret",
+                })
+                return resp.json()["access_token"]
+        """
+        return None
+
+    def _parse_gateway_response(self, raw: dict[str, Any]) -> ChatResult:
+        """Parse the gateway's JSON response into a LangChain ChatResult.
+
+        ── EDIT THIS METHOD to match your gateway's response format. ──
+
+        The framework expects a ChatResult back. This method extracts
+        the text content from the raw JSON and wraps it.
+
+        Common gateway formats this handles:
+            {"choices": [{"message": {"content": "Hello"}}]}     # OpenAI
+            {"content": "Hello"}                                  # Direct
+            {"data": {"output": "Hello"}}                         # Envelope
+            {"result": {"response": "Hello"}}                     # Envelope
+        """
+        content = ""
+
+        # Try OpenAI-compatible format
+        choices = raw.get("choices")
+        if choices and isinstance(choices, list):
+            msg = choices[0].get("message", {})
+            content = msg.get("content", "") or ""
+        else:
+            # Try common field names
+            for field in ("output", "content", "response", "text", "message"):
+                val = raw.get(field)
+                if val and isinstance(val, str):
+                    content = val
+                    break
+
+            # Try unwrapping envelopes: {"data": {...}} or {"result": {...}}
+            if not content:
+                inner = raw.get("data") or raw.get("result")
+                if isinstance(inner, dict):
+                    for field in ("output", "content", "response", "text"):
+                        val = inner.get(field)
+                        if val and isinstance(val, str):
+                            content = val
+                            break
+
+        message = AIMessage(content=content)
+        generation = ChatGeneration(message=message)
+        return ChatResult(generations=[generation])
 
     # ── Sync generation ─────────────────────────────────────────────────
 
@@ -168,24 +261,16 @@ class GatewayChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        """Synchronous invoke — gets token, POSTs to gateway, parses response."""
-        token = self._resolve_token_sync()
         body = self._build_request_body(messages, stream=False)
         if stop:
             body["stop"] = stop
-        headers = self._build_headers(token)
+        url, headers, body = self._gateway_request(body)
 
-        logger.debug("Gateway POST %s body_keys=%s", self._chat_endpoint, list(body.keys()))
-
-        resp = self._sync_client.post(
-            self._chat_endpoint,
-            json=body,
-            headers=headers,
-        )
+        logger.debug("Gateway POST %s", url)
+        resp = self._sync_client.post(url, json=body, headers=headers)
         resp.raise_for_status()
-        raw = resp.json()
 
-        return self._response_parser.parse_response(raw)
+        return self._parse_gateway_response(resp.json())
 
     # ── Async generation ────────────────────────────────────────────────
 
@@ -196,24 +281,16 @@ class GatewayChatModel(BaseChatModel):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        """Async invoke — gets token, POSTs to gateway, parses response."""
-        token = await self._resolve_token_async()
         body = self._build_request_body(messages, stream=False)
         if stop:
             body["stop"] = stop
-        headers = self._build_headers(token)
+        url, headers, body = await self._gateway_request_async(body)
 
-        logger.debug("Gateway async POST %s", self._chat_endpoint)
-
-        resp = await self._async_client.post(
-            self._chat_endpoint,
-            json=body,
-            headers=headers,
-        )
+        logger.debug("Gateway async POST %s", url)
+        resp = await self._async_client.post(url, json=body, headers=headers)
         resp.raise_for_status()
-        raw = resp.json()
 
-        return self._response_parser.parse_response(raw)
+        return self._parse_gateway_response(resp.json())
 
     # ── Sync streaming ──────────────────────────────────────────────────
 
@@ -224,28 +301,19 @@ class GatewayChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
-        """Sync streaming — SSE line parsing, delegates to parse_stream_chunk."""
-        token = self._resolve_token_sync()
         body = self._build_request_body(messages, stream=True)
         if stop:
             body["stop"] = stop
-        headers = self._build_headers(token)
+        url, headers, body = self._gateway_request(body)
 
-        with self._sync_client.stream(
-            "POST",
-            self._chat_endpoint,
-            json=body,
-            headers=headers,
-        ) as resp:
+        with self._sync_client.stream("POST", url, json=body, headers=headers) as resp:
             resp.raise_for_status()
             for line in resp.iter_lines():
                 chunk = self._parse_sse_line(line)
                 if chunk is None:
                     continue
                 if run_manager:
-                    run_manager.on_llm_new_token(
-                        chunk.text, chunk=chunk,
-                    )
+                    run_manager.on_llm_new_token(chunk.text, chunk=chunk)
                 yield chunk
 
     # ── Async streaming ─────────────────────────────────────────────────
@@ -257,19 +325,12 @@ class GatewayChatModel(BaseChatModel):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
-        """Async streaming — powers astream_events(v2)."""
-        token = await self._resolve_token_async()
         body = self._build_request_body(messages, stream=True)
         if stop:
             body["stop"] = stop
-        headers = self._build_headers(token)
+        url, headers, body = await self._gateway_request_async(body)
 
-        async with self._async_client.stream(
-            "POST",
-            self._chat_endpoint,
-            json=body,
-            headers=headers,
-        ) as resp:
+        async with self._async_client.stream("POST", url, json=body, headers=headers) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 chunk = self._parse_sse_line(line)
