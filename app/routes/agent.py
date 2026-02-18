@@ -1,0 +1,308 @@
+"""FastAPI routes for deep agent operations.
+
+Exposes every customization knob from the deep-agents library:
+  model, tools, system_prompt, middleware, subagents, backend,
+  store, interrupt_on, skills, memory, response_format, cache,
+  debug, name
+"""
+
+from __future__ import annotations
+
+import json
+
+from fastapi import APIRouter, HTTPException
+from sse_starlette.sse import EventSourceResponse
+
+from app.agents.config_loader import remove_agent_from_yaml, save_agent_to_yaml
+from app.agents.deep_agent import (
+    create_deep_agent_from_config,
+    delete_agent,
+    get_agent,
+    invoke_agent,
+    list_agents,
+    list_middleware,
+    list_tools,
+    resume_agent,
+    stream_agent,
+)
+from app.models.schemas import (
+    AgentCreateRequest,
+    AgentInfo,
+    InvokeRequest,
+    InvokeResponse,
+    ResumeRequest,
+    StreamRequest,
+)
+
+router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Agent CRUD
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.post("/", response_model=AgentInfo, status_code=201)
+async def create_new_agent(req: AgentCreateRequest):
+    """Create and register a new deep agent.
+
+    Accepts all customization knobs:
+    - **name**: human-readable label
+    - **model**: LLM provider + model (`openai:gpt-4.1`, `claude-sonnet-4-5-20250929`, etc.)
+    - **system_prompt**: custom instructions
+    - **tools**: list of registered tool names
+    - **middleware**: list of registered middleware names
+    - **subagents**: subagent definitions with their own tools/model/middleware
+    - **backend**: storage config (state | filesystem | store | composite)
+    - **interrupt_on**: human-in-the-loop rules per tool
+    - **skills**: skill directory paths for contextual knowledge
+    - **memory**: persistent AGENTS.md file paths + initial content
+    - **response_format**: structured output schema
+    - **cache**: LLM response caching config
+    - **debug**: verbose logging
+    """
+    try:
+        subagents = [sa.model_dump() for sa in req.subagents] if req.subagents else None
+        interrupt_on_cfg = None
+        if req.interrupt_on:
+            interrupt_on_cfg = {
+                tool_name: rule.model_dump() if hasattr(rule, "model_dump") else rule
+                for tool_name, rule in req.interrupt_on.items()
+            }
+
+        backend_cfg = req.backend.model_dump() if req.backend else None
+        skills_cfg = req.skills.model_dump() if req.skills else None
+        memory_cfg = req.memory.model_dump() if req.memory else None
+        response_format_cfg = req.response_format.model_dump() if req.response_format else None
+        cache_cfg = req.cache.model_dump() if req.cache else None
+
+        meta = create_deep_agent_from_config(
+            agent_id=req.agent_id,
+            name=req.name,
+            model=req.model,
+            system_prompt=req.system_prompt,
+            tool_names=req.tools,
+            middleware_names=req.middleware,
+            subagents=subagents,
+            backend_cfg=backend_cfg,
+            interrupt_on_cfg=interrupt_on_cfg,
+            skills_cfg=skills_cfg,
+            memory_cfg=memory_cfg,
+            response_format_cfg=response_format_cfg,
+            cache_cfg=cache_cfg,
+            debug=req.debug,
+        )
+
+        # Persist to agents.yaml
+        save_agent_to_yaml(
+            agent_id=req.agent_id,
+            name=req.name,
+            model=req.model,
+            system_prompt=req.system_prompt,
+            tools=req.tools,
+            middleware=req.middleware,
+            subagents=subagents,
+            backend_cfg=backend_cfg,
+            interrupt_on_cfg=interrupt_on_cfg,
+            skills_cfg=skills_cfg,
+            memory_cfg=memory_cfg,
+            response_format_cfg=response_format_cfg,
+            cache_cfg=cache_cfg,
+            debug=req.debug,
+        )
+
+        return _meta_to_info(meta)
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/", response_model=list[AgentInfo])
+async def list_all_agents():
+    """List all registered agents with their configuration summary."""
+    return [AgentInfo(**a) for a in list_agents()]
+
+
+@router.get("/{agent_id}", response_model=AgentInfo)
+async def get_agent_info(agent_id: str):
+    """Get full configuration info for a specific agent."""
+    try:
+        return _meta_to_info(get_agent(agent_id))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+
+
+@router.delete("/{agent_id}", status_code=204)
+async def remove_agent(agent_id: str):
+    """Delete a registered agent and remove from agents.yaml."""
+    try:
+        delete_agent(agent_id)
+        remove_agent_from_yaml(agent_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Invoke
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.post("/invoke", response_model=InvokeResponse)
+@router.post("/{agent_id}/invoke", response_model=InvokeResponse)
+async def invoke(req: InvokeRequest, agent_id: str | None = None):
+    """Invoke an agent and get a complete response.
+
+    - Uses the **default** agent when no `agent_id` is given.
+    - Pass `thread_id` to continue an existing conversation.
+    - Pass `trace: true` (default) to include full execution trace
+      with input prompts, tool calls, timing, and system prompt.
+    - If the agent has `interrupt_on` rules and a tool triggers,
+      the response will have `interrupted=true` with the tool info.
+      Use the `/resume` endpoint to continue.
+    """
+    try:
+        messages = [m.model_dump() for m in req.messages]
+        result = invoke_agent(
+            agent_id=agent_id,
+            messages=messages,
+            thread_id=req.thread_id,
+            trace_enabled=req.trace,
+        )
+        return InvokeResponse(**result)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Human-in-the-loop resume
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.post("/resume", response_model=InvokeResponse)
+@router.post("/{agent_id}/resume", response_model=InvokeResponse)
+async def resume(req: ResumeRequest, agent_id: str | None = None):
+    """Resume an interrupted agent after human-in-the-loop review.
+
+    Use this after an invoke returned `interrupted=true`.
+
+    Decisions:
+    - **approve**: continue with the original tool call as-is
+    - **reject**: cancel the tool call and let the agent re-plan
+    - **edit**: modify the tool arguments (pass new args in `edit_args`)
+    """
+    try:
+        result = resume_agent(
+            agent_id=agent_id,
+            thread_id=req.thread_id,
+            decision=req.decision,
+            edit_args=req.edit_args,
+        )
+        return InvokeResponse(**result)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Stream (SSE)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.post("/stream")
+@router.post("/{agent_id}/stream")
+async def stream(req: StreamRequest, agent_id: str | None = None):
+    """Stream agent responses via Server-Sent Events.
+
+    Full-visibility events (in order):
+    - `agent_start`: agent config (model, tools, system prompt, thread)
+    - `input_prompt`: exact messages being sent to the agent
+    - `files_seeded`: virtual FS files seeded (paths + sizes)
+    - `llm_start`: LLM invocation with full input messages
+    - `token`: incremental text chunk from LLM
+    - `llm_end`: LLM response complete (duration, preview, tool calls requested)
+    - `tool_call`: agent called a tool (name + input)
+    - `tool_result`: tool returned (name + output + duration)
+    - `node_start` / `node_end`: LangGraph node transitions
+    - `done`: stream complete (thread_id + trace summary)
+    - `error`: something went wrong
+    """
+    messages = [m.model_dump() for m in req.messages]
+
+    async def event_generator():
+        async for event in stream_agent(
+            agent_id=agent_id,
+            messages=messages,
+            thread_id=req.thread_id,
+        ):
+            data = event["data"]
+            yield {
+                "event": event["event"],
+                "data": json.dumps(data) if isinstance(data, (dict, list)) else str(data),
+            }
+
+    return EventSourceResponse(event_generator())
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Registries (tools & middleware)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/tools/available", tags=["tools"])
+async def get_available_tools():
+    """List all registered tools that can be assigned to agents."""
+    return {"tools": list_tools()}
+
+
+@router.get("/middleware/available", tags=["middleware"])
+async def get_available_middleware():
+    """List all registered middleware that can be assigned to agents."""
+    return {"middleware": list_middleware()}
+
+
+@router.get("/skills/available", tags=["skills"])
+async def get_available_skills():
+    """List all skills discovered from the skills/ directory.
+
+    Shows each skill's name and path. Skills are SKILL.md files
+    in subdirectories of skills/.
+    """
+    from pathlib import Path
+
+    skills_dir = Path("skills")
+    skills = []
+    if skills_dir.is_dir():
+        for skill_md in sorted(skills_dir.rglob("SKILL.md")):
+            skills.append({
+                "name": skill_md.parent.name,
+                "virtual_path": f"/skills/{skill_md.relative_to(skills_dir).as_posix()}",
+                "disk_path": str(skill_md.resolve()),
+            })
+    return {"skills": skills}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Helpers
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _meta_to_info(meta: dict) -> AgentInfo:
+    return AgentInfo(
+        agent_id=meta["agent_id"],
+        name=meta.get("name"),
+        model=meta["model"],
+        system_prompt=meta["system_prompt"],
+        tools=meta["tools"],
+        subagents=meta.get("subagents", []),
+        middleware=meta.get("middleware", []),
+        backend_type=meta.get("backend_type", "filesystem"),
+        has_interrupt_on=meta.get("has_interrupt_on", False),
+        skills=meta.get("skills", []),
+        loaded_skills=[],
+        memory=meta.get("memory_paths", []),
+        has_response_format=meta.get("has_response_format", False),
+        cache_enabled=meta.get("cache_enabled", False),
+        debug=meta.get("debug", False),
+    )
