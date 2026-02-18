@@ -360,7 +360,14 @@ class GatewayChatModel(BaseChatModel):
         url, headers, body = self._gateway_request(body)
 
         with self._sync_client.stream("POST", url, json=body, headers=headers) as resp:
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                error_body = resp.read().decode()
+                logger.error(
+                    "GATEWAY STREAM ERROR  status=%d  url=%s  response=%s",
+                    resp.status_code, url, error_body[:1000],
+                )
+                resp.raise_for_status()
+
             for line in resp.iter_lines():
                 chunk = self._parse_sse_line(line)
                 if chunk is None:
@@ -384,7 +391,14 @@ class GatewayChatModel(BaseChatModel):
         url, headers, body = await self._gateway_request_async(body)
 
         async with self._async_client.stream("POST", url, json=body, headers=headers) as resp:
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                error_body = (await resp.aread()).decode()
+                logger.error(
+                    "GATEWAY STREAM ERROR  status=%d  url=%s  response=%s",
+                    resp.status_code, url, error_body[:1000],
+                )
+                resp.raise_for_status()
+
             async for line in resp.aiter_lines():
                 chunk = self._parse_sse_line(line)
                 if chunk is None:
