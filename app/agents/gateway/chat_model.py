@@ -327,22 +327,25 @@ class GatewayChatModel(BaseChatModel):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
+        logger.error(">>> _agenerate CALLED with %d messages", len(messages))
         body = self._build_request_body(messages, stream=False)
         if stop:
             body["stop"] = stop
         url, headers, body = await self._gateway_request_async(body)
 
+        logger.error(
+            ">>> FULL REQUEST  url=%s\n>>> HEADERS=%s\n>>> BODY=%s",
+            url, json.dumps(headers), json.dumps(body, default=str)[:3000],
+        )
+
         resp = await self._async_client.post(url, json=body, headers=headers)
 
+        logger.error(">>> RESPONSE status=%d  body=%s", resp.status_code, resp.text[:2000])
+
         if resp.status_code != 200:
-            logger.error(
-                "GATEWAY ERROR  status=%d  url=%s  response=%s",
-                resp.status_code, url, resp.text[:1000],
-            )
             resp.raise_for_status()
 
         raw = resp.json()
-        logger.debug("GATEWAY RESPONSE: %s", json.dumps(raw, default=str)[:1000])
         return self._parse_gateway_response(raw)
 
     # ── Sync streaming (non-streaming POST, yields result as single chunk) ──
