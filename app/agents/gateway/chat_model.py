@@ -127,11 +127,16 @@ class GatewayChatModel(BaseChatModel):
         for t in tools:
             oai = convert_to_openai_tool(t)
             func = oai.get("function", oai)
+            name = func.get("name", "") or getattr(t, "name", "") or getattr(t, "__name__", "")
+            if not name:
+                logger.warning("Skipping tool with empty name: %s", t)
+                continue
             anthropic_tools.append({
-                "name": func.get("name", ""),
-                "description": func.get("description", ""),
+                "name": name,
+                "description": func.get("description", "") or getattr(t, "description", ""),
                 "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
             })
+        logger.info("Bound %d tools: %s", len(anthropic_tools), [t["name"] for t in anthropic_tools])
 
         # Normalize tool_choice to Anthropic format
         anthropic_tool_choice = None
