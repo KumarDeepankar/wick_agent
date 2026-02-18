@@ -165,19 +165,14 @@ class GatewayChatModel(BaseChatModel):
         messages: list[BaseMessage],
         stream: bool = False,
     ) -> dict[str, Any]:
-        """Build the JSON payload in Anthropic Messages API format.
+        """Build the JSON payload in OpenAI chat completions format.
 
-        Matches the working format from claude_client.py:
-          {
-            "model": "anthropic.claude-3-5-sonnet",
-            "max_tokens": 4096,
-            "messages": [{"role": "user", "content": "Hello"}],
-            "system": "You are a helpful assistant."    ← top-level, not in messages
-          }
+        System messages are extracted to a top-level "system" field
+        (accepted by most gateway proxies including LiteLLM).
         """
         msg_dicts = _langchain_messages_to_dicts(messages)
 
-        # Anthropic: system prompt is a top-level field, not a message
+        # Extract system prompt to top-level field (works with most gateways)
         system_text = None
         non_system_msgs = []
         for m in msg_dicts:
@@ -532,13 +527,11 @@ class GatewayChatModel(BaseChatModel):
 def _langchain_messages_to_dicts(
     messages: list[BaseMessage],
 ) -> list[dict[str, Any]]:
-    """Convert LangChain BaseMessage objects to Anthropic Messages API format.
+    """Convert LangChain BaseMessage objects to OpenAI chat format.
 
-    Anthropic format differences from OpenAI:
-        - AIMessage with tool_calls → content is a list of blocks:
-            [{"type":"text","text":"..."}, {"type":"tool_use","id":"...","name":"...","input":{}}]
-        - ToolMessage → role "user" with content block:
-            {"role":"user","content":[{"type":"tool_result","tool_use_id":"...","content":"..."}]}
+    Uses OpenAI format for consistency with OpenAI-format tools:
+        - AIMessage with tool_calls → "tool_calls" field on assistant message
+        - ToolMessage → role "tool" with tool_call_id
     """
     result: list[dict[str, Any]] = []
     for msg in messages:
@@ -547,31 +540,31 @@ def _langchain_messages_to_dicts(
             result.append({"role": "system", "content": msg.content})
 
         elif isinstance(msg, ToolMessage):
-            # Anthropic: tool results are sent as role "user" with tool_result block
+            # OpenAI: tool results use role "tool"
             result.append({
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": msg.tool_call_id,
-                        "content": msg.content if isinstance(msg.content, str) else json.dumps(msg.content),
-                    }
-                ],
+                "role": "tool",
+                "tool_call_id": msg.tool_call_id,
+                "content": msg.content if isinstance(msg.content, str) else json.dumps(msg.content),
             })
 
         elif isinstance(msg, AIMessage) and msg.tool_calls:
-            # Anthropic: assistant message with tool_use blocks
-            content_blocks: list[dict[str, Any]] = []
-            if msg.content:
-                content_blocks.append({"type": "text", "text": msg.content})
-            for tc in msg.tool_calls:
-                content_blocks.append({
-                    "type": "tool_use",
-                    "id": tc.get("id", ""),
-                    "name": tc["name"],
-                    "input": tc["args"] if isinstance(tc["args"], dict) else {},
-                })
-            result.append({"role": "assistant", "content": content_blocks})
+            # OpenAI: assistant message with tool_calls field
+            d: dict[str, Any] = {
+                "role": "assistant",
+                "content": msg.content or None,
+                "tool_calls": [
+                    {
+                        "id": tc.get("id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc["args"]) if isinstance(tc["args"], dict) else str(tc["args"]),
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ],
+            }
+            result.append(d)
 
         elif isinstance(msg, AIMessage):
             result.append({"role": "assistant", "content": msg.content})
