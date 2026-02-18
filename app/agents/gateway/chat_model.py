@@ -172,10 +172,8 @@ class GatewayChatModel(BaseChatModel):
         if not token and self._token_manager:
             token = self._token_manager.get_token_sync()
 
-        # 2. URL — Anthropic Messages API format
-        url = self.gateway_url.rstrip("/")
-        if not url.endswith("/v1/messages"):
-            url = f"{url}/v1/messages"
+        # 2. URL — use exactly as configured in agents.yaml
+        url = self.gateway_url
 
         # 3. Headers — Bearer token for gateway proxy
         headers: dict[str, str] = {
@@ -205,9 +203,7 @@ class GatewayChatModel(BaseChatModel):
         if not token and self._token_manager:
             token = await self._token_manager.get_token()
 
-        url = self.gateway_url.rstrip("/")
-        if not url.endswith("/v1/messages"):
-            url = f"{url}/v1/messages"
+        url = self.gateway_url
 
         headers: dict[str, str] = {
             "content-type": "application/json",
