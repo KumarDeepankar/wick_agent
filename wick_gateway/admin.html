@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wick Gateway Admin</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; color: #333; min-height: 100vh; }
+
+  /* Login */
+  .login-overlay { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .login-card { background: #fff; border-radius: 12px; box-shadow: 0 4px 24px rgba(0,0,0,0.12); padding: 40px; width: 360px; }
+  .login-card h1 { font-size: 1.4rem; margin-bottom: 8px; }
+  .login-card p { color: #666; font-size: 0.9rem; margin-bottom: 24px; }
+  .login-card label { display: block; font-size: 0.85rem; font-weight: 600; color: #555; margin-bottom: 4px; }
+  .login-card input { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.9rem; margin-bottom: 16px; }
+  .login-card input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
+  .login-card .btn { width: 100%; padding: 10px; font-size: 0.95rem; }
+  .login-error { color: #ef4444; font-size: 0.85rem; margin-bottom: 12px; min-height: 1.2em; }
+
+  /* Top bar */
+  .top-bar { background: #1e293b; color: #fff; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .top-bar h1 { font-size: 1.1rem; font-weight: 600; }
+  .top-bar-right { display: flex; align-items: center; gap: 12px; }
+  .top-bar-user { font-size: 0.85rem; color: #cbd5e1; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }
+  .badge-admin { background: #3b82f6; color: #fff; }
+  .badge-role { background: #475569; color: #e2e8f0; }
+  .btn-logout { background: transparent; border: 1px solid #475569; color: #cbd5e1; padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
+  .btn-logout:hover { background: #334155; }
+
+  /* Layout */
+  .app-body { padding: 24px; max-width: 1100px; margin: 0 auto; }
+  .status-bar { display: flex; gap: 16px; margin-bottom: 16px; font-size: 0.9rem; color: #666; }
+  .card { background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); padding: 20px; margin-bottom: 20px; }
+  h2 { font-size: 1.1rem; margin-bottom: 12px; color: #555; }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 2px; margin-bottom: 20px; background: #e2e8f0; border-radius: 8px; padding: 3px; }
+  .tab-btn { padding: 8px 20px; border: none; background: transparent; cursor: pointer; font-size: 0.9rem; color: #64748b; border-radius: 6px; font-weight: 500; }
+  .tab-btn:hover { color: #334155; }
+  .tab-btn.active { background: #fff; color: #1e293b; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #eee; }
+  th { font-weight: 600; color: #666; font-size: 0.85rem; text-transform: uppercase; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  .dot.green { background: #22c55e; }
+  .dot.red { background: #ef4444; }
+
+  /* Buttons */
+  .btn { padding: 6px 14px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+  .btn-primary { background: #3b82f6; color: #fff; }
+  .btn-primary:hover { background: #2563eb; }
+  .btn-danger { background: #ef4444; color: #fff; }
+  .btn-danger:hover { background: #dc2626; }
+  .btn-secondary { background: #e2e8f0; color: #334155; }
+  .btn-secondary:hover { background: #cbd5e1; }
+  .btn-success { background: #22c55e; color: #fff; }
+  .btn-success:hover { background: #16a34a; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+  .actions { display: flex; gap: 6px; }
+
+  /* Forms */
+  .form-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .form-row input, .form-row select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem; }
+  .form-row input[name="name"] { width: 160px; }
+  .form-row input[name="url"] { width: 320px; }
+  .form-row input[name="username"] { width: 160px; }
+  .form-row input[name="password"] { width: 160px; }
+  .form-row input[name="roleName"] { width: 160px; }
+  .form-row input[name="roleTools"] { width: 300px; }
+  .form-error { margin-top: 8px; color: #ef4444; font-size: 0.85rem; min-height: 1em; }
+  .hint { font-size: 0.78rem; color: #999; margin-top: 4px; }
+
+  /* Chips */
+  .chip { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; background: #f1f5f9; color: #475569; margin: 2px; font-family: monospace; }
+
+  /* Inline edit */
+  .edit-tools-input { width: 100%; padding: 6px 8px; border: 1px solid #3b82f6; border-radius: 4px; font-size: 0.85rem; font-family: monospace; }
+
+  .error-text { color: #ef4444; font-size: 0.8rem; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .muted { color: #999; font-size: 0.85rem; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- Login Screen -->
+<div id="login-screen" class="login-overlay">
+  <div class="login-card">
+    <h1>Wick Gateway</h1>
+    <p>Sign in to access the admin panel</p>
+    <div id="login-error" class="login-error"></div>
+    <form id="login-form">
+      <label for="login-user">Username</label>
+      <input id="login-user" name="username" type="text" placeholder="admin" required autofocus>
+      <label for="login-pass">Password</label>
+      <input id="login-pass" name="password" type="password" placeholder="Password" required>
+      <button type="submit" class="btn btn-primary">Sign In</button>
+    </form>
+  </div>
+</div>
+
+<!-- App (hidden until logged in) -->
+<div id="app-screen" class="hidden">
+  <div class="top-bar">
+    <h1>Wick Gateway Admin</h1>
+    <div class="top-bar-right">
+      <span class="top-bar-user" id="top-username"></span>
+      <span class="badge" id="top-role-badge"></span>
+      <button class="btn-logout" onclick="logout()">Logout</button>
+    </div>
+  </div>
+
+  <div class="app-body">
+    <div class="status-bar">
+      <span>Servers: <strong id="server-count">0</strong></span>
+      <span>Connected: <strong id="connected-count">0</strong></span>
+      <span>Tools: <strong id="tool-count">0</strong></span>
+    </div>
+
+    <div class="tabs" id="tab-nav">
+      <button class="tab-btn active" data-tab="servers">Servers</button>
+      <button class="tab-btn" data-tab="tools">Tools</button>
+      <button class="tab-btn" data-tab="users" id="tab-btn-users">Users</button>
+      <button class="tab-btn" data-tab="roles" id="tab-btn-roles">Roles</button>
+    </div>
+
+    <!-- Servers Panel -->
+    <div id="panel-servers" class="tab-panel active">
+      <div class="card">
+        <h2>MCP Servers</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Name</th>
+              <th>URL</th>
+              <th>Tools</th>
+              <th>Last Error</th>
+              <th>Last Check</th>
+              <th id="server-actions-header"></th>
+            </tr>
+          </thead>
+          <tbody id="server-list">
+            <tr><td colspan="7" class="muted">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card" id="add-server-card">
+        <h2>Add Server</h2>
+        <form id="add-server-form" class="form-row">
+          <input name="name" placeholder="Server name" required>
+          <input name="url" placeholder="http://localhost:8001/mcp" required>
+          <button type="submit" class="btn btn-primary">Add</button>
+        </form>
+        <div id="add-server-error" class="form-error"></div>
+      </div>
+    </div>
+
+    <!-- Tools Panel -->
+    <div id="panel-tools" class="tab-panel">
+      <div class="card">
+        <h2>Available Tools</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody id="tools-list">
+            <tr><td colspan="2" class="muted">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Users Panel -->
+    <div id="panel-users" class="tab-panel">
+      <div class="card">
+        <h2>Users</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th>Role</th>
+              <th>Source</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="users-list">
+            <tr><td colspan="4" class="muted">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2>Add User</h2>
+        <form id="add-user-form" class="form-row">
+          <input name="username" placeholder="Username" required>
+          <input name="password" type="password" placeholder="Password" required>
+          <select name="role" id="add-user-role" required>
+            <option value="">Select role...</option>
+          </select>
+          <button type="submit" class="btn btn-primary">Add User</button>
+        </form>
+        <div id="add-user-error" class="form-error"></div>
+      </div>
+    </div>
+
+    <!-- Roles Panel -->
+    <div id="panel-roles" class="tab-panel">
+      <div class="card">
+        <h2>Roles</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Tool Patterns</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="roles-list">
+            <tr><td colspan="3" class="muted">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2>Add Role</h2>
+        <form id="add-role-form" class="form-row">
+          <input name="roleName" placeholder="Role name" required>
+          <input name="roleTools" placeholder="tool1, tool2*, *" required>
+          <button type="submit" class="btn btn-primary">Add Role</button>
+        </form>
+        <div class="hint">Comma-separated patterns. Use * for all tools, prefix* for prefix matching.</div>
+        <div id="add-role-error" class="form-error"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// --- State ---
+let token = localStorage.getItem('wick_token');
+let currentUser = null;
+let activeTab = 'servers';
+let refreshTimer = null;
+let editingRole = null; // role name being inline-edited
+let allRoles = {};      // cached from last fetch
+let allUsers = [];      // cached from last fetch
+
+// --- API helper ---
+async function api(url, opts = {}) {
+  const headers = opts.headers || {};
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  if (opts.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+  const resp = await fetch(url, { ...opts, headers });
+  if (resp.status === 401) {
+    logout();
+    throw new Error('Session expired');
+  }
+  return resp;
+}
+
+// --- Auth ---
+function esc(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errEl = document.getElementById('login-error');
+  errEl.textContent = '';
+  const username = e.target.elements.username.value.trim();
+  const password = e.target.elements.password.value;
+  if (!username || !password) return;
+
+  try {
+    const resp = await fetch('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      errEl.textContent = data.error || 'Login failed';
+      return;
+    }
+    const data = await resp.json();
+    token = data.token;
+    currentUser = data.user;
+    localStorage.setItem('wick_token', token);
+    showApp();
+  } catch (err) {
+    errEl.textContent = 'Connection failed: ' + err.message;
+  }
+});
+
+function logout() {
+  token = null;
+  currentUser = null;
+  localStorage.removeItem('wick_token');
+  showLogin();
+}
+
+// --- Screen switching ---
+function showLogin() {
+  document.getElementById('login-screen').classList.remove('hidden');
+  document.getElementById('app-screen').classList.add('hidden');
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+}
+
+async function showApp() {
+  // Verify token
+  if (!currentUser) {
+    try {
+      const resp = await api('/auth/me');
+      if (!resp.ok) { showLogin(); return; }
+      currentUser = await resp.json();
+    } catch { showLogin(); return; }
+  }
+
+  document.getElementById('login-screen').classList.add('hidden');
+  document.getElementById('app-screen').classList.remove('hidden');
+
+  // Top bar
+  document.getElementById('top-username').textContent = currentUser.username;
+  const badge = document.getElementById('top-role-badge');
+  badge.textContent = currentUser.role;
+  badge.className = 'badge ' + (currentUser.role === 'admin' ? 'badge-admin' : 'badge-role');
+
+  // Tab visibility
+  const isAdmin = currentUser.role === 'admin';
+  document.getElementById('tab-btn-users').classList.toggle('hidden', !isAdmin);
+  document.getElementById('tab-btn-roles').classList.toggle('hidden', !isAdmin);
+
+  // Admin-only elements in servers tab
+  document.getElementById('add-server-card').classList.toggle('hidden', !isAdmin);
+  document.getElementById('server-actions-header').textContent = isAdmin ? '' : '';
+
+  // Switch to servers tab if current tab not visible
+  if (!isAdmin && (activeTab === 'users' || activeTab === 'roles')) {
+    switchTab('servers');
+  }
+
+  refreshActiveTab();
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(refreshActiveTab, 5000);
+}
+
+// --- Tabs ---
+document.getElementById('tab-nav').addEventListener('click', (e) => {
+  if (e.target.classList.contains('tab-btn')) {
+    switchTab(e.target.dataset.tab);
+  }
+});
+
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + tab));
+  refreshActiveTab();
+}
+
+function refreshActiveTab() {
+  switch (activeTab) {
+    case 'servers': refreshServers(); break;
+    case 'tools': refreshTools(); break;
+    case 'users': refreshUsers(); break;
+    case 'roles': if (!editingRole) refreshRoles(); break;
+  }
+}
+
+// --- Servers ---
+async function refreshServers() {
+  const el = document.getElementById('server-list');
+  try {
+    const resp = await api('/api/servers');
+    const servers = await resp.json();
+    document.getElementById('server-count').textContent = servers.length;
+    document.getElementById('connected-count').textContent = servers.filter(s => s.connected).length;
+    document.getElementById('tool-count').textContent = servers.reduce((sum, s) => sum + s.toolCount, 0);
+
+    const isAdmin = currentUser && currentUser.role === 'admin';
+
+    if (servers.length === 0) {
+      el.innerHTML = '<tr><td colspan="7" class="muted">No servers registered</td></tr>';
+      return;
+    }
+
+    el.innerHTML = servers.map(s => `
+      <tr>
+        <td><span class="dot ${s.connected ? 'green' : 'red'}"></span>${s.connected ? 'Connected' : 'Disconnected'}</td>
+        <td><strong>${esc(s.name)}</strong></td>
+        <td class="muted">${esc(s.url)}</td>
+        <td>${s.toolCount}</td>
+        <td>${s.lastError ? '<span class="error-text" title="'+esc(s.lastError)+'">'+esc(s.lastError)+'</span>' : '<span class="muted">-</span>'}</td>
+        <td class="muted">${s.lastCheck ? new Date(s.lastCheck).toLocaleTimeString() : '-'}</td>
+        <td>${isAdmin ? '<button class="btn btn-danger btn-sm" onclick="removeServer(\''+esc(s.name).replace(/'/g,"\\'")+'\')">Remove</button>' : ''}</td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    el.innerHTML = '<tr><td colspan="7" class="error-text">Failed to fetch servers</td></tr>';
+  }
+}
+
+async function removeServer(name) {
+  if (!confirm('Remove server "' + name + '"?')) return;
+  await api('/api/servers/' + encodeURIComponent(name), { method: 'DELETE' });
+  refreshServers();
+}
+
+document.getElementById('add-server-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errEl = document.getElementById('add-server-error');
+  errEl.textContent = '';
+  const name = e.target.elements.name.value.trim();
+  const url = e.target.elements.url.value.trim();
+  if (!name || !url) return;
+  try {
+    const resp = await api('/api/servers', {
+      method: 'POST',
+      body: JSON.stringify({ name, url }),
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      errEl.textContent = data.error || 'Failed to add server';
+      return;
+    }
+    e.target.reset();
+    refreshServers();
+  } catch (err) {
+    errEl.textContent = 'Request failed: ' + err.message;
+  }
+});
+
+// --- Tools ---
+async function refreshTools() {
+  const el = document.getElementById('tools-list');
+  try {
+    const resp = await api('/api/tools');
+    const tools = await resp.json();
+    document.getElementById('tool-count').textContent = tools.length;
+    if (tools.length === 0) {
+      el.innerHTML = '<tr><td colspan="2" class="muted">No tools available</td></tr>';
+      return;
+    }
+    el.innerHTML = tools.map(t => `
+      <tr>
+        <td><strong>${esc(t.name)}</strong></td>
+        <td class="muted">${esc(t.description || '-')}</td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    el.innerHTML = '<tr><td colspan="2" class="error-text">Failed to fetch tools</td></tr>';
+  }
+}
+
+// --- Users ---
+async function refreshUsers() {
+  const el = document.getElementById('users-list');
+  try {
+    const [usersResp, rolesResp] = await Promise.all([api('/api/users'), api('/api/roles')]);
+    allUsers = await usersResp.json();
+    allRoles = await rolesResp.json();
+
+    // Populate role dropdown
+    const sel = document.getElementById('add-user-role');
+    const currentVal = sel.value;
+    sel.innerHTML = '<option value="">Select role...</option>' +
+      Object.keys(allRoles).sort().map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('');
+    if (currentVal) sel.value = currentVal;
+
+    if (allUsers.length === 0) {
+      el.innerHTML = '<tr><td colspan="4" class="muted">No users</td></tr>';
+      return;
+    }
+    el.innerHTML = allUsers.map(u => `
+      <tr>
+        <td><strong>${esc(u.username)}</strong></td>
+        <td><span class="badge ${u.role === 'admin' ? 'badge-admin' : 'badge-role'}">${esc(u.role)}</span></td>
+        <td class="muted">${esc(u.source)}</td>
+        <td>${u.username !== currentUser.username ? '<button class="btn btn-danger btn-sm" onclick="deleteUser(\''+esc(u.username).replace(/'/g,"\\'")+'\')">Delete</button>' : '<span class="muted">you</span>'}</td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    el.innerHTML = '<tr><td colspan="4" class="error-text">Failed to fetch users</td></tr>';
+  }
+}
+
+async function deleteUser(username) {
+  if (!confirm('Delete user "' + username + '"?')) return;
+  await api('/api/users/' + encodeURIComponent(username), { method: 'DELETE' });
+  refreshUsers();
+}
+
+document.getElementById('add-user-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errEl = document.getElementById('add-user-error');
+  errEl.textContent = '';
+  const username = e.target.elements.username.value.trim();
+  const password = e.target.elements.password.value;
+  const role = e.target.elements.role.value;
+  if (!username || !password || !role) { errEl.textContent = 'All fields are required'; return; }
+  try {
+    const resp = await api('/api/users', {
+      method: 'POST',
+      body: JSON.stringify({ username, password, role }),
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      errEl.textContent = data.error || 'Failed to add user';
+      return;
+    }
+    e.target.reset();
+    refreshUsers();
+  } catch (err) {
+    errEl.textContent = 'Request failed: ' + err.message;
+  }
+});
+
+// --- Roles ---
+async function refreshRoles() {
+  const el = document.getElementById('roles-list');
+  try {
+    const resp = await api('/api/roles');
+    allRoles = await resp.json();
+    const roleNames = Object.keys(allRoles).sort();
+
+    // Also get users to check if role is in use
+    let usersResp;
+    try { usersResp = await api('/api/users'); allUsers = await usersResp.json(); } catch {}
+
+    const usedRoles = new Set((allUsers || []).map(u => u.role));
+
+    if (roleNames.length === 0) {
+      el.innerHTML = '<tr><td colspan="3" class="muted">No roles defined</td></tr>';
+      return;
+    }
+
+    el.innerHTML = roleNames.map(name => {
+      const tools = allRoles[name].tools || [];
+      const inUse = usedRoles.has(name);
+
+      if (editingRole === name) {
+        return `
+          <tr>
+            <td><strong>${esc(name)}</strong></td>
+            <td><input class="edit-tools-input" id="edit-tools-input" value="${esc(tools.join(', '))}" /></td>
+            <td class="actions">
+              <button class="btn btn-success btn-sm" onclick="saveRole('${esc(name)}')">Save</button>
+              <button class="btn btn-secondary btn-sm" onclick="cancelEditRole()">Cancel</button>
+            </td>
+          </tr>`;
+      }
+
+      return `
+        <tr>
+          <td><strong>${esc(name)}</strong></td>
+          <td>${tools.length > 0 ? tools.map(t => '<span class="chip">'+esc(t)+'</span>').join('') : '<span class="muted">none</span>'}</td>
+          <td class="actions">
+            <button class="btn btn-secondary btn-sm" onclick="startEditRole('${esc(name)}')">Edit</button>
+            <button class="btn btn-danger btn-sm" ${inUse ? 'disabled title="Users assigned to this role"' : ''} onclick="deleteRole('${esc(name)}')">Delete</button>
+          </td>
+        </tr>`;
+    }).join('');
+  } catch (e) {
+    el.innerHTML = '<tr><td colspan="3" class="error-text">Failed to fetch roles</td></tr>';
+  }
+}
+
+function startEditRole(name) {
+  editingRole = name;
+  refreshRoles();
+  // Focus the input after render
+  setTimeout(() => {
+    const inp = document.getElementById('edit-tools-input');
+    if (inp) inp.focus();
+  }, 0);
+}
+
+function cancelEditRole() {
+  editingRole = null;
+  refreshRoles();
+}
+
+async function saveRole(name) {
+  const inp = document.getElementById('edit-tools-input');
+  if (!inp) return;
+  const tools = inp.value.split(',').map(s => s.trim()).filter(Boolean);
+  try {
+    const resp = await api('/api/roles/' + encodeURIComponent(name), {
+      method: 'PUT',
+      body: JSON.stringify({ tools }),
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      alert(data.error || 'Failed to update role');
+      return;
+    }
+    editingRole = null;
+    refreshRoles();
+  } catch (err) {
+    alert('Request failed: ' + err.message);
+  }
+}
+
+async function deleteRole(name) {
+  if (!confirm('Delete role "' + name + '"?')) return;
+  try {
+    const resp = await api('/api/roles/' + encodeURIComponent(name), { method: 'DELETE' });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      alert(data.error || 'Failed to delete role');
+      return;
+    }
+    refreshRoles();
+  } catch (err) {
+    alert('Request failed: ' + err.message);
+  }
+}
+
+document.getElementById('add-role-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errEl = document.getElementById('add-role-error');
+  errEl.textContent = '';
+  const name = e.target.elements.roleName.value.trim();
+  const toolsStr = e.target.elements.roleTools.value.trim();
+  if (!name) { errEl.textContent = 'Role name is required'; return; }
+  const tools = toolsStr ? toolsStr.split(',').map(s => s.trim()).filter(Boolean) : [];
+  try {
+    const resp = await api('/api/roles', {
+      method: 'POST',
+      body: JSON.stringify({ name, tools }),
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      errEl.textContent = data.error || 'Failed to add role';
+      return;
+    }
+    e.target.reset();
+    refreshRoles();
+  } catch (err) {
+    errEl.textContent = 'Request failed: ' + err.message;
+  }
+});
+
+// --- Init ---
+if (token) {
+  showApp();
+} else {
+  showLogin();
+}
+</script>
+
+</body>
+</html>

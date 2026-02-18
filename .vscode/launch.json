@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Gateway",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/wick_gateway",
+      "args": ["-config", "${workspaceFolder}/wick_gateway/config.yaml"],
+      "cwd": "${workspaceFolder}/wick_gateway"
+    }
+  ]
+}

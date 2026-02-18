@@ -1,0 +1,61 @@
+# Unified Docker Compose — starts all Wick services with proper ordering.
+# Sub-directory compose files (wick/, wick_gateway/) are still usable for standalone dev.
+
+services:
+  # ── MCP tool server (no deps) ─────────────────────────────────────────
+  wick-mcp:
+    build:
+      context: ./wick_mcp
+    container_name: wick-mcp
+    expose:
+      - "8001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost',8001)); s.close()"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # ── Gateway (depends on wick-mcp) ─────────────────────────────────────
+  wick-gateway:
+    build:
+      context: ./wick_gateway
+    container_name: wick-gateway
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./wick_gateway/config.yaml:/etc/wick_gateway/config.yaml
+    environment:
+      WICK_DOWNSTREAM_WICK_URL: "http://wick-mcp:8001/mcp"
+      WICK_AUTH_RESOURCE_URL: "http://wick-gateway:8080"
+    depends_on:
+      wick-mcp:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # ── Wick agent (depends on gateway) ──────────────────────────────────
+  wick-agent:
+    build:
+      context: ./wick
+    container_name: wick-agent
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./wick/.env
+    environment:
+      WICK_MCP_GATEWAY_URL: "http://wick-gateway:8080/mcp"
+      WICK_GATEWAY_URL: "http://wick-gateway:8080"
+      OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      wick-gateway:
+        condition: service_healthy
+    restart: unless-stopped
