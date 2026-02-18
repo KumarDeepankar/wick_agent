@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     gateway_base_url: str = "http://localhost:4000"
     gateway_api_key: str = ""
 
+    # Gateway OAuth2 (optional — when set, gateway uses GatewayChatModel)
+    gateway_token_url: str = ""
+    gateway_client_id: str = ""
+    gateway_client_secret: str = ""
+    gateway_scopes: str = ""
+
     # Agent defaults
     default_model: str = "ollama:llama3.1:8b"
     default_backend: str = "state"

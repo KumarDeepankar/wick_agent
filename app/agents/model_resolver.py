@@ -100,6 +100,8 @@ def _resolve_from_dict(cfg: dict[str, Any]) -> str | Any:
             api_key=cfg.get("api_key"),
             temperature=cfg.get("temperature"),
             max_tokens=cfg.get("max_tokens"),
+            auth=cfg.get("auth"),
+            response_parser=cfg.get("response_parser"),
         )
 
     # No provider or unknown — try as plain model string
@@ -145,17 +147,66 @@ def _create_gateway_model(
     api_key: str | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    auth: dict[str, Any] | None = None,
+    response_parser: str | None = None,
 ) -> Any:
-    """Create a ChatOpenAI instance pointing at an OpenAI-compatible gateway.
+    """Create a gateway model — GatewayChatModel (with auth) or ChatOpenAI (fallback).
 
-    Works with: LiteLLM, vLLM, TGI, Anyscale, Azure APIM, Kong, etc.
+    When an ``auth`` block is present in the config or ``gateway_token_url``
+    is set in environment settings, returns a GatewayChatModel with OAuth2
+    token management and custom response parsing.
+
+    Otherwise falls back to ChatOpenAI for simple OpenAI-compatible gateways.
     """
+    url = base_url or settings.gateway_base_url
+
+    # Determine if we need OAuth2 auth
+    token_url = (auth or {}).get("token_url") or settings.gateway_token_url
+
+    if token_url:
+        # Use GatewayChatModel with OAuth2 + custom parsing
+        from app.agents.gateway import GatewayChatModel, GatewayTokenManager
+
+        client_id = (auth or {}).get("client_id") or settings.gateway_client_id
+        client_secret = (auth or {}).get("client_secret") or settings.gateway_client_secret
+
+        scopes_raw = (auth or {}).get("scopes") or settings.gateway_scopes
+        if isinstance(scopes_raw, str) and scopes_raw:
+            scopes = [s.strip() for s in scopes_raw.split(",")]
+        elif isinstance(scopes_raw, list):
+            scopes = scopes_raw
+        else:
+            scopes = []
+
+        token_manager = GatewayTokenManager(
+            token_url=token_url,
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=scopes,
+        )
+
+        parser = _resolve_response_parser(response_parser)
+
+        logger.info(
+            "Creating GatewayChatModel: model=%s, base_url=%s, token_url=%s, parser=%s",
+            model_name, url, token_url, type(parser).__name__,
+        )
+
+        return GatewayChatModel(
+            model_name=model_name,
+            gateway_url=url,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            token_manager=token_manager,
+            response_parser=parser,
+        )
+
+    # No auth — fallback to ChatOpenAI
     from langchain_openai import ChatOpenAI
 
-    url = base_url or settings.gateway_base_url
     key = api_key or settings.gateway_api_key
 
-    logger.info("Creating gateway model: model=%s, base_url=%s", model_name, url)
+    logger.info("Creating gateway ChatOpenAI: model=%s, base_url=%s", model_name, url)
 
     kwargs: dict[str, Any] = {
         "model": model_name,
@@ -168,3 +219,32 @@ def _create_gateway_model(
         kwargs["max_tokens"] = max_tokens
 
     return ChatOpenAI(**kwargs)
+
+
+def _resolve_response_parser(name: str | None) -> Any:
+    """Resolve a response parser by name or import path.
+
+    - None or "default" → DefaultGatewayResponseParser()
+    - "module.path.ClassName" → dynamic import
+    """
+    if not name or name == "default":
+        from app.agents.gateway import DefaultGatewayResponseParser
+
+        return DefaultGatewayResponseParser()
+
+    # Dynamic import: "my_module.MyParser"
+    try:
+        module_path, class_name = name.rsplit(".", 1)
+        import importlib
+
+        mod = importlib.import_module(module_path)
+        cls = getattr(mod, class_name)
+        return cls()
+    except Exception:
+        logger.warning(
+            "Could not import response parser '%s', falling back to default",
+            name,
+        )
+        from app.agents.gateway import DefaultGatewayResponseParser
+
+        return DefaultGatewayResponseParser()

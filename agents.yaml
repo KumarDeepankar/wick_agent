@@ -32,7 +32,12 @@ agents:
       provider: gateway
       model: anthropic.claude-3-5-sonnet
       base_url: http://localhost:4000/v1
-      api_key: placeholder-add-your-key
+      auth:
+        token_url: https://auth.corp.com/oauth/token
+        client_id: my-client
+        client_secret: ${GATEWAY_CLIENT_SECRET}
+        scopes: [api.chat]
+      response_parser: default
     tools:
       - internet_search
       - calculate
