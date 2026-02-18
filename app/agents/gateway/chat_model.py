@@ -177,13 +177,13 @@ class GatewayChatModel(BaseChatModel):
         if not url.endswith("/v1/messages"):
             url = f"{url}/v1/messages"
 
-        # 3. Headers — match Anthropic API format
+        # 3. Headers — Bearer token for gateway proxy
         headers: dict[str, str] = {
             "content-type": "application/json",
             "anthropic-version": "2023-06-01",
         }
         if token:
-            headers["x-api-key"] = token
+            headers["Authorization"] = f"Bearer {token}"
 
         logger.info(
             "GATEWAY REQUEST  url=%s  headers=%s  body_keys=%s  model=%s  msg_count=%d",
@@ -214,7 +214,7 @@ class GatewayChatModel(BaseChatModel):
             "anthropic-version": "2023-06-01",
         }
         if token:
-            headers["x-api-key"] = token
+            headers["Authorization"] = f"Bearer {token}"
 
         logger.info(
             "GATEWAY REQUEST (async)  url=%s  headers=%s  body_keys=%s  model=%s  msg_count=%d",
