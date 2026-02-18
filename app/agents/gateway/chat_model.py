@@ -124,19 +124,25 @@ class GatewayChatModel(BaseChatModel):
         from langchain_core.utils.function_calling import convert_to_openai_tool
 
         anthropic_tools = []
-        for t in tools:
+        for i, t in enumerate(tools):
+            # Log raw tool info before conversion
+            raw_name = getattr(t, "name", None) or getattr(t, "__name__", None)
+            logger.error(">>> TOOL[%d] raw: type=%s name=%s", i, type(t).__name__, raw_name)
+
             oai = convert_to_openai_tool(t)
+            logger.error(">>> TOOL[%d] openai_converted: %s", i, json.dumps(oai, default=str)[:500])
+
             func = oai.get("function", oai)
             name = func.get("name", "") or getattr(t, "name", "") or getattr(t, "__name__", "")
             if not name:
-                logger.warning("Skipping tool with empty name: %s", t)
+                logger.error(">>> TOOL[%d] SKIPPED — no name found", i)
                 continue
             anthropic_tools.append({
                 "name": name,
                 "description": func.get("description", "") or getattr(t, "description", ""),
                 "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
             })
-        logger.info("Bound %d tools: %s", len(anthropic_tools), [t["name"] for t in anthropic_tools])
+        logger.error(">>> BOUND %d tools: %s", len(anthropic_tools), [t["name"] for t in anthropic_tools])
 
         # Normalize tool_choice to Anthropic format
         anthropic_tool_choice = None
