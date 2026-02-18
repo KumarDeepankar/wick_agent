@@ -220,6 +220,13 @@ class GatewayChatModel(BaseChatModel):
         if self.temperature is not None:
             body["temperature"] = self.temperature
 
+        logger.error(
+            ">>> REQUEST BODY tools_count=%d  tool_names=%s  bound_tools_id=%s",
+            len(body.get("tools", [])),
+            [t.get("name", "???") for t in body.get("tools", [])],
+            id(self._bound_tools),
+        )
+
         return body
 
     def _gateway_request(self, body: dict[str, Any]) -> tuple[str, dict[str, str], dict[str, Any]]:
@@ -422,7 +429,10 @@ class GatewayChatModel(BaseChatModel):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        logger.error(">>> _agenerate CALLED with %d messages", len(messages))
+        logger.error(
+            ">>> _agenerate CALLED with %d messages, kwargs=%s, _bound_tools=%d",
+            len(messages), list(kwargs.keys()), len(self._bound_tools),
+        )
         body = self._build_request_body(messages, stream=False)
         if stop:
             body["stop"] = stop
