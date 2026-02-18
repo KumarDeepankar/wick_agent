@@ -345,7 +345,7 @@ class GatewayChatModel(BaseChatModel):
         logger.debug("GATEWAY RESPONSE: %s", json.dumps(raw, default=str)[:1000])
         return self._parse_gateway_response(raw)
 
-    # ── Sync streaming ──────────────────────────────────────────────────
+    # ── Sync streaming (non-streaming POST, yields result as single chunk) ──
 
     def _stream(
         self,
@@ -354,29 +354,17 @@ class GatewayChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
-        body = self._build_request_body(messages, stream=True)
-        if stop:
-            body["stop"] = stop
-        url, headers, body = self._gateway_request(body)
+        # Use regular POST (no streaming) — matches working claude_client.py
+        result = self._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        msg = result.generations[0].message
+        chunk = ChatGenerationChunk(
+            message=AIMessageChunk(content=msg.content),
+        )
+        if run_manager:
+            run_manager.on_llm_new_token(chunk.text, chunk=chunk)
+        yield chunk
 
-        with self._sync_client.stream("POST", url, json=body, headers=headers) as resp:
-            if resp.status_code != 200:
-                error_body = resp.read().decode()
-                logger.error(
-                    "GATEWAY STREAM ERROR  status=%d  url=%s  response=%s",
-                    resp.status_code, url, error_body[:1000],
-                )
-                resp.raise_for_status()
-
-            for line in resp.iter_lines():
-                chunk = self._parse_sse_line(line)
-                if chunk is None:
-                    continue
-                if run_manager:
-                    run_manager.on_llm_new_token(chunk.text, chunk=chunk)
-                yield chunk
-
-    # ── Async streaming ─────────────────────────────────────────────────
+    # ── Async streaming (non-streaming POST, yields result as single chunk) ──
 
     async def _astream(
         self,
@@ -385,29 +373,15 @@ class GatewayChatModel(BaseChatModel):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
-        body = self._build_request_body(messages, stream=True)
-        if stop:
-            body["stop"] = stop
-        url, headers, body = await self._gateway_request_async(body)
-
-        async with self._async_client.stream("POST", url, json=body, headers=headers) as resp:
-            if resp.status_code != 200:
-                error_body = (await resp.aread()).decode()
-                logger.error(
-                    "GATEWAY STREAM ERROR  status=%d  url=%s  response=%s",
-                    resp.status_code, url, error_body[:1000],
-                )
-                resp.raise_for_status()
-
-            async for line in resp.aiter_lines():
-                chunk = self._parse_sse_line(line)
-                if chunk is None:
-                    continue
-                if run_manager:
-                    await run_manager.on_llm_new_token(
-                        chunk.text, chunk=chunk,
-                    )
-                yield chunk
+        # Use regular POST (no streaming) — matches working claude_client.py
+        result = await self._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        msg = result.generations[0].message
+        chunk = ChatGenerationChunk(
+            message=AIMessageChunk(content=msg.content),
+        )
+        if run_manager:
+            await run_manager.on_llm_new_token(chunk.text, chunk=chunk)
+        yield chunk
 
     # ── SSE parsing helper ──────────────────────────────────────────────
 
