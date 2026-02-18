@@ -102,6 +102,7 @@ def _resolve_from_dict(cfg: dict[str, Any]) -> str | Any:
             max_tokens=cfg.get("max_tokens"),
             auth=cfg.get("auth"),
             response_parser=cfg.get("response_parser"),
+            custom_auth=cfg.get("custom_auth", False),
         )
 
     # No provider or unknown — try as plain model string
@@ -149,47 +150,50 @@ def _create_gateway_model(
     max_tokens: int | None = None,
     auth: dict[str, Any] | None = None,
     response_parser: str | None = None,
+    custom_auth: bool = False,
 ) -> Any:
     """Create a gateway model — GatewayChatModel (with auth) or ChatOpenAI (fallback).
 
-    When an ``auth`` block is present in the config or ``gateway_token_url``
-    is set in environment settings, returns a GatewayChatModel with OAuth2
-    token management and custom response parsing.
+    Triggers GatewayChatModel when any of these are true:
+        - ``custom_auth: true`` in yaml (token via _fetch_bearer_token)
+        - ``auth`` block in yaml (OAuth2 flow)
+        - ``GATEWAY_TOKEN_URL`` env var set
 
     Otherwise falls back to ChatOpenAI for simple OpenAI-compatible gateways.
     """
     url = base_url or settings.gateway_base_url
 
-    # Determine if we need OAuth2 auth
+    # Determine if we need GatewayChatModel
     token_url = (auth or {}).get("token_url") or settings.gateway_token_url
+    use_gateway_model = custom_auth or bool(token_url)
 
-    if token_url:
-        # Use GatewayChatModel with OAuth2 + custom parsing
+    if use_gateway_model:
         from app.agents.gateway import GatewayChatModel, GatewayTokenManager
 
-        client_id = (auth or {}).get("client_id") or settings.gateway_client_id
-        client_secret = (auth or {}).get("client_secret") or settings.gateway_client_secret
+        # Only create token_manager if OAuth2 config is provided
+        token_manager = None
+        if token_url:
+            client_id = (auth or {}).get("client_id") or settings.gateway_client_id
+            client_secret = (auth or {}).get("client_secret") or settings.gateway_client_secret
 
-        scopes_raw = (auth or {}).get("scopes") or settings.gateway_scopes
-        if isinstance(scopes_raw, str) and scopes_raw:
-            scopes = [s.strip() for s in scopes_raw.split(",")]
-        elif isinstance(scopes_raw, list):
-            scopes = scopes_raw
-        else:
-            scopes = []
+            scopes_raw = (auth or {}).get("scopes") or settings.gateway_scopes
+            if isinstance(scopes_raw, str) and scopes_raw:
+                scopes = [s.strip() for s in scopes_raw.split(",")]
+            elif isinstance(scopes_raw, list):
+                scopes = scopes_raw
+            else:
+                scopes = []
 
-        token_manager = GatewayTokenManager(
-            token_url=token_url,
-            client_id=client_id,
-            client_secret=client_secret,
-            scopes=scopes,
-        )
-
-        parser = _resolve_response_parser(response_parser)
+            token_manager = GatewayTokenManager(
+                token_url=token_url,
+                client_id=client_id,
+                client_secret=client_secret,
+                scopes=scopes,
+            )
 
         logger.info(
-            "Creating GatewayChatModel: model=%s, base_url=%s, token_url=%s, parser=%s",
-            model_name, url, token_url, type(parser).__name__,
+            "Creating GatewayChatModel: model=%s, base_url=%s, custom_auth=%s",
+            model_name, url, custom_auth,
         )
 
         return GatewayChatModel(
@@ -198,7 +202,6 @@ def _create_gateway_model(
             temperature=temperature,
             max_tokens=max_tokens,
             token_manager=token_manager,
-            response_parser=parser,
         )
 
     # No auth — fallback to ChatOpenAI
