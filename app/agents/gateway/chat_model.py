@@ -44,6 +44,10 @@ class GatewayChatModel(BaseChatModel):
     gateway_url: str = Field(default="", description="Base URL of the gateway endpoint")
     temperature: Optional[float] = Field(default=None)
     max_tokens: Optional[int] = Field(default=None)
+    static_token: Optional[str] = Field(
+        default=None,
+        description="Pre-fetched Bearer token. Bypasses OAuth2 token_manager when set.",
+    )
 
     # ── Private attributes ──────────────────────────────────────────────
     _token_manager: GatewayTokenManager | None = PrivateAttr(default=None)
@@ -131,6 +135,22 @@ class GatewayChatModel(BaseChatModel):
             headers["Authorization"] = f"Bearer {token}"
         return headers
 
+    def _resolve_token_sync(self) -> str | None:
+        """Resolve token: static_token → token_manager → None."""
+        if self.static_token:
+            return self.static_token
+        if self._token_manager:
+            return self._token_manager.get_token_sync()
+        return None
+
+    async def _resolve_token_async(self) -> str | None:
+        """Resolve token: static_token → token_manager → None."""
+        if self.static_token:
+            return self.static_token
+        if self._token_manager:
+            return await self._token_manager.get_token()
+        return None
+
     @property
     def _chat_endpoint(self) -> str:
         """Full URL to the chat completions endpoint."""
@@ -149,7 +169,7 @@ class GatewayChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         """Synchronous invoke — gets token, POSTs to gateway, parses response."""
-        token = self._token_manager.get_token_sync() if self._token_manager else None
+        token = self._resolve_token_sync()
         body = self._build_request_body(messages, stream=False)
         if stop:
             body["stop"] = stop
@@ -177,7 +197,7 @@ class GatewayChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         """Async invoke — gets token, POSTs to gateway, parses response."""
-        token = await self._token_manager.get_token() if self._token_manager else None
+        token = await self._resolve_token_async()
         body = self._build_request_body(messages, stream=False)
         if stop:
             body["stop"] = stop
@@ -205,7 +225,7 @@ class GatewayChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         """Sync streaming — SSE line parsing, delegates to parse_stream_chunk."""
-        token = self._token_manager.get_token_sync() if self._token_manager else None
+        token = self._resolve_token_sync()
         body = self._build_request_body(messages, stream=True)
         if stop:
             body["stop"] = stop
@@ -238,7 +258,7 @@ class GatewayChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
         """Async streaming — powers astream_events(v2)."""
-        token = await self._token_manager.get_token() if self._token_manager else None
+        token = await self._resolve_token_async()
         body = self._build_request_body(messages, stream=True)
         if stop:
             body["stop"] = stop
