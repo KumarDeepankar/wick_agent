@@ -117,30 +117,40 @@ class GatewayChatModel(BaseChatModel):
         messages: list[BaseMessage],
         stream: bool = False,
     ) -> dict[str, Any]:
-        """Build the JSON payload sent to the gateway.
+        """Build the JSON payload in Anthropic Messages API format.
 
-        Edit this method directly to match your gateway's expected format.
-        Default builds an OpenAI-compatible body:
+        Matches the working format from claude_client.py:
           {
             "model": "anthropic.claude-3-5-sonnet",
-            "messages": [{"role": "user", "content": "Hello"}],
             "max_tokens": 4096,
-            "stream": false
+            "messages": [{"role": "user", "content": "Hello"}],
+            "system": "You are a helpful assistant."    ← top-level, not in messages
           }
         """
         msg_dicts = _langchain_messages_to_dicts(messages)
 
+        # Anthropic: system prompt is a top-level field, not a message
+        system_text = None
+        non_system_msgs = []
+        for m in msg_dicts:
+            if m["role"] == "system":
+                system_text = m["content"]
+            else:
+                non_system_msgs.append(m)
+
         body: dict[str, Any] = {
             "model": self.model_name,
-            "messages": msg_dicts,
-            "stream": stream,
+            "max_tokens": self.max_tokens or 4096,
+            "messages": non_system_msgs,
         }
+        if system_text:
+            body["system"] = system_text
+        if stream:
+            body["stream"] = stream
         if self._bound_tools:
             body["tools"] = self._bound_tools
         if self.temperature is not None:
             body["temperature"] = self.temperature
-        if self.max_tokens is not None:
-            body["max_tokens"] = self.max_tokens
 
         return body
 
@@ -162,15 +172,28 @@ class GatewayChatModel(BaseChatModel):
         if not token and self._token_manager:
             token = self._token_manager.get_token_sync()
 
-        # 2. URL
+        # 2. URL — Anthropic Messages API format
         url = self.gateway_url.rstrip("/")
-        if not url.endswith("/chat/completions"):
-            url = f"{url}/chat/completions"
+        if not url.endswith("/v1/messages"):
+            url = f"{url}/v1/messages"
 
-        # 3. Headers
-        headers: dict[str, str] = {"Content-Type": "application/json"}
+        # 3. Headers — match Anthropic API format
+        headers: dict[str, str] = {
+            "content-type": "application/json",
+            "anthropic-version": "2023-06-01",
+        }
         if token:
-            headers["Authorization"] = f"Bearer {token}"
+            headers["x-api-key"] = token
+
+        logger.info(
+            "GATEWAY REQUEST  url=%s  headers=%s  body_keys=%s  model=%s  msg_count=%d",
+            url,
+            {k: (v[:20] + "...") if k == "Authorization" else v for k, v in headers.items()},
+            list(body.keys()),
+            body.get("model", "?"),
+            len(body.get("messages", [])),
+        )
+        logger.debug("GATEWAY REQUEST BODY: %s", json.dumps(body, default=str)[:2000])
 
         return url, headers, body
 
@@ -183,12 +206,25 @@ class GatewayChatModel(BaseChatModel):
             token = await self._token_manager.get_token()
 
         url = self.gateway_url.rstrip("/")
-        if not url.endswith("/chat/completions"):
-            url = f"{url}/chat/completions"
+        if not url.endswith("/v1/messages"):
+            url = f"{url}/v1/messages"
 
-        headers: dict[str, str] = {"Content-Type": "application/json"}
+        headers: dict[str, str] = {
+            "content-type": "application/json",
+            "anthropic-version": "2023-06-01",
+        }
         if token:
-            headers["Authorization"] = f"Bearer {token}"
+            headers["x-api-key"] = token
+
+        logger.info(
+            "GATEWAY REQUEST (async)  url=%s  headers=%s  body_keys=%s  model=%s  msg_count=%d",
+            url,
+            {k: (v[:20] + "...") if k == "Authorization" else v for k, v in headers.items()},
+            list(body.keys()),
+            body.get("model", "?"),
+            len(body.get("messages", [])),
+        )
+        logger.debug("GATEWAY REQUEST BODY: %s", json.dumps(body, default=str)[:2000])
 
         return url, headers, body
 
@@ -214,39 +250,42 @@ class GatewayChatModel(BaseChatModel):
 
         ── EDIT THIS METHOD to match your gateway's response format. ──
 
-        The framework expects a ChatResult back. This method extracts
-        the text content from the raw JSON and wraps it.
-
-        Common gateway formats this handles:
-            {"choices": [{"message": {"content": "Hello"}}]}     # OpenAI
-            {"content": "Hello"}                                  # Direct
-            {"data": {"output": "Hello"}}                         # Envelope
-            {"result": {"response": "Hello"}}                     # Envelope
+        Handles (matching claude_client.py):
+            1. Gateway wrapped: {"result": [{"content": [{"type":"text","text":"..."}]}]}
+            2. Anthropic native: {"content": [{"type": "text", "text": "..."}]}
+            3. OpenAI compat:    {"choices": [{"message": {"content": "..."}}]}
         """
         content = ""
 
-        # Try OpenAI-compatible format
-        choices = raw.get("choices")
-        if choices and isinstance(choices, list):
-            msg = choices[0].get("message", {})
-            content = msg.get("content", "") or ""
-        else:
-            # Try common field names
-            for field in ("output", "content", "response", "text", "message"):
-                val = raw.get(field)
-                if val and isinstance(val, str):
-                    content = val
+        # 1. Gateway wrapped format: {"status":"success", "result": [{...}]}
+        if "result" in raw and isinstance(raw["result"], list) and len(raw["result"]) > 0:
+            logger.debug("Detected gateway wrapped response format")
+            content_blocks = raw["result"]
+            # Could be direct content blocks or nested response
+            if isinstance(content_blocks[0], dict) and content_blocks[0].get("type") == "text":
+                content = content_blocks[0].get("text", "")
+            elif isinstance(content_blocks[0], dict) and "content" in content_blocks[0]:
+                # {"result": [{"content": [{"type":"text","text":"..."}]}]}
+                inner_blocks = content_blocks[0].get("content", [])
+                for block in inner_blocks:
+                    if block.get("type") == "text":
+                        content = block.get("text", "")
+                        break
+
+        # 2. Standard Anthropic format: {"content": [{"type":"text","text":"..."}]}
+        elif "content" in raw and isinstance(raw["content"], list):
+            for block in raw["content"]:
+                if block.get("type") == "text":
+                    content = block.get("text", "")
                     break
 
-            # Try unwrapping envelopes: {"data": {...}} or {"result": {...}}
-            if not content:
-                inner = raw.get("data") or raw.get("result")
-                if isinstance(inner, dict):
-                    for field in ("output", "content", "response", "text"):
-                        val = inner.get(field)
-                        if val and isinstance(val, str):
-                            content = val
-                            break
+        # 3. OpenAI-compatible fallback
+        elif "choices" in raw and isinstance(raw["choices"], list):
+            msg = raw["choices"][0].get("message", {})
+            content = msg.get("content", "") or ""
+
+        if not content:
+            logger.warning("Could not extract content from response. Keys: %s", list(raw.keys()))
 
         message = AIMessage(content=content)
         generation = ChatGeneration(message=message)
@@ -266,11 +305,18 @@ class GatewayChatModel(BaseChatModel):
             body["stop"] = stop
         url, headers, body = self._gateway_request(body)
 
-        logger.debug("Gateway POST %s", url)
         resp = self._sync_client.post(url, json=body, headers=headers)
-        resp.raise_for_status()
 
-        return self._parse_gateway_response(resp.json())
+        if resp.status_code != 200:
+            logger.error(
+                "GATEWAY ERROR  status=%d  url=%s  response=%s",
+                resp.status_code, url, resp.text[:1000],
+            )
+            resp.raise_for_status()
+
+        raw = resp.json()
+        logger.debug("GATEWAY RESPONSE: %s", json.dumps(raw, default=str)[:1000])
+        return self._parse_gateway_response(raw)
 
     # ── Async generation ────────────────────────────────────────────────
 
@@ -286,11 +332,18 @@ class GatewayChatModel(BaseChatModel):
             body["stop"] = stop
         url, headers, body = await self._gateway_request_async(body)
 
-        logger.debug("Gateway async POST %s", url)
         resp = await self._async_client.post(url, json=body, headers=headers)
-        resp.raise_for_status()
 
-        return self._parse_gateway_response(resp.json())
+        if resp.status_code != 200:
+            logger.error(
+                "GATEWAY ERROR  status=%d  url=%s  response=%s",
+                resp.status_code, url, resp.text[:1000],
+            )
+            resp.raise_for_status()
+
+        raw = resp.json()
+        logger.debug("GATEWAY RESPONSE: %s", json.dumps(raw, default=str)[:1000])
+        return self._parse_gateway_response(raw)
 
     # ── Sync streaming ──────────────────────────────────────────────────
 
@@ -419,7 +472,7 @@ def _role_for_message(msg: BaseMessage) -> str:
     if isinstance(msg, SystemMessage):
         return "system"
     if isinstance(msg, HumanMessage):
-        return "human"
+        return "user"
     if isinstance(msg, AIMessage):
         return "assistant"
     if isinstance(msg, ToolMessage):
