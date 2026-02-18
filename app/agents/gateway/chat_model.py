@@ -19,7 +19,7 @@ from langchain_core.callbacks import (
     CallbackManagerForLLMRun,
 )
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import BaseMessage, AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import Field, PrivateAttr
 
@@ -55,6 +55,7 @@ class GatewayChatModel(BaseChatModel):
         default_factory=DefaultGatewayResponseParser,
     )
     _bound_tools: list[dict[str, Any]] = PrivateAttr(default_factory=list)
+    _tool_choice: Any = PrivateAttr(default=None)
     _sync_client: httpx.Client = PrivateAttr(default=None)  # type: ignore[assignment]
     _async_client: httpx.AsyncClient = PrivateAttr(default=None)  # type: ignore[assignment]
 
@@ -69,6 +70,7 @@ class GatewayChatModel(BaseChatModel):
         self._token_manager = token_manager
         self._response_parser = response_parser or DefaultGatewayResponseParser()
         self._bound_tools = []
+        self._tool_choice = None
         self._sync_client = httpx.Client(timeout=120.0)
         self._async_client = httpx.AsyncClient(timeout=120.0)
 
@@ -85,27 +87,80 @@ class GatewayChatModel(BaseChatModel):
             "gateway_url": self.gateway_url,
         }
 
+    @property
+    def profile(self) -> dict[str, Any] | None:
+        """Model profile for summarization middleware context window limits.
+
+        Returns Anthropic Claude 3.5 Sonnet defaults. Adjust max_input_tokens
+        and max_output_tokens if your gateway model differs.
+        """
+        return {
+            "max_input_tokens": 200000,
+            "max_output_tokens": self.max_tokens or 8192,
+            "supports_tool_use": True,
+            "structured_output": True,
+        }
+
     # ── Tool binding ────────────────────────────────────────────────────
 
     def bind_tools(
         self,
         tools: list[Any],
+        *,
+        tool_choice: Any | None = None,
         **kwargs: Any,
     ) -> GatewayChatModel:
         """Bind tools to the model, returning a new instance (LangChain convention).
 
-        Converts tools via LangChain's convert_to_openai_tool utility.
+        Converts tools to Anthropic format:
+            {"name": "...", "description": "...", "input_schema": {...}}
+
+        Supports tool_choice:
+            - "any"          → force tool use (Anthropic: {"type": "any"})
+            - "auto"         → model decides (Anthropic: {"type": "auto"})
+            - "tool_name"    → force specific tool (Anthropic: {"type": "tool", "name": "..."})
+            - dict           → passed through as-is
         """
         from langchain_core.utils.function_calling import convert_to_openai_tool
 
-        openai_tools = [convert_to_openai_tool(t) for t in tools]
+        anthropic_tools = []
+        for t in tools:
+            oai = convert_to_openai_tool(t)
+            func = oai.get("function", oai)
+            anthropic_tools.append({
+                "name": func.get("name", ""),
+                "description": func.get("description", ""),
+                "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
+            })
 
-        # Create a copy with tools bound
-        new = self.model_copy()
+        # Normalize tool_choice to Anthropic format
+        anthropic_tool_choice = None
+        if tool_choice is not None:
+            if isinstance(tool_choice, dict):
+                anthropic_tool_choice = tool_choice
+            elif tool_choice in ("any", "required"):
+                anthropic_tool_choice = {"type": "any"}
+            elif tool_choice == "auto":
+                anthropic_tool_choice = {"type": "auto"}
+            elif tool_choice == "none":
+                anthropic_tool_choice = None
+            elif isinstance(tool_choice, str):
+                # Specific tool name
+                anthropic_tool_choice = {"type": "tool", "name": tool_choice}
+
+        # Apply model_settings kwargs (temperature, max_tokens overrides)
+        updates: dict[str, Any] = {}
+        if "temperature" in kwargs:
+            updates["temperature"] = kwargs.pop("temperature")
+        if "max_tokens" in kwargs:
+            updates["max_tokens"] = kwargs.pop("max_tokens")
+
+        new = self.model_copy(update=updates) if updates else self.model_copy()
         # PrivateAttr fields are not copied by model_copy — set them manually
         new._token_manager = self._token_manager
         new._response_parser = self._response_parser
-        new._bound_tools = openai_tools
+        new._bound_tools = anthropic_tools
+        new._tool_choice = anthropic_tool_choice
         new._sync_client = self._sync_client
         new._async_client = self._async_client
         return new
@@ -149,6 +204,8 @@ class GatewayChatModel(BaseChatModel):
             body["stream"] = stream
         if self._bound_tools:
             body["tools"] = self._bound_tools
+        if self._tool_choice:
+            body["tool_choice"] = self._tool_choice
         if self.temperature is not None:
             body["temperature"] = self.temperature
 
@@ -246,46 +303,77 @@ class GatewayChatModel(BaseChatModel):
 
         ── EDIT THIS METHOD to match your gateway's response format. ──
 
-        Handles (matching claude_client.py):
-            1. Gateway wrapped: {"result": [{"content": [{"type":"text","text":"..."}]}]}
-            2. Anthropic native: {"content": [{"type": "text", "text": "..."}]}
-            3. OpenAI compat:    {"choices": [{"message": {"content": "..."}}]}
+        Handles text AND tool_use blocks from Anthropic format:
+            {"content": [
+                {"type": "text", "text": "I'll analyze..."},
+                {"type": "tool_use", "id": "toolu_123", "name": "read_file", "input": {"path": "x.csv"}}
+            ]}
+
+        Tool calls are parsed into LangChain's tool_calls format so
+        LangGraph continues the agent loop (tool execution → next turn).
         """
-        content = ""
+        content_blocks = self._extract_content_blocks(raw)
 
-        # 1. Gateway wrapped format: {"status":"success", "result": [{...}]}
-        if "result" in raw and isinstance(raw["result"], list) and len(raw["result"]) > 0:
-            logger.debug("Detected gateway wrapped response format")
-            content_blocks = raw["result"]
-            # Could be direct content blocks or nested response
-            if isinstance(content_blocks[0], dict) and content_blocks[0].get("type") == "text":
-                content = content_blocks[0].get("text", "")
-            elif isinstance(content_blocks[0], dict) and "content" in content_blocks[0]:
-                # {"result": [{"content": [{"type":"text","text":"..."}]}]}
-                inner_blocks = content_blocks[0].get("content", [])
-                for block in inner_blocks:
-                    if block.get("type") == "text":
-                        content = block.get("text", "")
-                        break
+        # Parse text and tool_use blocks
+        text_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
 
-        # 2. Standard Anthropic format: {"content": [{"type":"text","text":"..."}]}
-        elif "content" in raw and isinstance(raw["content"], list):
-            for block in raw["content"]:
-                if block.get("type") == "text":
-                    content = block.get("text", "")
-                    break
+        for block in content_blocks:
+            if block.get("type") == "text":
+                text_parts.append(block.get("text", ""))
+            elif block.get("type") == "tool_use":
+                tool_calls.append({
+                    "name": block.get("name", ""),
+                    "args": block.get("input", {}),
+                    "id": block.get("id", ""),
+                })
 
-        # 3. OpenAI-compatible fallback
-        elif "choices" in raw and isinstance(raw["choices"], list):
-            msg = raw["choices"][0].get("message", {})
-            content = msg.get("content", "") or ""
+        content = "\n".join(text_parts)
 
-        if not content:
+        if not content and not tool_calls:
             logger.warning("Could not extract content from response. Keys: %s", list(raw.keys()))
 
-        message = AIMessage(content=content)
+        if tool_calls:
+            logger.info("Parsed %d tool call(s): %s", len(tool_calls), [tc["name"] for tc in tool_calls])
+
+        message = AIMessage(content=content, tool_calls=tool_calls)
         generation = ChatGeneration(message=message)
         return ChatResult(generations=[generation])
+
+    def _extract_content_blocks(self, raw: dict[str, Any]) -> list[dict[str, Any]]:
+        """Extract the content blocks array from various response formats."""
+        # 1. Gateway wrapped: {"result": [{"content": [...]}]}
+        if "result" in raw and isinstance(raw["result"], list) and len(raw["result"]) > 0:
+            logger.debug("Detected gateway wrapped response format")
+            first = raw["result"][0]
+            if isinstance(first, dict) and "content" in first:
+                return first.get("content", [])
+            # Direct content blocks in result
+            if isinstance(first, dict) and first.get("type") in ("text", "tool_use"):
+                return raw["result"]
+
+        # 2. Standard Anthropic: {"content": [...]}
+        if "content" in raw and isinstance(raw["content"], list):
+            return raw["content"]
+
+        # 3. OpenAI-compatible fallback
+        if "choices" in raw and isinstance(raw["choices"], list):
+            msg = raw["choices"][0].get("message", {})
+            # Convert to block format for uniform handling
+            blocks: list[dict[str, Any]] = []
+            if msg.get("content"):
+                blocks.append({"type": "text", "text": msg["content"]})
+            for tc in (msg.get("tool_calls") or []):
+                func = tc.get("function", {})
+                blocks.append({
+                    "type": "tool_use",
+                    "id": tc.get("id", ""),
+                    "name": func.get("name", ""),
+                    "input": json.loads(func.get("arguments", "{}")),
+                })
+            return blocks
+
+        return []
 
     # ── Sync generation ─────────────────────────────────────────────────
 
@@ -353,11 +441,23 @@ class GatewayChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
-        # Use regular POST (no streaming) — matches working claude_client.py
         result = self._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
         msg = result.generations[0].message
+        # Forward tool_calls so LangGraph agent loop continues
+        tool_call_chunks = [
+            {
+                "name": tc["name"],
+                "args": json.dumps(tc["args"]) if isinstance(tc["args"], dict) else str(tc["args"]),
+                "id": tc.get("id", ""),
+                "index": i,
+            }
+            for i, tc in enumerate(getattr(msg, "tool_calls", []) or [])
+        ]
         chunk = ChatGenerationChunk(
-            message=AIMessageChunk(content=msg.content),
+            message=AIMessageChunk(
+                content=msg.content,
+                tool_call_chunks=tool_call_chunks,
+            ),
         )
         if run_manager:
             run_manager.on_llm_new_token(chunk.text, chunk=chunk)
@@ -372,11 +472,23 @@ class GatewayChatModel(BaseChatModel):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
-        # Use regular POST (no streaming) — matches working claude_client.py
         result = await self._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
         msg = result.generations[0].message
+        # Forward tool_calls so LangGraph agent loop continues
+        tool_call_chunks = [
+            {
+                "name": tc["name"],
+                "args": json.dumps(tc["args"]) if isinstance(tc["args"], dict) else str(tc["args"]),
+                "id": tc.get("id", ""),
+                "index": i,
+            }
+            for i, tc in enumerate(getattr(msg, "tool_calls", []) or [])
+        ]
         chunk = ChatGenerationChunk(
-            message=AIMessageChunk(content=msg.content),
+            message=AIMessageChunk(
+                content=msg.content,
+                tool_call_chunks=tool_call_chunks,
+            ),
         )
         if run_manager:
             await run_manager.on_llm_new_token(chunk.text, chunk=chunk)
@@ -418,50 +530,55 @@ class GatewayChatModel(BaseChatModel):
 def _langchain_messages_to_dicts(
     messages: list[BaseMessage],
 ) -> list[dict[str, Any]]:
-    """Convert LangChain BaseMessage objects to simple dicts.
+    """Convert LangChain BaseMessage objects to Anthropic Messages API format.
 
-    Handles: SystemMessage, HumanMessage, AIMessage (with tool_calls),
-    ToolMessage.
+    Anthropic format differences from OpenAI:
+        - AIMessage with tool_calls → content is a list of blocks:
+            [{"type":"text","text":"..."}, {"type":"tool_use","id":"...","name":"...","input":{}}]
+        - ToolMessage → role "user" with content block:
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"...","content":"..."}]}
     """
     result: list[dict[str, Any]] = []
     for msg in messages:
-        d: dict[str, Any] = {"role": _role_for_message(msg)}
+        if isinstance(msg, SystemMessage):
+            # System messages handled separately in _build_request_body
+            result.append({"role": "system", "content": msg.content})
 
-        if isinstance(msg, ToolMessage):
-            d["content"] = msg.content
-            d["tool_call_id"] = msg.tool_call_id
+        elif isinstance(msg, ToolMessage):
+            # Anthropic: tool results are sent as role "user" with tool_result block
+            result.append({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": msg.tool_call_id,
+                        "content": msg.content if isinstance(msg.content, str) else json.dumps(msg.content),
+                    }
+                ],
+            })
+
         elif isinstance(msg, AIMessage) and msg.tool_calls:
-            d["content"] = msg.content or ""
-            d["tool_calls"] = [
-                {
+            # Anthropic: assistant message with tool_use blocks
+            content_blocks: list[dict[str, Any]] = []
+            if msg.content:
+                content_blocks.append({"type": "text", "text": msg.content})
+            for tc in msg.tool_calls:
+                content_blocks.append({
+                    "type": "tool_use",
                     "id": tc.get("id", ""),
-                    "type": "function",
-                    "function": {
-                        "name": tc["name"],
-                        "arguments": (
-                            json.dumps(tc["args"])
-                            if isinstance(tc["args"], dict)
-                            else str(tc["args"])
-                        ),
-                    },
-                }
-                for tc in msg.tool_calls
-            ]
+                    "name": tc["name"],
+                    "input": tc["args"] if isinstance(tc["args"], dict) else {},
+                })
+            result.append({"role": "assistant", "content": content_blocks})
+
+        elif isinstance(msg, AIMessage):
+            result.append({"role": "assistant", "content": msg.content})
+
+        elif isinstance(msg, HumanMessage):
+            result.append({"role": "user", "content": msg.content})
+
         else:
-            d["content"] = msg.content
+            result.append({"role": msg.type, "content": msg.content})
 
-        result.append(d)
     return result
-
-
-def _role_for_message(msg: BaseMessage) -> str:
-    """Map LangChain message type to role string."""
-    if isinstance(msg, SystemMessage):
-        return "system"
-    if isinstance(msg, HumanMessage):
-        return "user"
-    if isinstance(msg, AIMessage):
-        return "assistant"
-    if isinstance(msg, ToolMessage):
-        return "tool"
     return msg.type
