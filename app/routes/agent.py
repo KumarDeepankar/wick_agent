@@ -9,8 +9,10 @@ Exposes every customization knob from the deep-agents library:
 from __future__ import annotations
 
 import json
+import mimetypes
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 from sse_starlette.sse import EventSourceResponse
 
 from app.agents.config_loader import remove_agent_from_yaml, save_agent_to_yaml
@@ -281,6 +283,59 @@ async def get_available_skills():
                 "disk_path": str(skill_md.resolve()),
             })
     return {"skills": skills}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# File Download
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/files/download")
+async def download_workspace_file(path: str, agent_id: str | None = None):
+    """Download a file from the agent's workspace (Docker container).
+
+    Used by the Canvas panel to fetch full file content or binary files
+    that were written by the agent during a session.
+    """
+    resolved_agent_id = agent_id or "default"
+    try:
+        meta = get_agent(resolved_agent_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Agent '{resolved_agent_id}' not found")
+
+    backend = meta.get("_backend")
+    if backend is None or not hasattr(backend, "download_files"):
+        raise HTTPException(
+            status_code=400,
+            detail="Agent does not have a backend that supports file downloads",
+        )
+
+    try:
+        results = backend.download_files([path])
+        if not results:
+            raise HTTPException(status_code=404, detail=f"File not found: {path}")
+
+        # download_files returns a list of FileDownloadResponse objects
+        result = results[0]
+        if result.error or result.content is None:
+            raise HTTPException(status_code=404, detail=f"File not found: {path}")
+
+        content = result.content
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+
+        mime_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        filename = path.rsplit("/", 1)[-1] if "/" in path else path
+
+        return Response(
+            content=content,
+            media_type=mime_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Download failed: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback } from 'react';
-import type { ChatMessage, TraceEvent, StreamStatus } from '../types';
+import type { ChatMessage, TraceEvent, StreamStatus, CanvasArtifact } from '../types';
+import { extractExtension, extractFileName, resolveContentType, resolveLanguage, isBinaryExtension } from '../utils/canvasUtils';
 
 interface SSEEvent {
   event: string;
@@ -64,6 +65,7 @@ let eventCounter = 0;
 export function useAgentStream() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
+  const [canvasArtifacts, setCanvasArtifacts] = useState<CanvasArtifact[]>([]);
   const [status, setStatus] = useState<StreamStatus>('idle');
   const [threadId, setThreadId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -152,6 +154,54 @@ export function useAgentStream() {
           };
           setTraceEvents((prev) => [...prev, traceEvt]);
 
+          // Detect write_file tool calls → canvas artifacts
+          if (sse.event === 'on_tool_start') {
+            const toolName = parsed.name as string;
+            if (toolName === 'write_file') {
+              const input = (parsed.data as Record<string, unknown>)?.input as Record<string, unknown> | undefined;
+              if (input?.path && input?.content) {
+                const filePath = input.path as string;
+                const content = input.content as string;
+                const ext = extractExtension(filePath);
+                const artifact: CanvasArtifact = {
+                  id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                  filePath,
+                  fileName: extractFileName(filePath),
+                  contentType: resolveContentType(ext),
+                  content: isBinaryExtension(ext) ? null : content,
+                  extension: ext,
+                  timestamp: Date.now(),
+                  isBinary: isBinaryExtension(ext),
+                  language: resolveLanguage(ext),
+                };
+                setCanvasArtifacts((prev) => [...prev, artifact]);
+              }
+            }
+          }
+
+          // Detect execute tool output that looks like a document
+          if (sse.event === 'on_tool_end') {
+            const toolName = parsed.name as string;
+            if (toolName === 'execute') {
+              const output = (parsed.data as Record<string, unknown>)?.output;
+              const outputStr = typeof output === 'string' ? output : '';
+              // Heuristic: if output has markdown headings or is longer than 200 chars, show as document
+              if (outputStr.length > 200 && (outputStr.includes('# ') || outputStr.includes('| '))) {
+                const artifact: CanvasArtifact = {
+                  id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                  filePath: '/output/result.md',
+                  fileName: 'result.md',
+                  contentType: 'document',
+                  content: outputStr,
+                  extension: '.md',
+                  timestamp: Date.now(),
+                  isBinary: false,
+                };
+                setCanvasArtifacts((prev) => [...prev, artifact]);
+              }
+            }
+          }
+
           // Handle specific event types for chat assembly
           switch (sse.event) {
             case 'on_chat_model_stream': {
@@ -206,6 +256,7 @@ export function useAgentStream() {
     stop();
     setMessages([]);
     setTraceEvents([]);
+    setCanvasArtifacts([]);
     setThreadId(null);
     setError(null);
     setStatus('idle');
@@ -214,6 +265,7 @@ export function useAgentStream() {
   return {
     messages,
     traceEvents,
+    canvasArtifacts,
     status,
     threadId,
     error,

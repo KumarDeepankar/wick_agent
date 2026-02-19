@@ -10,6 +10,8 @@ interface Props {
   onSend: (content: string) => void;
   onStop: () => void;
   onReset: () => void;
+  pendingPrompt?: string;
+  onPromptConsumed?: () => void;
 }
 
 export function ChatPanel({
@@ -20,6 +22,8 @@ export function ChatPanel({
   onSend,
   onStop,
   onReset,
+  pendingPrompt,
+  onPromptConsumed,
 }: Props) {
   const [input, setInput] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
@@ -32,6 +36,15 @@ export function ChatPanel({
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
+
+  // Fill input from WelcomeView prompt click
+  useEffect(() => {
+    if (pendingPrompt) {
+      setInput(pendingPrompt);
+      inputRef.current?.focus();
+      onPromptConsumed?.();
+    }
+  }, [pendingPrompt, onPromptConsumed]);
 
   const handleSubmit = () => {
     if (!input.trim() || isActive) return;

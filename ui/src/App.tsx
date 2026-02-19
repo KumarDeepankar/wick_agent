@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { AgentSelector } from './components/AgentSelector';
 import { ChatPanel } from './components/ChatPanel';
-import { TracePanel } from './components/TracePanel';
+import { TraceToggleButton } from './components/TraceToggleButton';
+import { TraceOverlay } from './components/TraceOverlay';
+import { CanvasPanel } from './components/canvas/CanvasPanel';
 import { useAgentStream } from './hooks/useAgentStream';
 import { fetchHealth } from './api';
 
@@ -17,8 +19,10 @@ export default function App() {
   const [agentId, setAgentId] = useState('');
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
+  const [traceOpen, setTraceOpen] = useState(false);
+  const [pendingPrompt, setPendingPrompt] = useState<string | undefined>();
 
-  const { messages, traceEvents, status, threadId, error, send, stop, reset } =
+  const { messages, traceEvents, canvasArtifacts, status, threadId, error, send, stop, reset } =
     useAgentStream();
 
   const isActive = status === 'connecting' || status === 'streaming';
@@ -42,6 +46,14 @@ export default function App() {
     send(content, agentId || undefined);
   };
 
+  const handlePromptClick = useCallback((prompt: string) => {
+    setPendingPrompt(prompt);
+  }, []);
+
+  const handlePromptConsumed = useCallback(() => {
+    setPendingPrompt(undefined);
+  }, []);
+
   return (
     <div className="app">
       <header className="app-header">
@@ -62,6 +74,12 @@ export default function App() {
           >
             {theme === 'light' ? '\u263E' : '\u2600'}
           </button>
+          <TraceToggleButton
+            eventCount={traceEvents.length}
+            isStreaming={isActive}
+            isOpen={traceOpen}
+            onClick={() => setTraceOpen((o) => !o)}
+          />
           <span
             className={`health-dot ${healthy === true ? 'ok' : healthy === false ? 'err' : 'loading'}`}
             title={
@@ -84,9 +102,22 @@ export default function App() {
           onSend={handleSend}
           onStop={stop}
           onReset={reset}
+          pendingPrompt={pendingPrompt}
+          onPromptConsumed={handlePromptConsumed}
         />
-        <TracePanel events={traceEvents} status={status} />
+        <CanvasPanel
+          artifacts={canvasArtifacts}
+          onPromptClick={handlePromptClick}
+          status={status}
+        />
       </main>
+
+      <TraceOverlay
+        events={traceEvents}
+        status={status}
+        isOpen={traceOpen}
+        onClose={() => setTraceOpen(false)}
+      />
     </div>
   );
 }

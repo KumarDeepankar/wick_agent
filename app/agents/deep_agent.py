@@ -405,6 +405,7 @@ def create_deep_agent_from_config(
         "response_format_schema": response_format,
         "cache_enabled": cache is not None,
         "debug": debug,
+        "_backend": backend_arg,
     }
     _AGENT_REGISTRY[agent_id] = meta
     return meta

@@ -32,6 +32,26 @@ export interface TraceEvent {
 
 export type StreamStatus = 'idle' | 'connecting' | 'streaming' | 'done' | 'error';
 
+export type CanvasContentType = 'code' | 'data' | 'document' | 'slides' | 'binary' | 'welcome';
+
+export interface CanvasArtifact {
+  id: string;
+  filePath: string;
+  fileName: string;
+  contentType: CanvasContentType;
+  content: string | null;
+  extension: string;
+  timestamp: number;
+  isBinary: boolean;
+  language?: string;
+}
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  samplePrompts: string[];
+}
+
 export interface HealthResponse {
   status: string;
   agents_loaded: number;
