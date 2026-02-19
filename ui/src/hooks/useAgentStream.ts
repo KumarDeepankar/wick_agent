@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react';
 import type { ChatMessage, TraceEvent, StreamStatus, CanvasArtifact } from '../types';
 import { extractExtension, extractFileName, resolveContentType, resolveLanguage, isBinaryExtension } from '../utils/canvasUtils';
+import { fetchFileDownload } from '../api';
 
 interface SSEEvent {
   event: string;
@@ -72,6 +73,8 @@ export function useAgentStream() {
 
   const abortRef = useRef<AbortController | null>(null);
   const assistantIdRef = useRef<string | null>(null);
+  // Track edit_file run_id → file_path so we can fetch on on_tool_end
+  const pendingEditsRef = useRef<Map<string, string>>(new Map());
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -154,39 +157,118 @@ export function useAgentStream() {
           };
           setTraceEvents((prev) => [...prev, traceEvt]);
 
-          // Detect write_file tool calls → canvas artifacts
+          // Detect write_file / edit_file tool calls → canvas artifacts
           if (sse.event === 'on_tool_start') {
             const toolName = parsed.name as string;
-            if (toolName === 'write_file') {
-              const input = (parsed.data as Record<string, unknown>)?.input as Record<string, unknown> | undefined;
-              const rawPath = (input?.file_path ?? input?.path) as string | undefined;
-              if (rawPath && input?.content) {
-                const filePath = rawPath;
-                const content = input.content as string;
-                const ext = extractExtension(filePath);
-                const artifact: CanvasArtifact = {
-                  id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                  filePath,
-                  fileName: extractFileName(filePath),
-                  contentType: resolveContentType(ext),
-                  content: isBinaryExtension(ext) ? null : content,
-                  extension: ext,
-                  timestamp: Date.now(),
-                  isBinary: isBinaryExtension(ext),
-                  language: resolveLanguage(ext),
-                };
-                setCanvasArtifacts((prev) => [...prev, artifact]);
+            const input = (parsed.data as Record<string, unknown>)?.input as Record<string, unknown> | undefined;
+            const rawPath = (input?.file_path ?? input?.path) as string | undefined;
+
+            if (toolName === 'write_file' && rawPath && input?.content) {
+              const filePath = rawPath;
+              const content = input.content as string;
+              const ext = extractExtension(filePath);
+              const artifact: CanvasArtifact = {
+                id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                filePath,
+                fileName: extractFileName(filePath),
+                contentType: resolveContentType(ext),
+                content: isBinaryExtension(ext) ? null : content,
+                extension: ext,
+                timestamp: Date.now(),
+                isBinary: isBinaryExtension(ext),
+                language: resolveLanguage(ext),
+              };
+              setCanvasArtifacts((prev) => {
+                const idx = prev.findIndex((a) => a.filePath === filePath);
+                if (idx >= 0) {
+                  const updated = [...prev];
+                  updated[idx] = artifact;
+                  return updated;
+                }
+                return [...prev, artifact];
+              });
+            }
+
+            // Track edit_file / read_file run_id → file_path for on_tool_end
+            if ((toolName === 'edit_file' || toolName === 'read_file') && rawPath) {
+              const runId = parsed.run_id as string;
+              if (runId) {
+                pendingEditsRef.current.set(runId, rawPath);
               }
             }
           }
 
-          // Detect execute tool output that looks like a document
+          // Detect edit_file completion → fetch updated file from backend
           if (sse.event === 'on_tool_end') {
             const toolName = parsed.name as string;
+            const runId = parsed.run_id as string;
+
+            if ((toolName === 'edit_file' || toolName === 'read_file') && runId && pendingEditsRef.current.has(runId)) {
+              const filePath = pendingEditsRef.current.get(runId)!;
+              pendingEditsRef.current.delete(runId);
+              const ext = extractExtension(filePath);
+
+              if (toolName === 'read_file') {
+                // read_file output has the content directly
+                const output = (parsed.data as Record<string, unknown>)?.output;
+                const content = typeof output === 'string' ? output : '';
+                if (content) {
+                  const artifact: CanvasArtifact = {
+                    id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                    filePath,
+                    fileName: extractFileName(filePath),
+                    contentType: resolveContentType(ext),
+                    content,
+                    extension: ext,
+                    timestamp: Date.now(),
+                    isBinary: false,
+                    language: resolveLanguage(ext),
+                  };
+                  setCanvasArtifacts((prev) => {
+                    const idx = prev.findIndex((a) => a.filePath === filePath);
+                    if (idx >= 0) {
+                      const updated = [...prev];
+                      updated[idx] = artifact;
+                      return updated;
+                    }
+                    return [...prev, artifact];
+                  });
+                }
+              } else {
+                // edit_file — fetch the full updated file from backend
+                fetchFileDownload(filePath).then((blob) =>
+                  blob.text().then((content) => {
+                    const artifact: CanvasArtifact = {
+                      id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                      filePath,
+                      fileName: extractFileName(filePath),
+                      contentType: resolveContentType(ext),
+                      content,
+                      extension: ext,
+                      timestamp: Date.now(),
+                      isBinary: false,
+                      language: resolveLanguage(ext),
+                    };
+                    setCanvasArtifacts((prev) => {
+                      const idx = prev.findIndex((a) => a.filePath === filePath);
+                      if (idx >= 0) {
+                        const updated = [...prev];
+                        updated[idx] = artifact;
+                        return updated;
+                      }
+                      return [...prev, artifact];
+                    });
+                  }),
+                ).catch(() => {
+                  // Fetch failed — file may not be accessible
+                });
+              }
+            }
+
+            // Detect execute tool output that looks like a document
             if (toolName === 'execute') {
               const output = (parsed.data as Record<string, unknown>)?.output;
               const outputStr = typeof output === 'string' ? output : '';
-              // Heuristic: if output has markdown headings or is longer than 200 chars, show as document
               if (outputStr.length > 200 && (outputStr.includes('# ') || outputStr.includes('| '))) {
                 const artifact: CanvasArtifact = {
                   id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -261,6 +343,7 @@ export function useAgentStream() {
     setThreadId(null);
     setError(null);
     setStatus('idle');
+    pendingEditsRef.current.clear();
   }, [stop]);
 
   return {
