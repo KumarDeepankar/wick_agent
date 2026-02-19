@@ -126,6 +126,16 @@ def _build_backend(
 
         return _composite_factory, store
 
+    if btype == "docker":
+        from app.agents.docker_backend import DockerSandboxBackend
+
+        return DockerSandboxBackend(
+            container_name=backend_cfg.get("container_name", "wick-skills-sandbox"),
+            workdir=backend_cfg.get("workdir", "/workspace"),
+            timeout=backend_cfg.get("timeout", 120.0),
+            max_output_bytes=backend_cfg.get("max_output_bytes", 100_000),
+        ), None
+
     return None, None
 
 

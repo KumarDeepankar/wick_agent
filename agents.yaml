@@ -3,9 +3,9 @@
 
 defaults:
   backend:
-    type: filesystem
-    root_dir: "."
-    virtual_mode: true
+    type: docker
+    container_name: "wick-skills-sandbox"
+    workdir: "/workspace"
   debug: true
 
 agents:

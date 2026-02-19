@@ -16,6 +16,7 @@ WORKDIR /app
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps
