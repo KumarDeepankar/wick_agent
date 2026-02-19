@@ -159,8 +159,9 @@ export function useAgentStream() {
             const toolName = parsed.name as string;
             if (toolName === 'write_file') {
               const input = (parsed.data as Record<string, unknown>)?.input as Record<string, unknown> | undefined;
-              if (input?.path && input?.content) {
-                const filePath = input.path as string;
+              const rawPath = (input?.file_path ?? input?.path) as string | undefined;
+              if (rawPath && input?.content) {
+                const filePath = rawPath;
                 const content = input.content as string;
                 const ext = extractExtension(filePath);
                 const artifact: CanvasArtifact = {
