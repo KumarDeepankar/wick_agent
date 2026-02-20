@@ -578,5 +578,6 @@ export function renderChartSVG(text: string, chartIndex: number, activeFilter?: 
       innerSvg = renderBar(cfg, activeFilter);
   }
 
-  return `<div class="chart-container" data-chart-id="chart-${chartIndex}"><svg viewBox="${viewBox}" width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg" style="max-width:100%;height:auto;font-family:Inter,-apple-system,BlinkMacSystemFont,sans-serif">${innerSvg}</svg></div>`;
+  const encodedSrc = btoa(unescape(encodeURIComponent(text)));
+  return `<div class="chart-container" data-chart-id="chart-${chartIndex}" data-chart-source="${encodedSrc}" contenteditable="false"><svg viewBox="${viewBox}" width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg" style="max-width:100%;height:auto;font-family:Inter,-apple-system,BlinkMacSystemFont,sans-serif">${innerSvg}</svg></div>`;
 }

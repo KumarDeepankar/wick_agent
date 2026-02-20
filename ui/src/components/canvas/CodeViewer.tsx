@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import hljs from 'highlight.js/lib/core';
 import python from 'highlight.js/lib/languages/python';
 import javascript from 'highlight.js/lib/languages/javascript';
@@ -10,6 +10,7 @@ import yaml from 'highlight.js/lib/languages/yaml';
 import sql from 'highlight.js/lib/languages/sql';
 import css from 'highlight.js/lib/languages/css';
 import xml from 'highlight.js/lib/languages/xml';
+import { saveFileContent } from '../../api';
 
 hljs.registerLanguage('python', python);
 hljs.registerLanguage('javascript', javascript);
@@ -27,14 +28,20 @@ interface Props {
   content: string;
   language?: string;
   fileName: string;
+  filePath: string;
+  onContentUpdate?: (filePath: string, content: string) => void;
 }
 
-export function CodeViewer({ content, language, fileName }: Props) {
+export function CodeViewer({ content, language, fileName, filePath, onContentUpdate }: Props) {
   const codeRef = useRef<HTMLElement>(null);
   const [copied, setCopied] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [editContent, setEditContent] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (codeRef.current) {
+    if (codeRef.current && !editMode) {
       codeRef.current.textContent = content;
       if (language && hljs.getLanguage(language)) {
         hljs.highlightElement(codeRef.current);
@@ -42,7 +49,7 @@ export function CodeViewer({ content, language, fileName }: Props) {
         hljs.highlightElement(codeRef.current);
       }
     }
-  }, [content, language]);
+  }, [content, language, editMode]);
 
   const handleCopy = async () => {
     try {
@@ -50,7 +57,6 @@ export function CodeViewer({ content, language, fileName }: Props) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Fallback for insecure contexts
       const ta = document.createElement('textarea');
       ta.value = content;
       ta.style.position = 'fixed';
@@ -64,6 +70,41 @@ export function CodeViewer({ content, language, fileName }: Props) {
     }
   };
 
+  const enterEditMode = useCallback(() => {
+    setEditContent(content);
+    setSaveError(null);
+    setEditMode(true);
+  }, [content]);
+
+  const cancelEdit = useCallback(() => {
+    setEditMode(false);
+    setSaveError(null);
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await saveFileContent(filePath, editContent);
+      onContentUpdate?.(filePath, editContent);
+      setEditMode(false);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  }, [filePath, editContent, onContentUpdate]);
+
+  const handleEditKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault();
+        handleSave();
+      }
+    },
+    [handleSave],
+  );
+
   const lineCount = content.split('\n').length;
 
   return (
@@ -71,22 +112,63 @@ export function CodeViewer({ content, language, fileName }: Props) {
       <div className="code-viewer-header">
         <span className="code-viewer-filename">{fileName}</span>
         <span className="code-viewer-meta">{language ?? 'text'} &middot; {lineCount} lines</span>
-        <button className={`copy-btn ${copied ? 'copied' : ''}`} onClick={handleCopy}>
-          {copied ? 'Copied' : 'Copy'}
+        <button
+          className="canvas-edit-btn"
+          onClick={editMode ? cancelEdit : enterEditMode}
+          title={editMode ? 'Preview' : 'Edit'}
+        >
+          {editMode ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+            </svg>
+          )}
+          {editMode ? 'Preview' : 'Edit'}
         </button>
+        {!editMode && (
+          <button className={`copy-btn ${copied ? 'copied' : ''}`} onClick={handleCopy}>
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        )}
       </div>
-      <div className="code-viewer-body">
-        <div className="code-line-numbers">
-          {Array.from({ length: lineCount }, (_, i) => (
-            <span key={i}>{i + 1}</span>
-          ))}
+      {editMode ? (
+        <div className="canvas-edit-area">
+          <textarea
+            className="canvas-edit-textarea code-edit-textarea"
+            value={editContent}
+            onChange={(e) => setEditContent(e.target.value)}
+            onKeyDown={handleEditKeyDown}
+            spellCheck={false}
+          />
+          <div className="canvas-edit-actions">
+            {saveError && <span className="canvas-save-error">{saveError}</span>}
+            <button className="canvas-cancel-btn" onClick={cancelEdit} disabled={saving}>
+              Cancel
+            </button>
+            <button className="canvas-save-btn" onClick={handleSave} disabled={saving}>
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
         </div>
-        <pre className="code-viewer-pre">
-          <code ref={codeRef} className={language ? `language-${language}` : ''}>
-            {content}
-          </code>
-        </pre>
-      </div>
+      ) : (
+        <div className="code-viewer-body">
+          <div className="code-line-numbers">
+            {Array.from({ length: lineCount }, (_, i) => (
+              <span key={i}>{i + 1}</span>
+            ))}
+          </div>
+          <pre className="code-viewer-pre">
+            <code ref={codeRef} className={language ? `language-${language}` : ''}>
+              {content}
+            </code>
+          </pre>
+        </div>
+      )}
     </div>
   );
 }

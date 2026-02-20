@@ -55,17 +55,17 @@ export function CanvasPanel({ artifacts, onPromptClick, onContentUpdate, onRemov
 
     switch (active.contentType) {
       case 'code':
-        return <CodeViewer content={active.content ?? ''} language={active.language} fileName={active.fileName} />;
+        return <CodeViewer content={active.content ?? ''} language={active.language} fileName={active.fileName} filePath={active.filePath} onContentUpdate={onContentUpdate} />;
       case 'data':
-        return <DataViewer content={active.content ?? ''} fileName={active.fileName} />;
+        return <DataViewer content={active.content ?? ''} fileName={active.fileName} filePath={active.filePath} onContentUpdate={onContentUpdate} />;
       case 'document':
-        return <DocumentViewer content={active.content ?? ''} fileName={active.fileName} />;
+        return <DocumentViewer content={active.content ?? ''} fileName={active.fileName} filePath={active.filePath} onContentUpdate={onContentUpdate} />;
       case 'slides':
         return <SlidesViewer content={active.content ?? ''} fileName={active.fileName} filePath={active.filePath} onContentUpdate={onContentUpdate} />;
       case 'binary':
         return <BinaryDownload artifact={active} />;
       default:
-        return <DocumentViewer content={active.content ?? ''} fileName={active.fileName} />;
+        return <DocumentViewer content={active.content ?? ''} fileName={active.fileName} filePath={active.filePath} onContentUpdate={onContentUpdate} />;
     }
   };
 

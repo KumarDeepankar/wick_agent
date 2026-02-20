@@ -2,6 +2,8 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { Marked } from 'marked';
 import { renderChartSVG } from '../../utils/chartRenderer';
 import { exportSlidesAsPptx, saveFileContent } from '../../api';
+import { htmlToMarkdown } from '../../utils/htmlToMarkdown';
+import { EditToolbar } from './EditToolbar';
 
 interface Props {
   content: string;
@@ -12,13 +14,10 @@ interface Props {
 
 /**
  * Apply cross-chart filter directly on the DOM.
- * Sets opacity on all [data-label] elements: matching = full, non-matching = dimmed.
- * Passing null clears the filter (all full opacity).
  */
 function applyFilterToDOM(container: HTMLElement, label: string | null) {
   const elements = container.querySelectorAll<SVGElement | HTMLElement>('[data-label]');
   if (!label) {
-    // Clear: restore all to full opacity
     elements.forEach((el) => {
       el.style.opacity = '';
       el.style.stroke = '';
@@ -55,13 +54,13 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
 
   // Edit mode state
   const [editMode, setEditMode] = useState(false);
-  const [editContent, setEditContent] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const slideRef = useRef<HTMLDivElement>(null);
+  const editRef = useRef<HTMLDivElement>(null);
 
-  // Build slide HTML — charts rendered WITHOUT filter (filter applied via DOM)
+  // Build slide HTML
   const slidesMarked = useMemo(() => {
     let chartIdx = 0;
     return new Marked({
@@ -127,7 +126,7 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
     }
   }, [filePath, fileName]);
 
-  // Scoped keyboard navigation — only when slides container has focus
+  // Scoped keyboard navigation
   const containerRef = useRef<HTMLDivElement>(null);
   const handleContainerKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -148,14 +147,14 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
     setActiveFilter(null);
   }, [currentSlide]);
 
-  // Apply filter via DOM whenever activeFilter changes (no re-render needed)
+  // Apply filter via DOM
   useEffect(() => {
     const el = slideRef.current;
-    if (!el) return;
+    if (!el || editMode) return;
     applyFilterToDOM(el, activeFilter);
-  }, [activeFilter]);
+  }, [activeFilter, editMode]);
 
-  // Cross-chart filtering: click delegation on slide container
+  // Cross-chart filtering click delegation
   useEffect(() => {
     const el = slideRef.current;
     if (!el || editMode) return;
@@ -166,7 +165,6 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
       if (!clickable) return;
       const label = clickable.getAttribute('data-label');
       if (!label) return;
-      // Toggle: same label clears, different label sets
       setActiveFilter((prev) => (prev === label ? null : label));
     };
 
@@ -174,12 +172,19 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
     return () => el.removeEventListener('click', handleClick);
   }, [editMode]);
 
+  // Set editable content when entering edit mode
+  useEffect(() => {
+    if (editMode && editRef.current) {
+      editRef.current.innerHTML = slideHtml;
+      editRef.current.focus();
+    }
+  }, [editMode, currentSlide]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Edit mode handlers
   const enterEditMode = useCallback(() => {
-    setEditContent(content);
     setSaveError(null);
     setEditMode(true);
-  }, [content]);
+  }, []);
 
   const cancelEdit = useCallback(() => {
     setEditMode(false);
@@ -187,18 +192,25 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
   }, []);
 
   const handleSave = useCallback(async () => {
+    if (!editRef.current) return;
     setSaving(true);
     setSaveError(null);
     try {
-      await saveFileContent(filePath, editContent);
-      onContentUpdate?.(filePath, editContent);
+      // Convert the currently edited slide's HTML back to markdown
+      const editedSlidemd = htmlToMarkdown(editRef.current.innerHTML);
+      // Reconstruct full content with the edited slide
+      const newSlides = [...slides];
+      newSlides[currentSlide] = editedSlidemd;
+      const newContent = newSlides.join('\n\n---\n\n');
+      await saveFileContent(filePath, newContent);
+      onContentUpdate?.(filePath, newContent);
       setEditMode(false);
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : 'Save failed');
     } finally {
       setSaving(false);
     }
-  }, [filePath, editContent, onContentUpdate]);
+  }, [filePath, slides, currentSlide, onContentUpdate]);
 
   const clearFilter = useCallback(() => setActiveFilter(null), []);
 
@@ -221,9 +233,13 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
             {currentSlide + 1} / {slides.length}
           </span>
         )}
-        {/* Edit / Preview toggle */}
+        {editMode && (
+          <span className="slides-viewer-counter">
+            Editing slide {currentSlide + 1}
+          </span>
+        )}
         <button
-          className="slides-mode-btn"
+          className="canvas-edit-btn"
           onClick={editMode ? cancelEdit : enterEditMode}
           title={editMode ? 'Preview' : 'Edit'}
         >
@@ -261,22 +277,23 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
       </div>
 
       {editMode ? (
-        <div className="slides-edit-area">
-          <textarea
-            className="slides-edit-textarea"
-            value={editContent}
-            onChange={(e) => setEditContent(e.target.value)}
-            onKeyDown={handleEditKeyDown}
-            spellCheck={false}
+        <div className="canvas-edit-area">
+          <EditToolbar
+            onSave={handleSave}
+            onCancel={cancelEdit}
+            saving={saving}
+            saveError={saveError}
           />
-          <div className="slides-edit-actions">
-            {saveError && <span className="slides-save-error">{saveError}</span>}
-            <button className="slides-cancel-btn" onClick={cancelEdit} disabled={saving}>
-              Cancel
-            </button>
-            <button className="slides-save-btn" onClick={handleSave} disabled={saving}>
-              {saving ? 'Saving...' : 'Save'}
-            </button>
+          <div className="slides-viewer-body">
+            <div className="slides-viewer-stage">
+              <div
+                ref={editRef}
+                className="slides-viewer-slide message-content canvas-editable"
+                contentEditable
+                suppressContentEditableWarning
+                onKeyDown={handleEditKeyDown}
+              />
+            </div>
           </div>
         </div>
       ) : (
@@ -290,7 +307,6 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
               />
             </div>
           </div>
-          {/* Filter indicator */}
           {activeFilter && (
             <div className="slides-filter-indicator">
               <span>Filtered: <strong>{activeFilter}</strong></span>
@@ -303,10 +319,9 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
               </button>
             </div>
           )}
-          {/* Thumbnail strip */}
           {slides.length > 1 && (
             <div className="slides-thumbnails">
-              {thumbnailHtmls.map((html, idx) => (
+              {thumbnailHtmls.map((thumbHtml, idx) => (
                 <button
                   key={idx}
                   className={`slides-thumbnail ${idx === currentSlide ? 'active' : ''}`}
@@ -315,7 +330,7 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
                 >
                   <div
                     className="slides-thumbnail-content"
-                    dangerouslySetInnerHTML={{ __html: html }}
+                    dangerouslySetInnerHTML={{ __html: thumbHtml }}
                   />
                   <span className="slides-thumbnail-number">{idx + 1}</span>
                 </button>

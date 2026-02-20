@@ -459,8 +459,8 @@ body,
   line-height: 1.5;
   transition: border-color var(--transition), box-shadow var(--transition);
   min-height: 40px;
-  max-height: 160px;
-  overflow-y: auto;
+  max-height: 40vh;
+  overflow: hidden;
 }
 .chat-input:focus {
   outline: none;
@@ -1221,6 +1221,196 @@ body,
   background: var(--bg-secondary);
 }
 
+/* ── Shared Canvas Edit Mode ── */
+.canvas-edit-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+.canvas-edit-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+.canvas-edit-area {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.canvas-edit-textarea {
+  flex: 1;
+  width: 100%;
+  padding: 16px;
+  border: none;
+  outline: none;
+  resize: none;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  tab-size: 2;
+}
+.canvas-edit-textarea:focus {
+  background: var(--bg-primary);
+}
+.code-edit-textarea {
+  font-family: var(--font-mono);
+}
+.canvas-edit-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border-light);
+  background: var(--bg-primary);
+  flex-shrink: 0;
+}
+.canvas-save-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-xs);
+  padding: 6px 20px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.canvas-save-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.canvas-save-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.canvas-cancel-btn {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 6px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.canvas-cancel-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.canvas-cancel-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.canvas-save-error {
+  color: var(--accent-red);
+  font-size: 12px;
+  font-weight: 500;
+  flex: 1;
+}
+/* contentEditable WYSIWYG surface */
+.canvas-editable {
+  outline: none;
+  cursor: text;
+  min-height: 100px;
+  overflow-y: auto;
+  flex: 1;
+}
+.canvas-editable:focus {
+  box-shadow: inset 0 0 0 2px var(--accent-soft);
+}
+/* Edit toolbar */
+.edit-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.edit-toolbar-group {
+  display: flex;
+  gap: 2px;
+}
+.edit-toolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.edit-toolbar-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+.edit-toolbar-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border-light);
+  flex-shrink: 0;
+}
+.edit-toolbar-spacer {
+  flex: 1;
+}
+/* Inline table editing */
+.data-table-editable td,
+.data-table-editable th {
+  cursor: text;
+}
+.data-td-editable,
+.data-th-editable {
+  outline: none;
+  transition: background var(--transition);
+}
+.data-td-editable:focus,
+.data-th-editable:focus {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.data-viewer-edit-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--bg-primary);
+  flex-shrink: 0;
+}
+.data-viewer-filename {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Download Button ── */
 .download-btn {
   display: flex;
@@ -1428,16 +1618,18 @@ body,
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  padding: 12px 0;
-  padding-right: 12px;
-  padding-left: 12px;
+  padding: 12px 12px;
   border-right: 1px solid var(--border-light);
   user-select: none;
   flex-shrink: 0;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg-tertiary);
 }
 .code-line-numbers span {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.6;
   color: var(--text-muted);
   font-weight: 500;
@@ -1450,7 +1642,7 @@ body,
   background: transparent;
   border: none;
   border-radius: 0;
-  overflow-x: auto;
+  overflow: visible;
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.6;
@@ -1773,103 +1965,7 @@ body,
   max-width: 100%;
 }
 
-/* ── Edit Mode ── */
-.slides-mode-btn {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
-  padding: 5px 12px;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--transition);
-  flex-shrink: 0;
-}
-.slides-mode-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-  border-color: var(--text-muted);
-}
-.slides-edit-area {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-}
-.slides-edit-textarea {
-  flex: 1;
-  width: 100%;
-  padding: 16px;
-  border: none;
-  outline: none;
-  resize: none;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--text-primary);
-  background: var(--bg-secondary);
-  tab-size: 2;
-}
-.slides-edit-textarea:focus {
-  background: var(--bg-primary);
-}
-.slides-edit-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 8px 16px;
-  border-top: 1px solid var(--border-light);
-  background: var(--bg-primary);
-  flex-shrink: 0;
-}
-.slides-save-btn {
-  background: var(--accent);
-  color: #fff;
-  border: none;
-  border-radius: var(--radius-xs);
-  padding: 6px 20px;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all var(--transition);
-}
-.slides-save-btn:hover:not(:disabled) {
-  background: var(--accent-hover);
-}
-.slides-save-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.slides-cancel-btn {
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
-  padding: 6px 16px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--transition);
-}
-.slides-cancel-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.slides-cancel-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.slides-save-error {
-  color: var(--accent-red);
-  font-size: 12px;
-  font-weight: 500;
-  flex: 1;
-}
+/* Edit mode now uses shared .canvas-edit-* classes (see "Shared Canvas Edit Mode" section) */
 
 /* ── Cross-Chart Filter Indicator ── */
 .slides-filter-indicator {
@@ -2324,12 +2420,6 @@ body,
 /* ── Floating Chat Popup ── */
 .chat-popup {
   position: fixed;
-  bottom: 84px;
-  right: 24px;
-  width: 380px;
-  max-width: calc(100vw - 48px);
-  height: 520px;
-  max-height: calc(100vh - 140px);
   border-radius: var(--radius);
   background: var(--bg-primary);
   border: 1px solid var(--border);
@@ -2339,6 +2429,8 @@ body,
   z-index: 55;
   overflow: hidden;
   animation: popup-in 0.2s ease;
+  min-width: 300px;
+  min-height: 280px;
 }
 @keyframes popup-in {
   from { opacity: 0; transform: translateY(12px) scale(0.96); }
@@ -2352,6 +2444,11 @@ body,
   border-bottom: 1px solid var(--border-light);
   background: var(--bg-secondary);
   flex-shrink: 0;
+  cursor: grab;
+  user-select: none;
+}
+.chat-popup-header:active {
+  cursor: grabbing;
 }
 .chat-popup-title {
   font-size: 12px;
@@ -2376,6 +2473,30 @@ body,
 .chat-popup-close:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+.chat-popup-resize-grip {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  z-index: 10;
+}
+.chat-popup-resize-grip::before {
+  content: '';
+  position: absolute;
+  bottom: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--text-muted);
+  border-bottom: 2px solid var(--text-muted);
+  opacity: 0.5;
+}
+.chat-popup-resize-grip:hover::before {
+  opacity: 1;
+  border-color: var(--accent);
 }
 
 /* Chat panel inside popup adapts */
@@ -2464,10 +2585,11 @@ body,
     display: none;
   }
   .chat-popup {
-    width: calc(100vw - 32px);
-    right: 16px;
-    bottom: 76px;
-    height: 400px;
+    left: 16px !important;
+    top: auto !important;
+    bottom: 76px !important;
+    width: calc(100vw - 32px) !important;
+    height: 400px !important;
   }
   .chat-fab {
     right: 16px;

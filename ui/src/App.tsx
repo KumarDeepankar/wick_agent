@@ -26,7 +26,13 @@ export default function App() {
   const [canvasCollapsed, setCanvasCollapsed] = useState(false);
   const [canvasFullscreen, setCanvasFullscreen] = useState(false);
   const [chatPopupOpen, setChatPopupOpen] = useState(false);
+  const [popupPos, setPopupPos] = useState({ x: 0, y: 0 });
+  const [popupSize, setPopupSize] = useState({ w: 380, h: 520 });
   const isDragging = useRef(false);
+  const popupDragRef = useRef(false);
+  const popupResizeRef = useRef(false);
+  const popupPosRef = useRef({ x: 0, y: 0 });
+  const popupSizeRef = useRef({ w: 380, h: 520 });
 
   const { messages, traceEvents, canvasArtifacts, status, threadId, error, send, stop, reset, updateArtifactContent, removeArtifact } =
     useAgentStream();
@@ -112,6 +118,88 @@ export default function App() {
 
   const toggleChatPopup = useCallback(() => {
     setChatPopupOpen((o) => !o);
+  }, []);
+
+  // Reset popup position/size when it opens
+  useEffect(() => {
+    if (chatPopupOpen) {
+      const w = 380;
+      const h = 520;
+      const pos = {
+        x: window.innerWidth - w - 24,
+        y: window.innerHeight - h - 84,
+      };
+      setPopupSize({ w, h });
+      setPopupPos(pos);
+      popupSizeRef.current = { w, h };
+      popupPosRef.current = pos;
+    }
+  }, [chatPopupOpen]);
+
+  const handlePopupDragStart = useCallback((e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('button')) return;
+    e.preventDefault();
+    popupDragRef.current = true;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'grabbing';
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startPos = { ...popupPosRef.current };
+
+    const handleMove = (ev: MouseEvent) => {
+      if (!popupDragRef.current) return;
+      const newPos = {
+        x: Math.max(0, Math.min(startPos.x + (ev.clientX - startX), window.innerWidth - 200)),
+        y: Math.max(0, Math.min(startPos.y + (ev.clientY - startY), window.innerHeight - 60)),
+      };
+      popupPosRef.current = newPos;
+      setPopupPos(newPos);
+    };
+
+    const handleUp = () => {
+      popupDragRef.current = false;
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      document.removeEventListener('mousemove', handleMove);
+      document.removeEventListener('mouseup', handleUp);
+    };
+
+    document.addEventListener('mousemove', handleMove);
+    document.addEventListener('mouseup', handleUp);
+  }, []);
+
+  const handlePopupResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    popupResizeRef.current = true;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'nwse-resize';
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startSize = { ...popupSizeRef.current };
+
+    const handleMove = (ev: MouseEvent) => {
+      if (!popupResizeRef.current) return;
+      const newSize = {
+        w: Math.max(300, Math.min(startSize.w + (ev.clientX - startX), window.innerWidth - 48)),
+        h: Math.max(280, Math.min(startSize.h + (ev.clientY - startY), window.innerHeight - 80)),
+      };
+      popupSizeRef.current = newSize;
+      setPopupSize(newSize);
+    };
+
+    const handleUp = () => {
+      popupResizeRef.current = false;
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      document.removeEventListener('mousemove', handleMove);
+      document.removeEventListener('mouseup', handleUp);
+    };
+
+    document.addEventListener('mousemove', handleMove);
+    document.addEventListener('mouseup', handleUp);
   }, []);
 
   return (
@@ -212,8 +300,19 @@ export default function App() {
       {canvasFullscreen && (
         <>
           {chatPopupOpen && (
-            <div className="chat-popup">
-              <div className="chat-popup-header">
+            <div
+              className="chat-popup"
+              style={{
+                left: popupPos.x,
+                top: popupPos.y,
+                width: popupSize.w,
+                height: popupSize.h,
+              }}
+            >
+              <div
+                className="chat-popup-header"
+                onMouseDown={handlePopupDragStart}
+              >
                 <span className="chat-popup-title">Chat</span>
                 <button
                   className="chat-popup-close"
@@ -235,6 +334,11 @@ export default function App() {
                 onReset={reset}
                 pendingPrompt={pendingPrompt}
                 onPromptConsumed={handlePromptConsumed}
+              />
+              <div
+                className="chat-popup-resize-grip"
+                onMouseDown={handlePopupResizeStart}
+                aria-label="Resize chat window"
               />
             </div>
           )}
