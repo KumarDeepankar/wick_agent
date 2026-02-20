@@ -88,6 +88,80 @@ Final thoughts and conclusion text.
 | Plain text | Body paragraph |
 | `---` | Slide separator (must be on its own line) |
 
+## Charts
+
+Embed data charts directly in slides using ` ```chart ` fenced code blocks. Charts
+render as interactive SVGs in the live preview and as **native editable charts** in
+the exported `.pptx` file.
+
+### Chart DSL Format
+
+````markdown
+```chart
+type: bar
+title: Revenue by Quarter
+labels: [Q1, Q2, Q3, Q4]
+data: [100, 150, 200, 180]
+legend: true
+showValues: true
+xLabel: Quarter
+yLabel: Revenue ($K)
+colors: [#2563eb, #059669]
+```
+````
+
+### Multi-Series Example
+
+````markdown
+```chart
+type: bar
+title: Year-over-Year Comparison
+labels: [Q1, Q2, Q3, Q4]
+series:
+  - name: 2024
+    data: [100, 150, 200, 180]
+  - name: 2025
+    data: [120, 180, 240, 210]
+legend: true
+legendPosition: bottom
+```
+````
+
+### Chart Types
+
+| Type | Description |
+|------|-------------|
+| `bar` | Vertical bar chart (grouped for multi-series) |
+| `hbar` | Horizontal bar chart |
+| `line` | Line chart with markers |
+| `area` | Filled area chart |
+| `pie` | Pie chart |
+| `donut` | Donut chart (pie with inner cutout) |
+| `stacked_bar` | Stacked vertical bar chart |
+
+### Chart Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `type` | string | Chart type (see table above). Default: `bar` |
+| `title` | string | Chart title displayed above the chart |
+| `labels` | array | Category labels `[Q1, Q2, Q3, Q4]` |
+| `data` | array | Data values for single-series `[100, 150, 200]` |
+| `series` | list | Multi-series data (each with `name` and `data`) |
+| `legend` | boolean | Show legend. Default: `false` |
+| `legendPosition` | string | Legend position: `top`, `bottom`, `right`. Default: `bottom` |
+| `showValues` | boolean | Show data value labels. Default: `false` |
+| `xLabel` | string | X-axis label |
+| `yLabel` | string | Y-axis label |
+| `colors` | array | Custom hex colors `[#2563eb, #059669]` |
+
+### Cross-Chart Filtering (Preview Only)
+
+When a slide contains multiple charts sharing the same labels, clicking a data
+point in one chart highlights that category across ALL charts on the slide.
+Click the same data point again to clear the filter. This is a live-preview
+feature — exported PPTX files contain standard static charts.
+
 ## Guidelines for Good Slides
 
 1. **First slide**: Use only `# Title` and an optional subtitle line — this

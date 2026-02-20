@@ -22,7 +22,7 @@ export default function App() {
   const [traceOpen, setTraceOpen] = useState(false);
   const [pendingPrompt, setPendingPrompt] = useState<string | undefined>();
 
-  const { messages, traceEvents, canvasArtifacts, status, threadId, error, send, stop, reset } =
+  const { messages, traceEvents, canvasArtifacts, status, threadId, error, send, stop, reset, updateArtifactContent } =
     useAgentStream();
 
   const isActive = status === 'connecting' || status === 'streaming';
@@ -109,6 +109,7 @@ export default function App() {
           artifacts={canvasArtifacts}
           onPromptClick={handlePromptClick}
           status={status}
+          onContentUpdate={updateArtifactContent}
         />
       </main>
 

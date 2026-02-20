@@ -20,6 +20,24 @@ export async function fetchFileDownload(filePath: string, agentId?: string): Pro
   return res.blob();
 }
 
+export async function saveFileContent(
+  filePath: string,
+  content: string,
+  agentId?: string,
+): Promise<{ status: string; path: string; size: number }> {
+  const res = await fetch('/agents/files/upload', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      path: filePath,
+      content,
+      agent_id: agentId || undefined,
+    }),
+  });
+  if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+  return res.json();
+}
+
 export async function exportSlidesAsPptx(filePath: string, agentId?: string): Promise<Blob> {
   const params = new URLSearchParams({ path: filePath });
   if (agentId) params.set('agent_id', agentId);

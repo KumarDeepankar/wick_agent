@@ -252,6 +252,13 @@ class ResumeRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class FileUploadRequest(BaseModel):
+    """Upload/overwrite a file in the agent's workspace."""
+    path: str = Field(..., description="Absolute path in the workspace (e.g. /workspace/slides.md)")
+    content: str = Field(..., description="File content as a string")
+    agent_id: str | None = Field(default=None, description="Agent ID (defaults to 'default')")
+
+
 class InvokeResponse(BaseModel):
     thread_id: str = Field(..., description="Thread ID for follow-up messages")
     response: str = Field(..., description="Agent's final response text")

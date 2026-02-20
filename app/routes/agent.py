@@ -30,6 +30,7 @@ from app.agents.deep_agent import (
 from app.models.schemas import (
     AgentCreateRequest,
     AgentInfo,
+    FileUploadRequest,
     InvokeRequest,
     InvokeResponse,
     ResumeRequest,
@@ -336,6 +337,49 @@ async def download_workspace_file(path: str, agent_id: str | None = None):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Download failed: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# File Upload
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.put("/files/upload")
+async def upload_workspace_file(req: FileUploadRequest):
+    """Upload (create or overwrite) a file in the agent's workspace.
+
+    Used by the Canvas panel's edit mode to save modified slide content
+    back to the Docker sandbox.
+    """
+    if not req.path.startswith("/workspace/"):
+        raise HTTPException(
+            status_code=400,
+            detail="Path must start with /workspace/",
+        )
+
+    resolved_agent_id = req.agent_id or "default"
+    try:
+        meta = get_agent(resolved_agent_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Agent '{resolved_agent_id}' not found")
+
+    backend = meta.get("_backend")
+    if backend is None or not hasattr(backend, "upload_files"):
+        raise HTTPException(
+            status_code=400,
+            detail="Agent does not have a backend that supports file uploads",
+        )
+
+    try:
+        content_bytes = req.content.encode("utf-8")
+        backend.upload_files([(req.path, content_bytes)])
+        return {
+            "status": "ok",
+            "path": req.path,
+            "size": len(content_bytes),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

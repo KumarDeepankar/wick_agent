@@ -12,9 +12,10 @@ interface Props {
   artifacts: CanvasArtifact[];
   onPromptClick: (prompt: string) => void;
   status: StreamStatus;
+  onContentUpdate?: (filePath: string, content: string) => void;
 }
 
-export function CanvasPanel({ artifacts, onPromptClick }: Props) {
+export function CanvasPanel({ artifacts, onPromptClick, onContentUpdate }: Props) {
   const [activeIndex, setActiveIndex] = useState(0);
 
   // Auto-select latest artifact when new ones arrive
@@ -45,7 +46,7 @@ export function CanvasPanel({ artifacts, onPromptClick }: Props) {
       case 'document':
         return <DocumentViewer content={active.content ?? ''} fileName={active.fileName} />;
       case 'slides':
-        return <SlidesViewer content={active.content ?? ''} fileName={active.fileName} filePath={active.filePath} />;
+        return <SlidesViewer content={active.content ?? ''} fileName={active.fileName} filePath={active.filePath} onContentUpdate={onContentUpdate} />;
       case 'binary':
         return <BinaryDownload artifact={active} />;
       default:

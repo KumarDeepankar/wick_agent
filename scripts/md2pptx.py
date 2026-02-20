@@ -28,6 +28,8 @@ from pptx import Presentation
 from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.chart.data import CategoryChartData
+from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 
 
 # ── Theme colours ──────────────────────────────────────────────────────────
@@ -133,15 +135,19 @@ def _parse_slide_blocks(md: str) -> list[dict]:
             i += 1
             continue
 
-        # Code block
+        # Code block (or chart block)
         if stripped.startswith("```"):
+            lang = stripped[3:].strip().lower()
             code_lines: list[str] = []
             i += 1
             while i < len(lines) and not lines[i].strip().startswith("```"):
                 code_lines.append(lines[i])
                 i += 1
             i += 1  # skip closing ```
-            blocks.append({"type": "code", "text": "\n".join(code_lines)})
+            if lang == "chart":
+                blocks.append({"type": "chart", "text": "\n".join(code_lines)})
+            else:
+                blocks.append({"type": "code", "text": "\n".join(code_lines)})
             continue
 
         # Table
@@ -377,6 +383,11 @@ def _render_content_slide(prs: Presentation, blocks: list[dict]):
                                 base_color=COLOR_QUOTE, base_italic=True)
             current_top += Inches(0.9)
 
+        elif block["type"] == "chart":
+            chart_cfg = _parse_chart_dsl(block["text"])
+            height_used = _render_chart(slide, chart_cfg, current_top)
+            current_top += height_used
+
         elif block["type"] == "table":
             _render_table(slide, block["lines"], current_top)
             current_top += Inches(len(block["lines"]) * 0.4 + 0.2)
@@ -403,6 +414,179 @@ def _render_content_slide(prs: Presentation, blocks: list[dict]):
             _add_formatted_runs(p, block["text"], base_size=size,
                                 base_color=COLOR_HEADING, base_bold=True)
             current_top += Inches(0.6)
+
+
+# ── Chart DSL parsing ─────────────────────────────────────────────────────
+
+DEFAULT_CHART_COLORS = [
+    RGBColor(0x25, 0x63, 0xEB), RGBColor(0x05, 0x96, 0x69),
+    RGBColor(0xD9, 0x77, 0x06), RGBColor(0xDC, 0x26, 0x26),
+    RGBColor(0x7C, 0x3A, 0xED), RGBColor(0x0D, 0x94, 0x88),
+    RGBColor(0xF5, 0x9E, 0x0B), RGBColor(0x63, 0x66, 0xF1),
+]
+
+CHART_TYPE_MAP = {
+    "bar": XL_CHART_TYPE.COLUMN_CLUSTERED,
+    "hbar": XL_CHART_TYPE.BAR_CLUSTERED,
+    "line": XL_CHART_TYPE.LINE_MARKERS,
+    "area": XL_CHART_TYPE.AREA,
+    "pie": XL_CHART_TYPE.PIE,
+    "donut": XL_CHART_TYPE.DOUGHNUT,
+    "stacked_bar": XL_CHART_TYPE.COLUMN_STACKED,
+}
+
+
+def _parse_bracket_array(value: str) -> list[str]:
+    inner = value.strip().lstrip("[").rstrip("]")
+    if not inner.strip():
+        return []
+    return [s.strip() for s in inner.split(",")]
+
+
+def _parse_number_array(value: str) -> list[float]:
+    return [float(s) if s else 0 for s in _parse_bracket_array(value)]
+
+
+def _parse_chart_dsl(text: str) -> dict:
+    """Parse chart DSL text into a config dict."""
+    lines = text.split("\n")
+    cfg: dict = {}
+    in_series = False
+    current_series: dict | None = None
+    series_list: list[dict] = []
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if line.startswith("- name:"):
+            in_series = True
+            if current_series:
+                series_list.append(current_series)
+            current_series = {"name": line[7:].strip(), "data": []}
+            continue
+
+        if in_series and current_series and line.startswith("data:"):
+            current_series["data"] = _parse_number_array(line[5:].strip())
+            continue
+
+        if line == "series:":
+            in_series = True
+            continue
+
+        colon_idx = line.index(":") if ":" in line else -1
+        if colon_idx <= 0:
+            continue
+
+        key = line[:colon_idx].strip()
+        if key not in ("data",) or not in_series or not current_series:
+            if key != "series":
+                in_series = False
+
+        val = line[colon_idx + 1:].strip()
+
+        if key in ("labels", "colors"):
+            cfg[key] = _parse_bracket_array(val)
+        elif key == "data" and not in_series:
+            cfg[key] = _parse_number_array(val)
+        elif key in ("legend", "showValues"):
+            cfg[key] = val == "true"
+        else:
+            cfg[key] = val
+
+    if current_series:
+        series_list.append(current_series)
+    if series_list:
+        cfg["series"] = series_list
+
+    return cfg
+
+
+def _parse_color_hex(hex_str: str) -> RGBColor:
+    """Parse a hex color string like #2563eb to RGBColor."""
+    h = hex_str.strip().lstrip("#")
+    if len(h) == 6:
+        return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+    return DEFAULT_CHART_COLORS[0]
+
+
+def _render_chart(slide, chart_config: dict, top):
+    """Render a native python-pptx chart on the slide."""
+    chart_type_str = chart_config.get("type", "bar")
+    xl_type = CHART_TYPE_MAP.get(chart_type_str, XL_CHART_TYPE.COLUMN_CLUSTERED)
+    labels = chart_config.get("labels", [])
+
+    chart_data = CategoryChartData()
+    chart_data.categories = labels
+
+    series_list = chart_config.get("series", [])
+    if series_list:
+        for s in series_list:
+            chart_data.add_series(s["name"], s["data"])
+    elif "data" in chart_config:
+        chart_data.add_series("Data", chart_config["data"])
+
+    is_pie = chart_type_str in ("pie", "donut")
+    chart_width = Inches(8.0) if not is_pie else Inches(6.0)
+    chart_height = Inches(4.0)
+    chart_left = MARGIN_LEFT if not is_pie else Inches(3.6)
+
+    chart_shape = slide.shapes.add_chart(
+        xl_type, chart_left, top, chart_width, chart_height, chart_data
+    )
+    chart = chart_shape.chart
+
+    # Title
+    title_text = chart_config.get("title")
+    if title_text:
+        chart.has_title = True
+        chart.chart_title.text_frame.paragraphs[0].text = title_text
+        chart.chart_title.text_frame.paragraphs[0].font.size = Pt(16)
+        chart.chart_title.text_frame.paragraphs[0].font.bold = True
+    else:
+        chart.has_title = False
+
+    # Legend
+    show_legend = chart_config.get("legend", False)
+    chart.has_legend = show_legend
+    if show_legend:
+        pos_str = chart_config.get("legendPosition", "bottom")
+        pos_map = {
+            "top": XL_LEGEND_POSITION.TOP,
+            "bottom": XL_LEGEND_POSITION.BOTTOM,
+            "right": XL_LEGEND_POSITION.RIGHT,
+        }
+        chart.legend.position = pos_map.get(pos_str, XL_LEGEND_POSITION.BOTTOM)
+        chart.legend.include_in_layout = False
+
+    # Data labels
+    show_values = chart_config.get("showValues", False)
+    if show_values:
+        plot = chart.plots[0]
+        plot.has_data_labels = True
+        data_labels = plot.data_labels
+        data_labels.font.size = Pt(10)
+        data_labels.number_format = '0'
+
+    # Custom colors
+    custom_colors = chart_config.get("colors", [])
+    if custom_colors:
+        plot = chart.plots[0]
+        for i, series in enumerate(plot.series):
+            if i < len(custom_colors):
+                color = _parse_color_hex(custom_colors[i])
+                series.format.fill.solid()
+                series.format.fill.fore_color.rgb = color
+    else:
+        # Apply default palette
+        plot = chart.plots[0]
+        for i, series in enumerate(plot.series):
+            if i < len(DEFAULT_CHART_COLORS):
+                series.format.fill.solid()
+                series.format.fill.fore_color.rgb = DEFAULT_CHART_COLORS[i]
+
+    return chart_height + Inches(0.3)
 
 
 def _render_table(slide, table_lines: list[str], top: float):

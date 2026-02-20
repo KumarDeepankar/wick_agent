@@ -348,6 +348,12 @@ export function useAgentStream() {
     [threadId],
   );
 
+  const updateArtifactContent = useCallback((filePath: string, newContent: string) => {
+    setCanvasArtifacts(prev => prev.map(a =>
+      a.filePath === filePath ? { ...a, content: newContent, timestamp: Date.now() } : a
+    ));
+  }, []);
+
   const reset = useCallback(() => {
     stop();
     setMessages([]);
@@ -369,5 +375,6 @@ export function useAgentStream() {
     send,
     stop,
     reset,
+    updateArtifactContent,
   };
 }
