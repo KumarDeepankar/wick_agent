@@ -68,3 +68,14 @@ export function resolveLanguage(ext: string): string | undefined {
 export function isBinaryExtension(ext: string): boolean {
   return BINARY_EXTENSIONS.has(ext);
 }
+
+/**
+ * Detect if markdown content looks like a slide deck.
+ * Requires at least 2 slide separators and a heading on the first non-empty line.
+ */
+export function isSlideContent(content: string): boolean {
+  const separatorCount = (content.match(/\n---\n/g) || []).length;
+  if (separatorCount < 2) return false;
+  const firstLine = content.trimStart().split('\n')[0]?.trim() ?? '';
+  return firstLine.startsWith('#');
+}

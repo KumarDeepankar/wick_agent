@@ -19,3 +19,11 @@ export async function fetchFileDownload(filePath: string, agentId?: string): Pro
   if (!res.ok) throw new Error(`Download failed: ${res.status}`);
   return res.blob();
 }
+
+export async function exportSlidesAsPptx(filePath: string, agentId?: string): Promise<Blob> {
+  const params = new URLSearchParams({ path: filePath });
+  if (agentId) params.set('agent_id', agentId);
+  const res = await fetch(`/agents/slides/export?${params}`);
+  if (!res.ok) throw new Error(`PPTX export failed: ${res.status}`);
+  return res.blob();
+}

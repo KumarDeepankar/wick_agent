@@ -45,7 +45,7 @@ export function CanvasPanel({ artifacts, onPromptClick }: Props) {
       case 'document':
         return <DocumentViewer content={active.content ?? ''} fileName={active.fileName} />;
       case 'slides':
-        return <SlidesViewer content={active.content ?? ''} fileName={active.fileName} />;
+        return <SlidesViewer content={active.content ?? ''} fileName={active.fileName} filePath={active.filePath} />;
       case 'binary':
         return <BinaryDownload artifact={active} />;
       default:

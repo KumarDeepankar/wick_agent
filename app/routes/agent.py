@@ -339,6 +339,68 @@ async def download_workspace_file(path: str, agent_id: str | None = None):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Slides Export
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/slides/export")
+async def export_slides_pptx(path: str, agent_id: str | None = None):
+    """Export a markdown slide deck as a .pptx PowerPoint file.
+
+    Runs md2pptx.py inside the Docker sandbox to convert the markdown
+    file at `path` into an editable .pptx, then downloads and returns it.
+    """
+    resolved_agent_id = agent_id or "default"
+    try:
+        meta = get_agent(resolved_agent_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Agent '{resolved_agent_id}' not found")
+
+    backend = meta.get("_backend")
+    if backend is None or not hasattr(backend, "execute"):
+        raise HTTPException(
+            status_code=400,
+            detail="Agent does not have a backend that supports execution",
+        )
+
+    # Run the converter inside the container
+    pptx_tmp = "/tmp/_export_slides.pptx"
+    exec_result = backend.execute(
+        f"python /scripts/md2pptx.py '{path}' -o {pptx_tmp}"
+    )
+    if exec_result.exit_code != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"PPTX conversion failed: {exec_result.output}",
+        )
+
+    # Download the generated file
+    if not hasattr(backend, "download_files"):
+        raise HTTPException(
+            status_code=400,
+            detail="Agent backend does not support file downloads",
+        )
+
+    results = backend.download_files([pptx_tmp])
+    if not results or results[0].error or results[0].content is None:
+        raise HTTPException(status_code=500, detail="Failed to download generated PPTX")
+
+    content = results[0].content
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+
+    # Derive filename from the source path
+    base = path.rsplit("/", 1)[-1] if "/" in path else path
+    filename = base.rsplit(".", 1)[0] + ".pptx" if "." in base else base + ".pptx"
+
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════
 

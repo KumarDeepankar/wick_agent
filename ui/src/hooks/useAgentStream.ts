@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from 'react';
 import type { ChatMessage, TraceEvent, StreamStatus, CanvasArtifact } from '../types';
-import { extractExtension, extractFileName, resolveContentType, resolveLanguage, isBinaryExtension } from '../utils/canvasUtils';
+import { extractExtension, extractFileName, resolveContentType, resolveLanguage, isBinaryExtension, isSlideContent } from '../utils/canvasUtils';
 import { fetchFileDownload } from '../api';
 
 interface SSEEvent {
@@ -167,11 +167,16 @@ export function useAgentStream() {
               const filePath = rawPath;
               const content = input.content as string;
               const ext = extractExtension(filePath);
+              let contentType = resolveContentType(ext);
+              // Auto-detect slide decks from markdown content
+              if (contentType === 'document' && isSlideContent(content)) {
+                contentType = 'slides';
+              }
               const artifact: CanvasArtifact = {
                 id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                 filePath,
                 fileName: extractFileName(filePath),
-                contentType: resolveContentType(ext),
+                contentType,
                 content: isBinaryExtension(ext) ? null : content,
                 extension: ext,
                 timestamp: Date.now(),
@@ -213,11 +218,15 @@ export function useAgentStream() {
                 const output = (parsed.data as Record<string, unknown>)?.output;
                 const content = typeof output === 'string' ? output : '';
                 if (content) {
+                  let readContentType = resolveContentType(ext);
+                  if (readContentType === 'document' && isSlideContent(content)) {
+                    readContentType = 'slides';
+                  }
                   const artifact: CanvasArtifact = {
                     id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                     filePath,
                     fileName: extractFileName(filePath),
-                    contentType: resolveContentType(ext),
+                    contentType: readContentType,
                     content,
                     extension: ext,
                     timestamp: Date.now(),
@@ -238,11 +247,15 @@ export function useAgentStream() {
                 // edit_file — fetch the full updated file from backend
                 fetchFileDownload(filePath).then((blob) =>
                   blob.text().then((content) => {
+                    let editContentType = resolveContentType(ext);
+                    if (editContentType === 'document' && isSlideContent(content)) {
+                      editContentType = 'slides';
+                    }
                     const artifact: CanvasArtifact = {
                       id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                       filePath,
                       fileName: extractFileName(filePath),
-                      contentType: resolveContentType(ext),
+                      contentType: editContentType,
                       content,
                       extension: ext,
                       timestamp: Date.now(),

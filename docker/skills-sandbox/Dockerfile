@@ -7,12 +7,16 @@ RUN pip install --no-cache-dir \
     scipy \
     matplotlib \
     openpyxl \
-    requests
+    requests \
+    python-pptx
 
-RUN mkdir -p /workspace /skills
+RUN mkdir -p /workspace /skills /scripts
 
 # Bake skills into image as fallback (dev uses volume mount)
 COPY skills/ /skills/
+
+# Bake converter scripts into image
+COPY scripts/ /scripts/
 
 WORKDIR /workspace
 
