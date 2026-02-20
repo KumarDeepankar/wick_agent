@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { CanvasArtifact, StreamStatus } from '../../types';
+import { getDisplayName, getFormatLabel } from '../../utils/canvasUtils';
 import { WelcomeView } from './WelcomeView';
 import { CodeViewer } from './CodeViewer';
 import { DataViewer } from './DataViewer';
@@ -82,13 +83,14 @@ export function CanvasPanel({ artifacts, onPromptClick, onContentUpdate, onRemov
               onClick={() => setActiveIndex(idx)}
               title={artifact.filePath}
             >
-              <span className="canvas-tab-name">{artifact.fileName}</span>
+              <span className="canvas-tab-name">{getDisplayName(artifact.fileName, artifact.contentType)}</span>
+              <span className="canvas-tab-badge">{getFormatLabel(artifact.contentType)}</span>
               {onRemoveArtifact && (
                 <span
                   className="canvas-tab-close"
                   onClick={(e) => handleClose(e, artifact.id, idx)}
                   role="button"
-                  aria-label={`Close ${artifact.fileName}`}
+                  aria-label={`Close ${getDisplayName(artifact.fileName, artifact.contentType)}`}
                   tabIndex={0}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {

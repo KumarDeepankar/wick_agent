@@ -303,7 +303,7 @@ export function useAgentStream() {
                 const artifact: CanvasArtifact = {
                   id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                   filePath: '/output/result.md',
-                  fileName: 'result.md',
+                  fileName: 'Result',
                   contentType: 'document',
                   content: outputStr,
                   extension: '.md',

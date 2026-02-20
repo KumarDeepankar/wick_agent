@@ -3,6 +3,7 @@ import { Marked } from 'marked';
 import { renderChartSVG } from '../../utils/chartRenderer';
 import { exportSlidesAsPptx, saveFileContent } from '../../api';
 import { htmlToMarkdown } from '../../utils/htmlToMarkdown';
+import { getDisplayName } from '../../utils/canvasUtils';
 import { EditToolbar } from './EditToolbar';
 
 interface Props {
@@ -41,7 +42,9 @@ function applyFilterToDOM(container: HTMLElement, label: string | null) {
 
 export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: Props) {
   const slides = useMemo(() => {
-    return content
+    // Strip the <!-- slides --> marker before splitting
+    const cleaned = content.replace(/^\s*<!--\s*slides\s*-->\s*\n?/, '');
+    return cleaned
       .split(/\n---\n/)
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
@@ -227,7 +230,7 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
   return (
     <div className="slides-viewer" ref={containerRef} tabIndex={0} onKeyDown={handleContainerKeyDown}>
       <div className="slides-viewer-header">
-        <span className="slides-viewer-filename">{fileName}</span>
+        <span className="slides-viewer-filename">{getDisplayName(fileName, 'slides')}</span>
         {!editMode && (
           <span className="slides-viewer-counter">
             {currentSlide + 1} / {slides.length}

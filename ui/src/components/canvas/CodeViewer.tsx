@@ -11,6 +11,7 @@ import sql from 'highlight.js/lib/languages/sql';
 import css from 'highlight.js/lib/languages/css';
 import xml from 'highlight.js/lib/languages/xml';
 import { saveFileContent } from '../../api';
+import { getDisplayName } from '../../utils/canvasUtils';
 
 hljs.registerLanguage('python', python);
 hljs.registerLanguage('javascript', javascript);
@@ -110,7 +111,7 @@ export function CodeViewer({ content, language, fileName, filePath, onContentUpd
   return (
     <div className="code-viewer">
       <div className="code-viewer-header">
-        <span className="code-viewer-filename">{fileName}</span>
+        <span className="code-viewer-filename">{getDisplayName(fileName, 'code')}</span>
         <span className="code-viewer-meta">{language ?? 'text'} &middot; {lineCount} lines</span>
         <button
           className="canvas-edit-btn"

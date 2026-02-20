@@ -25,9 +25,13 @@ Users can export to `.pptx` (PowerPoint) with one click.
 
 ## Markdown Format
 
-Write a `.md` file using `---` on its own line to separate slides:
+**IMPORTANT**: Always start the file with `<!-- slides -->` on the very first line.
+This marker tells the system to render the content as a slide deck, even if it
+contains only one slide. Write a `.md` file using `---` on its own line to
+separate slides:
 
 ```markdown
+<!-- slides -->
 # Presentation Title
 
 Optional subtitle text
@@ -185,9 +189,10 @@ feature — exported PPTX files contain standard static charts.
 
 ## Workflow
 
-1. **Create the deck**: Write the markdown file to the workspace:
+1. **Create the deck**: Write the markdown file to the workspace. Always start
+   the content with `<!-- slides -->` on the first line:
    ```
-   write_file("/workspace/presentation.md", content)
+   write_file("/workspace/presentation.md", "<!-- slides -->\n# Title\n\n...")
    ```
 
 2. **Preview**: The canvas panel automatically detects the slide format and
@@ -203,7 +208,8 @@ feature — exported PPTX files contain standard static charts.
 
 User: "Create a 5-slide presentation about Python best practices"
 
-Write a file like `/workspace/python-best-practices.md` with:
+Write a file like `/workspace/python-best-practices.md` starting with
+`<!-- slides -->` on the first line, then:
 - Slide 1: Title slide (`# Python Best Practices`)
 - Slide 2: Code style (PEP 8, type hints)
 - Slide 3: Error handling (try/except patterns)
@@ -212,8 +218,10 @@ Write a file like `/workspace/python-best-practices.md` with:
 
 ## Notes
 
-- The file must have at least 2 `---` separators to be auto-detected as slides.
-- The first non-empty line should start with `#` for proper detection.
+- Always include `<!-- slides -->` as the first line of the file. This ensures
+  the system renders it as a slide deck regardless of how many slides there are.
+- Without the marker, the system falls back to heuristic detection (requires
+  at least one `---` separator and a `#` heading on the first line).
 - The `.pptx` export produces editable text — not images — so users can
   customize in PowerPoint or Google Slides after downloading.
 - Use `/workspace/` as the base path for slide files.

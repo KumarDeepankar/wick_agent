@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback, useRef } from 'react';
 import { saveFileContent } from '../../api';
+import { getDisplayName } from '../../utils/canvasUtils';
 
 interface Props {
   content: string;
@@ -188,7 +189,7 @@ export function DataViewer({ content, fileName, filePath, onContentUpdate }: Pro
   return (
     <div className="data-viewer">
       <div className="data-viewer-edit-header">
-        <span className="data-viewer-filename">{fileName}</span>
+        <span className="data-viewer-filename">{getDisplayName(fileName, 'data')}</span>
         <button
           className="canvas-edit-btn"
           onClick={editMode ? cancelEdit : enterEditMode}

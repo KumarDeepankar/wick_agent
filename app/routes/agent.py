@@ -369,10 +369,15 @@ async def upload_workspace_file(req: FileUploadRequest):
     Used by the Canvas panel's edit mode to save modified slide content
     back to the Docker sandbox.
     """
-    if not req.path.startswith("/workspace/"):
+    if not req.path.startswith("/"):
         raise HTTPException(
             status_code=400,
-            detail="Path must start with /workspace/",
+            detail="Path must be an absolute path",
+        )
+    if ".." in req.path:
+        raise HTTPException(
+            status_code=400,
+            detail="Path must not contain '..'",
         )
 
     resolved_agent_id = req.agent_id or "default"

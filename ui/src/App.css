@@ -2239,6 +2239,23 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.canvas-tab-badge {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.canvas-tab.active .canvas-tab-badge {
+  background: var(--accent);
+  color: #fff;
+  opacity: 0.85;
+}
 .canvas-tab-close {
   display: none;
   font-size: 14px;

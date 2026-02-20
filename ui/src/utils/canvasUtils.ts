@@ -69,13 +69,61 @@ export function isBinaryExtension(ext: string): boolean {
   return BINARY_EXTENSIONS.has(ext);
 }
 
+/** Extensions hidden from display names (technical file types). */
+const HIDDEN_EXTENSIONS = new Set(['.md', '.txt', '.rst', '.log']);
+
+/**
+ * User-friendly display name: strips technical extensions (.md, .txt, etc.)
+ * and converts kebab/snake-case to title case.
+ */
+export function getDisplayName(fileName: string, contentType: CanvasContentType): string {
+  let name = fileName;
+  const ext = extractExtension(fileName);
+
+  // Strip technical extensions for non-code content
+  if (contentType !== 'code' && HIDDEN_EXTENSIONS.has(ext)) {
+    name = name.replace(/\.[^.]+$/, '');
+  }
+
+  // Convert kebab-case / snake_case / dots to spaces and title-case
+  name = name
+    .replace(/[-_\.]/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim();
+
+  return name || fileName;
+}
+
+const FORMAT_LABELS: Record<CanvasContentType, string> = {
+  slides: 'Presentation',
+  document: 'Document',
+  data: 'Spreadsheet',
+  code: 'Code',
+  binary: 'File',
+  welcome: '',
+};
+
+/**
+ * Short user-friendly format label for the content type.
+ */
+export function getFormatLabel(contentType: CanvasContentType): string {
+  return FORMAT_LABELS[contentType] || '';
+}
+
 /**
  * Detect if markdown content looks like a slide deck.
- * Requires at least 2 slide separators and a heading on the first non-empty line.
+ *
+ * Returns true if:
+ *  - Content starts with `<!-- slides -->` marker (any number of slides), OR
+ *  - Content has 1+ `\n---\n` separators and starts with a `#` heading
  */
 export function isSlideContent(content: string): boolean {
+  const trimmed = content.trimStart();
+  // Explicit marker — always treat as slides regardless of separator count
+  if (trimmed.startsWith('<!-- slides -->')) return true;
+  // Heuristic — at least one separator + heading on first line
   const separatorCount = (content.match(/\n---\n/g) || []).length;
-  if (separatorCount < 2) return false;
-  const firstLine = content.trimStart().split('\n')[0]?.trim() ?? '';
+  if (separatorCount < 1) return false;
+  const firstLine = trimmed.split('\n')[0]?.trim() ?? '';
   return firstLine.startsWith('#');
 }

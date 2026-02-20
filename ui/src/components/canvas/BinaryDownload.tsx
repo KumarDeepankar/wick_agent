@@ -1,4 +1,5 @@
 import type { CanvasArtifact } from '../../types';
+import { getDisplayName } from '../../utils/canvasUtils';
 import { DownloadButton } from './DownloadButton';
 
 interface Props {
@@ -34,7 +35,7 @@ export function BinaryDownload({ artifact }: Props) {
             <polyline points="28 4 28 16 40 16" />
           </svg>
         </div>
-        <h3 className="binary-download-name">{artifact.fileName}</h3>
+        <h3 className="binary-download-name">{getDisplayName(artifact.fileName, artifact.contentType)}</h3>
         <p className="binary-download-type">{typeLabel}</p>
         <DownloadButton artifact={artifact} label="Download File" />
       </div>

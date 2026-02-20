@@ -2,6 +2,7 @@ import { useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import { marked } from 'marked';
 import { saveFileContent } from '../../api';
 import { htmlToMarkdown } from '../../utils/htmlToMarkdown';
+import { getDisplayName } from '../../utils/canvasUtils';
 import { EditToolbar } from './EditToolbar';
 
 interface Props {
@@ -75,7 +76,7 @@ export function DocumentViewer({ content, fileName, filePath, onContentUpdate }:
   return (
     <div className="document-viewer">
       <div className="document-viewer-header">
-        <span className="document-viewer-filename">{fileName}</span>
+        <span className="document-viewer-filename">{getDisplayName(fileName, 'document')}</span>
         <button
           className="canvas-edit-btn"
           onClick={editMode ? cancelEdit : enterEditMode}
