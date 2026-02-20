@@ -269,20 +269,38 @@ async def get_available_middleware():
 async def get_available_skills():
     """List all skills discovered from the skills/ directory.
 
-    Shows each skill's name and path. Skills are SKILL.md files
-    in subdirectories of skills/.
+    Parses YAML frontmatter from each SKILL.md to return name,
+    description, sample prompts, and icon.
     """
+    import re
+    import yaml
     from pathlib import Path
+
+    _FM_RE = re.compile(r"\A---\s*\n(.*?\n)---\s*\n", re.DOTALL)
 
     skills_dir = Path("skills")
     skills = []
     if skills_dir.is_dir():
         for skill_md in sorted(skills_dir.rglob("SKILL.md")):
-            skills.append({
+            entry = {
                 "name": skill_md.parent.name,
-                "virtual_path": f"/skills/{skill_md.relative_to(skills_dir).as_posix()}",
-                "disk_path": str(skill_md.resolve()),
-            })
+                "description": "",
+                "sample_prompts": [],
+                "icon": "",
+            }
+            try:
+                text = skill_md.read_text(encoding="utf-8")
+                m = _FM_RE.match(text)
+                if m:
+                    front = yaml.safe_load(m.group(1))
+                    if isinstance(front, dict):
+                        entry["name"] = front.get("name", entry["name"])
+                        entry["description"] = front.get("description", "").strip()
+                        entry["sample_prompts"] = front.get("sample-prompts", [])
+                        entry["icon"] = front.get("icon", "")
+            except Exception:
+                pass
+            skills.append(entry)
     return {"skills": skills}
 
 

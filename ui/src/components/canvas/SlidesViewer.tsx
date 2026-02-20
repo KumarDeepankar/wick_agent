@@ -10,6 +10,36 @@ interface Props {
   onContentUpdate?: (filePath: string, content: string) => void;
 }
 
+/**
+ * Apply cross-chart filter directly on the DOM.
+ * Sets opacity on all [data-label] elements: matching = full, non-matching = dimmed.
+ * Passing null clears the filter (all full opacity).
+ */
+function applyFilterToDOM(container: HTMLElement, label: string | null) {
+  const elements = container.querySelectorAll<SVGElement | HTMLElement>('[data-label]');
+  if (!label) {
+    // Clear: restore all to full opacity
+    elements.forEach((el) => {
+      el.style.opacity = '';
+      el.style.stroke = '';
+      el.style.strokeWidth = '';
+    });
+    return;
+  }
+  elements.forEach((el) => {
+    const elLabel = el.getAttribute('data-label');
+    if (elLabel === label) {
+      el.style.opacity = '1';
+      el.style.stroke = 'var(--text-primary)';
+      el.style.strokeWidth = '2';
+    } else {
+      el.style.opacity = '0.15';
+      el.style.stroke = '';
+      el.style.strokeWidth = '';
+    }
+  });
+}
+
 export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: Props) {
   const slides = useMemo(() => {
     return content
@@ -20,6 +50,7 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
 
   const [currentSlide, setCurrentSlide] = useState(0);
   const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
 
   // Edit mode state
@@ -30,30 +61,33 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
 
   const slideRef = useRef<HTMLDivElement>(null);
 
-  // Build a Marked instance with chart-aware code renderer
-  const slideHtml = useMemo(() => {
-    if (slides[currentSlide] === undefined) return '';
+  // Build slide HTML — charts rendered WITHOUT filter (filter applied via DOM)
+  const slidesMarked = useMemo(() => {
     let chartIdx = 0;
-    const marked = new Marked({
+    return new Marked({
       renderer: {
         code({ text, lang }: { text: string; lang?: string }) {
           if (lang === 'chart') {
-            return renderChartSVG(text, chartIdx++, activeFilter);
+            return renderChartSVG(text, chartIdx++);
           }
           return `<pre><code class="language-${lang || ''}">${text.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`;
         },
       },
     });
-    return marked.parse(slides[currentSlide], { async: false }) as string;
-  }, [slides, currentSlide, activeFilter]);
+  }, []);
 
-  // Thumbnails — no filter applied
+  const slideHtml = useMemo(() => {
+    if (slides[currentSlide] === undefined) return '';
+    return slidesMarked.parse(slides[currentSlide]!, { async: false }) as string;
+  }, [slides, currentSlide, slidesMarked]);
+
+  // Thumbnails
   const thumbnailHtmls = useMemo(() => {
     const marked = new Marked({
       renderer: {
         code({ text, lang }: { text: string; lang?: string }) {
           if (lang === 'chart') {
-            return renderChartSVG(text, 0, null);
+            return renderChartSVG(text, 0);
           }
           return `<pre><code class="language-${lang || ''}">${text.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`;
         },
@@ -72,6 +106,7 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
 
   const handleExport = useCallback(async () => {
     setExporting(true);
+    setExportError(null);
     try {
       const blob = await exportSlidesAsPptx(filePath);
       const url = URL.createObjectURL(blob);
@@ -84,22 +119,24 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (err) {
-      console.error('PPTX export failed:', err);
+      const msg = err instanceof Error ? err.message : 'Export failed';
+      setExportError(msg);
+      setTimeout(() => setExportError(null), 4000);
     } finally {
       setExporting(false);
     }
   }, [filePath, fileName]);
 
-  // Keyboard navigation (only in preview mode)
-  useEffect(() => {
-    if (editMode) return;
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') goNext();
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') goPrev();
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [goNext, goPrev, editMode]);
+  // Scoped keyboard navigation — only when slides container has focus
+  const containerRef = useRef<HTMLDivElement>(null);
+  const handleContainerKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (editMode) return;
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); goNext(); }
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); goPrev(); }
+    },
+    [goNext, goPrev, editMode],
+  );
 
   // Reset slide index when slides count changes
   useEffect(() => {
@@ -111,7 +148,14 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
     setActiveFilter(null);
   }, [currentSlide]);
 
-  // Cross-chart filtering: click delegation
+  // Apply filter via DOM whenever activeFilter changes (no re-render needed)
+  useEffect(() => {
+    const el = slideRef.current;
+    if (!el) return;
+    applyFilterToDOM(el, activeFilter);
+  }, [activeFilter]);
+
+  // Cross-chart filtering: click delegation on slide container
   useEffect(() => {
     const el = slideRef.current;
     if (!el || editMode) return;
@@ -122,6 +166,7 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
       if (!clickable) return;
       const label = clickable.getAttribute('data-label');
       if (!label) return;
+      // Toggle: same label clears, different label sets
       setActiveFilter((prev) => (prev === label ? null : label));
     };
 
@@ -155,8 +200,20 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
     }
   }, [filePath, editContent, onContentUpdate]);
 
+  const clearFilter = useCallback(() => setActiveFilter(null), []);
+
+  const handleEditKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault();
+        handleSave();
+      }
+    },
+    [handleSave],
+  );
+
   return (
-    <div className="slides-viewer">
+    <div className="slides-viewer" ref={containerRef} tabIndex={0} onKeyDown={handleContainerKeyDown}>
       <div className="slides-viewer-header">
         <span className="slides-viewer-filename">{fileName}</span>
         {!editMode && (
@@ -200,6 +257,7 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
           )}
           {exporting ? 'Exporting...' : 'Export PPTX'}
         </button>
+        {exportError && <span className="slides-export-error">{exportError}</span>}
       </div>
 
       {editMode ? (
@@ -208,6 +266,7 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
             className="slides-edit-textarea"
             value={editContent}
             onChange={(e) => setEditContent(e.target.value)}
+            onKeyDown={handleEditKeyDown}
             spellCheck={false}
           />
           <div className="slides-edit-actions">
@@ -237,7 +296,7 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
               <span>Filtered: <strong>{activeFilter}</strong></span>
               <button
                 className="slides-filter-clear"
-                onClick={() => setActiveFilter(null)}
+                onClick={clearFilter}
                 title="Clear filter"
               >
                 &times;

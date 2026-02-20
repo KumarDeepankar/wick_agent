@@ -1,25 +1,25 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import type { TraceEvent as TraceEventType } from '../types';
 
 interface Props {
   event: TraceEventType;
 }
 
-const EVENT_COLORS: Record<string, string> = {
-  on_chat_model_start: '#3fb950',
-  on_chat_model_stream: '#3fb950',
-  on_chat_model_end: '#3fb950',
-  on_tool_start: '#d29922',
-  on_tool_end: '#d29922',
-  on_chain_start: '#bc8cff',
-  on_chain_end: '#bc8cff',
-  on_chain_stream: '#bc8cff',
-  done: '#39d3c5',
-  error: '#f85149',
+const EVENT_VAR_MAP: Record<string, string> = {
+  on_chat_model_start: 'var(--trace-llm)',
+  on_chat_model_stream: 'var(--trace-llm)',
+  on_chat_model_end: 'var(--trace-llm)',
+  on_tool_start: 'var(--trace-tool)',
+  on_tool_end: 'var(--trace-tool)',
+  on_chain_start: 'var(--trace-chain)',
+  on_chain_end: 'var(--trace-chain)',
+  on_chain_stream: 'var(--trace-chain)',
+  done: 'var(--trace-done)',
+  error: 'var(--trace-error)',
 };
 
 function getColor(eventType: string): string {
-  return EVENT_COLORS[eventType] ?? '#8b949e';
+  return EVENT_VAR_MAP[eventType] ?? 'var(--trace-default)';
 }
 
 function getSummary(event: TraceEventType): string {
@@ -60,6 +60,17 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
       navigator.clipboard.writeText(text).then(() => {
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
+      }).catch(() => {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
       });
     },
     [text],
@@ -83,13 +94,31 @@ export function TraceEventCard({ event }: Props) {
   // Token stream events: not expandable (too noisy)
   const isStreamToken = event.eventType === 'on_chat_model_stream';
 
-  const jsonText = JSON.stringify(event.data, null, 2);
+  // Defer JSON serialization until needed
+  const jsonText = useMemo(() => {
+    return JSON.stringify(event.data, null, 2);
+  }, [event.data]);
+
+  const handleToggle = useCallback(() => {
+    if (!isStreamToken) setExpanded((e) => !e);
+  }, [isStreamToken]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleToggle();
+    }
+  }, [handleToggle]);
 
   return (
     <div
       className="trace-event-card"
       style={{ borderLeftColor: color }}
-      onClick={() => !isStreamToken && setExpanded(!expanded)}
+      onClick={handleToggle}
+      onKeyDown={!isStreamToken ? handleKeyDown : undefined}
+      role={!isStreamToken ? 'button' : undefined}
+      tabIndex={!isStreamToken ? 0 : undefined}
+      aria-expanded={!isStreamToken ? expanded : undefined}
     >
       <div className="trace-event-header">
         <span className="trace-event-type" style={{ color }}>

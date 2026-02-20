@@ -75,6 +75,11 @@ export function useAgentStream() {
   const assistantIdRef = useRef<string | null>(null);
   // Track edit_file run_id → file_path so we can fetch on on_tool_end
   const pendingEditsRef = useRef<Map<string, string>>(new Map());
+  // Insert a separator before next text chunk after a tool call finishes
+  const needsSeparatorRef = useRef(false);
+  // Batch streaming tokens via rAF for performance
+  const pendingTokensRef = useRef('');
+  const rafRef = useRef<number>(0);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -203,6 +208,18 @@ export function useAgentStream() {
             }
           }
 
+          // Mark that a step boundary occurred so we insert a divider before next text
+          if (sse.event === 'on_tool_end') {
+            // Only set if assistant already has content
+            setMessages((prev) => {
+              const cur = prev.find((m) => m.id === assistantIdRef.current);
+              if (cur && cur.content.trim()) {
+                needsSeparatorRef.current = true;
+              }
+              return prev;
+            });
+          }
+
           // Detect edit_file completion → fetch updated file from backend
           if (sse.event === 'on_tool_end') {
             const toolName = parsed.name as string;
@@ -305,18 +322,42 @@ export function useAgentStream() {
               const chunk = (parsed.data as Record<string, unknown>)?.chunk as Record<string, unknown> | undefined;
               const token = (chunk?.content as string) ?? '';
               if (token) {
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === assistantIdRef.current
-                      ? { ...m, content: m.content + token }
-                      : m,
-                  ),
-                );
+                const prefix = needsSeparatorRef.current ? '\n\n---\n\n' : '';
+                needsSeparatorRef.current = false;
+                // Batch tokens via rAF to avoid per-token re-renders
+                pendingTokensRef.current += prefix + token;
+                if (!rafRef.current) {
+                  rafRef.current = requestAnimationFrame(() => {
+                    const batch = pendingTokensRef.current;
+                    pendingTokensRef.current = '';
+                    rafRef.current = 0;
+                    setMessages((prev) =>
+                      prev.map((m) =>
+                        m.id === assistantIdRef.current
+                          ? { ...m, content: m.content + batch }
+                          : m,
+                      ),
+                    );
+                  });
+                }
               }
               break;
             }
 
             case 'done': {
+              // Flush any pending batched tokens
+              if (pendingTokensRef.current) {
+                const batch = pendingTokensRef.current;
+                pendingTokensRef.current = '';
+                if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantIdRef.current
+                      ? { ...m, content: m.content + batch }
+                      : m,
+                  ),
+                );
+              }
               const tid = parsed.thread_id as string;
               if (tid) setThreadId(tid);
               setStatus('done');
@@ -354,6 +395,10 @@ export function useAgentStream() {
     ));
   }, []);
 
+  const removeArtifact = useCallback((artifactId: string) => {
+    setCanvasArtifacts(prev => prev.filter(a => a.id !== artifactId));
+  }, []);
+
   const reset = useCallback(() => {
     stop();
     setMessages([]);
@@ -363,6 +408,7 @@ export function useAgentStream() {
     setError(null);
     setStatus('idle');
     pendingEditsRef.current.clear();
+    needsSeparatorRef.current = false;
   }, [stop]);
 
   return {
@@ -376,5 +422,6 @@ export function useAgentStream() {
     stop,
     reset,
     updateArtifactContent,
+    removeArtifact,
   };
 }

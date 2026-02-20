@@ -1,9 +1,21 @@
-import type { AgentInfo, HealthResponse } from './types';
+import type { AgentInfo, HealthResponse, SkillInfo } from './types';
 
 export async function fetchAgents(): Promise<AgentInfo[]> {
   const res = await fetch('/agents/');
   if (!res.ok) throw new Error(`Failed to fetch agents: ${res.status}`);
   return res.json();
+}
+
+export async function fetchSkills(): Promise<SkillInfo[]> {
+  const res = await fetch('/agents/skills/available');
+  if (!res.ok) throw new Error(`Failed to fetch skills: ${res.status}`);
+  const data = await res.json();
+  return (data.skills ?? []).map((s: Record<string, unknown>) => ({
+    name: s.name as string,
+    description: s.description as string,
+    samplePrompts: (s.sample_prompts as string[]) ?? [],
+    icon: (s.icon as string) ?? '',
+  }));
 }
 
 export async function fetchHealth(): Promise<HealthResponse> {

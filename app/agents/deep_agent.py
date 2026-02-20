@@ -678,6 +678,8 @@ async def stream_agent(
             data = event.get("data", {})
 
             # Serialize the raw framework event — make LangChain objects JSON-safe
+            # Tool events carry file content that must not be truncated
+            is_tool_event = kind in ("on_tool_start", "on_tool_end")
             serialized: dict[str, Any] = {
                 "event": kind,
                 "name": event.get("name", ""),
@@ -685,7 +687,11 @@ async def stream_agent(
                 "tags": event.get("tags", []),
                 "metadata": _safe_serialize(event.get("metadata", {})),
                 "parent_ids": event.get("parent_ids", []),
-                "data": _safe_serialize(data),
+                "data": _safe_serialize(
+                    data,
+                    max_depth=6 if is_tool_event else 3,
+                    max_str_len=500_000 if is_tool_event else 2000,
+                ),
             }
 
             yield {"event": kind, "data": serialized}

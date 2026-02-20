@@ -6,6 +6,10 @@ description: >
   duplicates), and produces a formatted report. Use this skill when the
   user asks to analyze a CSV, compute statistics on tabular data, profile
   a dataset, or check data quality.
+icon: table
+sample-prompts:
+  - Analyze the CSV at /workspace/data.csv
+  - Show statistics for /workspace/sales.csv
 metadata:
   author: wick-agent
   version: "1.0"

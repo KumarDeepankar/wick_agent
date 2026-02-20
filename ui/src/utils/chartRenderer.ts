@@ -162,7 +162,7 @@ function opacityAttr(label: string, activeFilter?: string | null): string {
 
 function highlightStroke(label: string, activeFilter?: string | null): string {
   if (!activeFilter || label !== activeFilter) return '';
-  return ' stroke="#000" stroke-width="2"';
+  return ' stroke="currentColor" stroke-width="2"';
 }
 
 // ── Renderers ────────────────────────────────────────────────────────────
@@ -192,7 +192,7 @@ function maxVal(cfg: ChartConfig): number {
 
 function renderTitle(cfg: ChartConfig): string {
   if (!cfg.title) return '';
-  return `<text x="300" y="24" text-anchor="middle" font-size="16" font-weight="700" fill="#111827">${esc(cfg.title)}</text>`;
+  return `<text x="300" y="24" text-anchor="middle" font-size="16" font-weight="700" class="chart-title">${esc(cfg.title)}</text>`;
 }
 
 function renderLegend(cfg: ChartConfig, series: ChartSeries[], x: number, y: number): string {
@@ -204,7 +204,7 @@ function renderLegend(cfg: ChartConfig, series: ChartSeries[], x: number, y: num
     const s = series[i]!;
     const c = getColor(i, cfg.colors);
     html += `<rect x="${cx}" y="${y}" width="12" height="12" rx="2" fill="${c}"/>`;
-    html += `<text x="${cx + 16}" y="${y + 10}" font-size="11" fill="#4b5563">${esc(s.name)}</text>`;
+    html += `<text x="${cx + 16}" y="${y + 10}" font-size="11" class="chart-label">${esc(s.name)}</text>`;
     cx += 16 + s.name.length * 7 + gap;
   }
   return html;
@@ -213,10 +213,10 @@ function renderLegend(cfg: ChartConfig, series: ChartSeries[], x: number, y: num
 function renderAxisLabels(cfg: ChartConfig, plotLeft: number, plotBottom: number, plotWidth: number): string {
   let html = '';
   if (cfg.xLabel) {
-    html += `<text x="${plotLeft + plotWidth / 2}" y="${plotBottom + 44}" text-anchor="middle" font-size="12" fill="#6b7280">${esc(cfg.xLabel)}</text>`;
+    html += `<text x="${plotLeft + plotWidth / 2}" y="${plotBottom + 44}" text-anchor="middle" font-size="12" class="chart-label">${esc(cfg.xLabel)}</text>`;
   }
   if (cfg.yLabel) {
-    html += `<text x="${plotLeft - 44}" y="${(plotBottom + 40) / 2}" text-anchor="middle" font-size="12" fill="#6b7280" transform="rotate(-90, ${plotLeft - 44}, ${(plotBottom + 40) / 2})">${esc(cfg.yLabel)}</text>`;
+    html += `<text x="${plotLeft - 44}" y="${(plotBottom + 40) / 2}" text-anchor="middle" font-size="12" class="chart-label" transform="rotate(-90, ${plotLeft - 44}, ${(plotBottom + 40) / 2})">${esc(cfg.yLabel)}</text>`;
   }
   return html;
 }
@@ -226,8 +226,8 @@ function renderGridLines(plotLeft: number, plotTop: number, plotWidth: number, p
   for (let i = 0; i <= steps; i++) {
     const yy = plotTop + plotHeight - (i / steps) * plotHeight;
     const val = Math.round((i / steps) * mv);
-    html += `<line x1="${plotLeft}" y1="${yy}" x2="${plotLeft + plotWidth}" y2="${yy}" stroke="#e5e7eb" stroke-width="1"/>`;
-    html += `<text x="${plotLeft - 6}" y="${yy + 4}" text-anchor="end" font-size="10" fill="#9ca3af">${val}</text>`;
+    html += `<line x1="${plotLeft}" y1="${yy}" x2="${plotLeft + plotWidth}" y2="${yy}" class="chart-grid" stroke-width="1"/>`;
+    html += `<text x="${plotLeft - 6}" y="${yy + 4}" text-anchor="end" font-size="10" class="chart-label-muted">${val}</text>`;
   }
   return html;
 }
@@ -249,7 +249,7 @@ function renderBar(cfg: ChartConfig, activeFilter?: string | null): string {
 
   let svg = renderTitle(cfg);
   svg += renderGridLines(plotLeft, plotTop, plotWidth, plotHeight, mv);
-  svg += `<line x1="${plotLeft}" y1="${plotBottom}" x2="${plotLeft + plotWidth}" y2="${plotBottom}" stroke="#d1d5db" stroke-width="1"/>`;
+  svg += `<line x1="${plotLeft}" y1="${plotBottom}" x2="${plotLeft + plotWidth}" y2="${plotBottom}" class="chart-axis" stroke-width="1"/>`;
 
   for (let i = 0; i < n; i++) {
     const label = labelAt(cfg.labels, i);
@@ -262,10 +262,10 @@ function renderBar(cfg: ChartConfig, activeFilter?: string | null): string {
       const c = getColor(si, cfg.colors);
       svg += `<rect x="${bx}" y="${by}" width="${barWidth - 2}" height="${barH}" fill="${c}" rx="2" class="chart-clickable" data-label="${esc(label)}" style="cursor:pointer"${opacityAttr(label, activeFilter)}${highlightStroke(label, activeFilter)}/>`;
       if (cfg.showValues) {
-        svg += `<text x="${bx + (barWidth - 2) / 2}" y="${by - 4}" text-anchor="middle" font-size="10" fill="#6b7280"${opacityAttr(label, activeFilter)}>${val}</text>`;
+        svg += `<text x="${bx + (barWidth - 2) / 2}" y="${by - 4}" text-anchor="middle" font-size="10" class="chart-label"${opacityAttr(label, activeFilter)}>${val}</text>`;
       }
     }
-    svg += `<text x="${plotLeft + i * groupWidth + groupWidth / 2}" y="${plotBottom + 16}" text-anchor="middle" font-size="11" fill="#6b7280">${esc(label)}</text>`;
+    svg += `<text x="${plotLeft + i * groupWidth + groupWidth / 2}" y="${plotBottom + 16}" text-anchor="middle" font-size="11" class="chart-label">${esc(label)}</text>`;
   }
 
   svg += renderAxisLabels(cfg, plotLeft, plotBottom, plotWidth);
@@ -292,7 +292,7 @@ function renderHBar(cfg: ChartConfig, activeFilter?: string | null): string {
   const barH = (groupHeight - barPad * 2) / nSeries;
 
   let svg = renderTitle(cfg);
-  svg += `<line x1="${plotLeft}" y1="${plotTop}" x2="${plotLeft}" y2="${plotBottom}" stroke="#d1d5db" stroke-width="1"/>`;
+  svg += `<line x1="${plotLeft}" y1="${plotTop}" x2="${plotLeft}" y2="${plotBottom}" class="chart-axis" stroke-width="1"/>`;
 
   for (let i = 0; i < n; i++) {
     const label = labelAt(cfg.labels, i);
@@ -304,10 +304,10 @@ function renderHBar(cfg: ChartConfig, activeFilter?: string | null): string {
       const c = getColor(si, cfg.colors);
       svg += `<rect x="${plotLeft}" y="${by}" width="${barW}" height="${barH - 2}" fill="${c}" rx="2" class="chart-clickable" data-label="${esc(label)}" style="cursor:pointer"${opacityAttr(label, activeFilter)}${highlightStroke(label, activeFilter)}/>`;
       if (cfg.showValues) {
-        svg += `<text x="${plotLeft + barW + 6}" y="${by + (barH - 2) / 2 + 4}" font-size="10" fill="#6b7280"${opacityAttr(label, activeFilter)}>${val}</text>`;
+        svg += `<text x="${plotLeft + barW + 6}" y="${by + (barH - 2) / 2 + 4}" font-size="10" class="chart-label"${opacityAttr(label, activeFilter)}>${val}</text>`;
       }
     }
-    svg += `<text x="${plotLeft - 8}" y="${plotTop + i * groupHeight + groupHeight / 2 + 4}" text-anchor="end" font-size="11" fill="#6b7280">${esc(label)}</text>`;
+    svg += `<text x="${plotLeft - 8}" y="${plotTop + i * groupHeight + groupHeight / 2 + 4}" text-anchor="end" font-size="11" class="chart-label">${esc(label)}</text>`;
   }
 
   svg += renderAxisLabels(cfg, plotLeft, plotBottom, plotWidth);
@@ -331,7 +331,7 @@ function renderLine(cfg: ChartConfig, activeFilter?: string | null): string {
 
   let svg = renderTitle(cfg);
   svg += renderGridLines(plotLeft, plotTop, plotWidth, plotHeight, mv);
-  svg += `<line x1="${plotLeft}" y1="${plotBottom}" x2="${plotLeft + plotWidth}" y2="${plotBottom}" stroke="#d1d5db" stroke-width="1"/>`;
+  svg += `<line x1="${plotLeft}" y1="${plotBottom}" x2="${plotLeft + plotWidth}" y2="${plotBottom}" class="chart-axis" stroke-width="1"/>`;
 
   for (let si = 0; si < series.length; si++) {
     const s = series[si]!;
@@ -353,7 +353,7 @@ function renderLine(cfg: ChartConfig, activeFilter?: string | null): string {
       const label = labelAt(cfg.labels, i);
       svg += `<circle cx="${pt[0]}" cy="${pt[1]}" r="5" fill="${c}" class="chart-clickable" data-label="${esc(label)}" style="cursor:pointer"${opacityAttr(label, activeFilter)}${highlightStroke(label, activeFilter)}/>`;
       if (cfg.showValues) {
-        svg += `<text x="${pt[0]}" y="${pt[1] - 10}" text-anchor="middle" font-size="10" fill="#6b7280"${opacityAttr(label, activeFilter)}>${valAt(s.data, i)}</text>`;
+        svg += `<text x="${pt[0]}" y="${pt[1] - 10}" text-anchor="middle" font-size="10" class="chart-label"${opacityAttr(label, activeFilter)}>${valAt(s.data, i)}</text>`;
       }
     }
   }
@@ -361,7 +361,7 @@ function renderLine(cfg: ChartConfig, activeFilter?: string | null): string {
   // X-axis labels
   for (let i = 0; i < n; i++) {
     const px = plotLeft + (i / Math.max(n - 1, 1)) * plotWidth;
-    svg += `<text x="${px}" y="${plotBottom + 16}" text-anchor="middle" font-size="11" fill="#6b7280">${esc(labelAt(cfg.labels, i))}</text>`;
+    svg += `<text x="${px}" y="${plotBottom + 16}" text-anchor="middle" font-size="11" class="chart-label">${esc(labelAt(cfg.labels, i))}</text>`;
   }
 
   svg += renderAxisLabels(cfg, plotLeft, plotBottom, plotWidth);
@@ -385,7 +385,7 @@ function renderArea(cfg: ChartConfig, activeFilter?: string | null): string {
 
   let svg = renderTitle(cfg);
   svg += renderGridLines(plotLeft, plotTop, plotWidth, plotHeight, mv);
-  svg += `<line x1="${plotLeft}" y1="${plotBottom}" x2="${plotLeft + plotWidth}" y2="${plotBottom}" stroke="#d1d5db" stroke-width="1"/>`;
+  svg += `<line x1="${plotLeft}" y1="${plotBottom}" x2="${plotLeft + plotWidth}" y2="${plotBottom}" class="chart-axis" stroke-width="1"/>`;
 
   for (let si = 0; si < series.length; si++) {
     const s = series[si]!;
@@ -413,14 +413,14 @@ function renderArea(cfg: ChartConfig, activeFilter?: string | null): string {
       const label = labelAt(cfg.labels, i);
       svg += `<circle cx="${pt[0]}" cy="${pt[1]}" r="4" fill="${c}" class="chart-clickable" data-label="${esc(label)}" style="cursor:pointer"${opacityAttr(label, activeFilter)}${highlightStroke(label, activeFilter)}/>`;
       if (cfg.showValues) {
-        svg += `<text x="${pt[0]}" y="${pt[1] - 10}" text-anchor="middle" font-size="10" fill="#6b7280"${opacityAttr(label, activeFilter)}>${valAt(s.data, i)}</text>`;
+        svg += `<text x="${pt[0]}" y="${pt[1] - 10}" text-anchor="middle" font-size="10" class="chart-label"${opacityAttr(label, activeFilter)}>${valAt(s.data, i)}</text>`;
       }
     }
   }
 
   for (let i = 0; i < n; i++) {
     const px = plotLeft + (i / Math.max(n - 1, 1)) * plotWidth;
-    svg += `<text x="${px}" y="${plotBottom + 16}" text-anchor="middle" font-size="11" fill="#6b7280">${esc(labelAt(cfg.labels, i))}</text>`;
+    svg += `<text x="${px}" y="${plotBottom + 16}" text-anchor="middle" font-size="11" class="chart-label">${esc(labelAt(cfg.labels, i))}</text>`;
   }
 
   svg += renderAxisLabels(cfg, plotLeft, plotBottom, plotWidth);
@@ -471,7 +471,7 @@ function renderPieSlices(cfg: ChartConfig, cx: number, cy: number, r: number, in
     const pct = Math.round((dv / total) * 100);
     const anchor = midAngle > Math.PI / 2 && midAngle < (3 * Math.PI) / 2 ? 'end' : 'start';
     const labelText = cfg.showValues ? `${label} (${pct}%)` : label;
-    svg += `<text x="${lx}" y="${ly + 4}" text-anchor="${Math.abs(midAngle + Math.PI / 2) < 0.1 ? 'middle' : anchor}" font-size="11" fill="#4b5563"${opacityAttr(label, activeFilter)}>${esc(labelText)}</text>`;
+    svg += `<text x="${lx}" y="${ly + 4}" text-anchor="${Math.abs(midAngle + Math.PI / 2) < 0.1 ? 'middle' : anchor}" font-size="11" class="chart-label"${opacityAttr(label, activeFilter)}>${esc(labelText)}</text>`;
 
     startAngle = endAngle;
   }
@@ -482,7 +482,7 @@ function renderPieSlices(cfg: ChartConfig, cx: number, cy: number, r: number, in
 function renderPie(cfg: ChartConfig, activeFilter?: string | null): string {
   let svg = '';
   if (cfg.title) {
-    svg += `<text x="200" y="24" text-anchor="middle" font-size="16" font-weight="700" fill="#111827">${esc(cfg.title)}</text>`;
+    svg += `<text x="200" y="24" text-anchor="middle" font-size="16" font-weight="700" class="chart-title">${esc(cfg.title)}</text>`;
   }
   svg += renderPieSlices(cfg, 200, 210, 130, 0, activeFilter);
   return svg;
@@ -491,7 +491,7 @@ function renderPie(cfg: ChartConfig, activeFilter?: string | null): string {
 function renderDonut(cfg: ChartConfig, activeFilter?: string | null): string {
   let svg = '';
   if (cfg.title) {
-    svg += `<text x="200" y="24" text-anchor="middle" font-size="16" font-weight="700" fill="#111827">${esc(cfg.title)}</text>`;
+    svg += `<text x="200" y="24" text-anchor="middle" font-size="16" font-weight="700" class="chart-title">${esc(cfg.title)}</text>`;
   }
   svg += renderPieSlices(cfg, 200, 210, 130, 70, activeFilter);
   return svg;
@@ -513,7 +513,7 @@ function renderStackedBar(cfg: ChartConfig, activeFilter?: string | null): strin
 
   let svg = renderTitle(cfg);
   svg += renderGridLines(plotLeft, plotTop, plotWidth, plotHeight, mv);
-  svg += `<line x1="${plotLeft}" y1="${plotBottom}" x2="${plotLeft + plotWidth}" y2="${plotBottom}" stroke="#d1d5db" stroke-width="1"/>`;
+  svg += `<line x1="${plotLeft}" y1="${plotBottom}" x2="${plotLeft + plotWidth}" y2="${plotBottom}" class="chart-axis" stroke-width="1"/>`;
 
   for (let i = 0; i < n; i++) {
     const label = labelAt(cfg.labels, i);
@@ -527,11 +527,11 @@ function renderStackedBar(cfg: ChartConfig, activeFilter?: string | null): strin
       const c = getColor(si, cfg.colors);
       svg += `<rect x="${bx}" y="${by}" width="${barWidth}" height="${barH}" fill="${c}" class="chart-clickable" data-label="${esc(label)}" style="cursor:pointer"${opacityAttr(label, activeFilter)}${highlightStroke(label, activeFilter)}/>`;
       if (cfg.showValues && barH > 14) {
-        svg += `<text x="${bx + barWidth / 2}" y="${by + barH / 2 + 4}" text-anchor="middle" font-size="10" fill="#fff"${opacityAttr(label, activeFilter)}>${val}</text>`;
+        svg += `<text x="${bx + barWidth / 2}" y="${by + barH / 2 + 4}" text-anchor="middle" font-size="10" fill="#fff" style="text-shadow: 0 0 3px rgba(0,0,0,0.5)"${opacityAttr(label, activeFilter)}>${val}</text>`;
       }
       cumH += barH;
     }
-    svg += `<text x="${plotLeft + i * groupWidth + groupWidth / 2}" y="${plotBottom + 16}" text-anchor="middle" font-size="11" fill="#6b7280">${esc(label)}</text>`;
+    svg += `<text x="${plotLeft + i * groupWidth + groupWidth / 2}" y="${plotBottom + 16}" text-anchor="middle" font-size="11" class="chart-label">${esc(label)}</text>`;
   }
 
   svg += renderAxisLabels(cfg, plotLeft, plotBottom, plotWidth);

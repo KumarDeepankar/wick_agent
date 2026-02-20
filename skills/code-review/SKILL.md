@@ -5,6 +5,10 @@ description: >
   vulnerabilities, performance issues, and adherence to best practices.
   Use this skill when the user asks to review code, audit code, check for
   bugs, analyze code quality, or find security issues.
+icon: code
+sample-prompts:
+  - Review the code in /workspace/main.py for bugs
+  - Check /workspace/app.js for security issues
 metadata:
   author: wick-agent
   version: "1.0"

@@ -5,6 +5,10 @@ description: >
   concise, structured summaries at varying levels of detail. Use this
   skill when the user asks to summarize, condense, create a TL;DR,
   extract key points, or distill information.
+icon: document
+sample-prompts:
+  - Summarize the project documentation
+  - Give me an overview of this codebase
 metadata:
   author: wick-agent
   version: "1.0"

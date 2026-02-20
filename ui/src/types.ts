@@ -50,6 +50,7 @@ export interface SkillInfo {
   name: string;
   description: string;
   samplePrompts: string[];
+  icon: string;
 }
 
 export interface HealthResponse {

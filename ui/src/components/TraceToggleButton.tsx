@@ -11,6 +11,7 @@ export function TraceToggleButton({ eventCount, isStreaming, isOpen, onClick }: 
       className={`trace-toggle ${isOpen ? 'active' : ''}`}
       onClick={onClick}
       title={isOpen ? 'Hide trace events' : 'Show trace events'}
+      aria-label={isOpen ? 'Hide trace events' : 'Show trace events'}
     >
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
         <rect x="2" y="2" width="12" height="12" rx="2" />
@@ -18,8 +19,8 @@ export function TraceToggleButton({ eventCount, isStreaming, isOpen, onClick }: 
         <line x1="5" y1="8" x2="11" y2="8" />
         <line x1="5" y1="10.5" x2="9" y2="10.5" />
       </svg>
-      {isStreaming && eventCount > 0 && (
-        <span className="trace-toggle-badge">{eventCount > 99 ? '99+' : eventCount}</span>
+      {eventCount > 0 && (
+        <span className={`trace-toggle-badge ${isStreaming ? 'live' : ''}`}>{eventCount > 99 ? '99+' : eventCount}</span>
       )}
     </button>
   );

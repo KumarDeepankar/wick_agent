@@ -5,6 +5,10 @@ description: >
   from multiple sources, and produce a well-structured report with citations.
   Use this skill when the user asks to research, investigate, explore a topic,
   write a report, or gather information from the web.
+icon: search
+sample-prompts:
+  - Research best practices for Python async programming
+  - Investigate the latest trends in AI agent frameworks
 metadata:
   author: wick-agent
   version: "1.0"

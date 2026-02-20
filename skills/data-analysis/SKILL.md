@@ -5,6 +5,10 @@ description: >
   and produce clear summaries with actionable insights. Use this skill
   when the user asks to analyze data, find trends, compute metrics,
   generate statistics, or interpret numerical information.
+icon: bar-chart
+sample-prompts:
+  - Analyze trends in the sales data
+  - Calculate key metrics from /workspace/metrics.csv
 metadata:
   author: wick-agent
   version: "1.0"

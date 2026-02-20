@@ -1,9 +1,13 @@
 ---
 name: slides
 description: >
-  Create presentation slide decks. Write slides as a markdown file with ---
-  separators between slides. The system renders a live preview in the canvas
-  panel and can export to editable PowerPoint (.pptx) files.
+  Create presentation slide decks as markdown files with slide separators.
+  The system renders a live preview in the canvas panel and can export to
+  editable PowerPoint (.pptx) files.
+icon: slides
+sample-prompts:
+  - Create a 5-slide presentation about Python best practices
+  - Make a slide deck on AI trends in 2025
 metadata:
   author: wick-agent
   version: "1.0"

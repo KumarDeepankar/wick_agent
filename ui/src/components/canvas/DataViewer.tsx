@@ -46,12 +46,15 @@ function parseCSV(raw: string, delimiter: string = ','): string[][] {
   return rows;
 }
 
+const PAGE_SIZE = 200;
+
 export function DataViewer({ content, fileName }: Props) {
   const delimiter = fileName.endsWith('.tsv') ? '\t' : ',';
   const allRows = useMemo(() => parseCSV(content, delimiter), [content, delimiter]);
 
   const [sortCol, setSortCol] = useState<number | null>(null);
   const [sortAsc, setSortAsc] = useState(true);
+  const [page, setPage] = useState(0);
 
   const headers = allRows[0];
 
@@ -75,6 +78,9 @@ export function DataViewer({ content, fileName }: Props) {
     });
   }, [dataRows, sortCol, sortAsc]);
 
+  const totalPages = Math.ceil(sorted.length / PAGE_SIZE);
+  const pageRows = sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
   const handleSort = (col: number) => {
     if (sortCol === col) {
       setSortAsc(!sortAsc);
@@ -82,6 +88,7 @@ export function DataViewer({ content, fileName }: Props) {
       setSortCol(col);
       setSortAsc(true);
     }
+    setPage(0);
   };
 
   return (
@@ -101,7 +108,7 @@ export function DataViewer({ content, fileName }: Props) {
             </tr>
           </thead>
           <tbody>
-            {sorted.map((row, ri) => (
+            {pageRows.map((row, ri) => (
               <tr key={ri}>
                 {headers.map((_, ci) => (
                   <td key={ci}>{row[ci] ?? ''}</td>
@@ -112,7 +119,32 @@ export function DataViewer({ content, fileName }: Props) {
         </table>
       </div>
       <div className="data-viewer-footer">
-        {dataRows.length} row{dataRows.length !== 1 ? 's' : ''} &middot; {headers.length} column{headers.length !== 1 ? 's' : ''}
+        <span>
+          {dataRows.length} row{dataRows.length !== 1 ? 's' : ''} &middot; {headers.length} column{headers.length !== 1 ? 's' : ''}
+        </span>
+        {totalPages > 1 && (
+          <div className="data-pagination">
+            <button
+              className="data-page-btn"
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              disabled={page === 0}
+              aria-label="Previous page"
+            >
+              Prev
+            </button>
+            <span className="data-page-info">
+              {page + 1} / {totalPages}
+            </span>
+            <button
+              className="data-page-btn"
+              onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+              disabled={page >= totalPages - 1}
+              aria-label="Next page"
+            >
+              Next
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
