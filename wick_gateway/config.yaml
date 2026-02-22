@@ -1,0 +1,6 @@
+listen: ":8080"
+downstream:
+  - name: wick
+    url: "http://localhost:8001/mcp"
+  - name: wick2
+    url: "http://localhost:8002/mcp"
