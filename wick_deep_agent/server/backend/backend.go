@@ -1,5 +1,11 @@
 package backend
 
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+)
+
 // Backend is the interface for executing commands and transferring files.
 type Backend interface {
 	// ID returns the backend identifier.
@@ -20,6 +26,31 @@ type Backend interface {
 
 	// ContainerError returns the error message when status is "error".
 	ContainerError() string
+
+	// Workdir returns the already-scoped working directory for this backend.
+	Workdir() string
+
+	// ResolvePath resolves a path relative to the workdir and validates
+	// it does not escape the workspace boundary.
+	ResolvePath(path string) (string, error)
+}
+
+// resolvePath is a shared helper that resolves a path relative to a workdir
+// and ensures the result stays within the workdir boundary.
+func resolvePath(workdir, path string) (string, error) {
+	if path == "" {
+		return workdir, nil
+	}
+	var resolved string
+	if filepath.IsAbs(path) {
+		resolved = filepath.Clean(path)
+	} else {
+		resolved = filepath.Clean(filepath.Join(workdir, path))
+	}
+	if resolved != workdir && !strings.HasPrefix(resolved, workdir+"/") {
+		return "", fmt.Errorf("path %q is outside workspace %q", path, workdir)
+	}
+	return resolved, nil
 }
 
 // ExecuteResponse holds the result of a command execution.

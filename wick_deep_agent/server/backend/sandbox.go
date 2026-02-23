@@ -43,7 +43,9 @@ func WriteFileCommand(path, content string) string {
 
 // EditFileCommand returns a shell command to perform a search-and-replace edit.
 func EditFileCommand(path, oldText, newText string) string {
-	safePath := shellQuote(path)
+	// Escape for Python string literal (not shell-quoted — this goes inside python3 -c "...")
+	pyPath := strings.ReplaceAll(path, `\`, `\\`)
+	pyPath = strings.ReplaceAll(pyPath, `'`, `\'`)
 	// Use Python for reliable string replacement (handles multi-line, special chars)
 	escapedOld := strings.ReplaceAll(oldText, "'", "'\\''")
 	escapedNew := strings.ReplaceAll(newText, "'", "'\\''")
@@ -60,7 +62,7 @@ if old not in content:
 content = content.replace(old, new, 1)
 with open(path, 'w') as f: f.write(content)
 print('OK')
-" 2>&1`, strings.ReplaceAll(safePath, "'", "\\'"), escapedOld, escapedNew)
+" 2>&1`, pyPath, escapedOld, escapedNew)
 }
 
 // GrepCommand returns a shell command to search file contents.
