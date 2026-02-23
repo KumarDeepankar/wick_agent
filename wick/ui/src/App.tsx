@@ -1,11 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { ChatPanel } from './components/ChatPanel';
+import { LoginPage } from './components/LoginPage';
 import { TraceToggleButton } from './components/TraceToggleButton';
 import { TraceOverlay } from './components/TraceOverlay';
 import { CanvasPanel } from './components/canvas/CanvasPanel';
 import { SettingsPanel } from './components/SettingsPanel';
+import { TerminalPanel } from './components/TerminalPanel';
 import { useAgentStream } from './hooks/useAgentStream';
-import { fetchHealth, fetchAgents } from './api';
+import { fetchHealth, fetchAgents, fetchMe, clearToken, getToken } from './api';
+import type { AuthUser } from './api';
+import type { AgentInfo } from './types';
 
 type Theme = 'light' | 'dark';
 
@@ -19,6 +23,8 @@ export default function App() {
   const [agentId, setAgentId] = useState('');
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
   const [traceOpen, setTraceOpen] = useState(false);
   const [pendingPrompt, setPendingPrompt] = useState<string | undefined>();
   const [canvasWidth, setCanvasWidth] = useState(520);
@@ -26,6 +32,8 @@ export default function App() {
   const [canvasCollapsed, setCanvasCollapsed] = useState(false);
   const [canvasFullscreen, setCanvasFullscreen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [chatPopupOpen, setChatPopupOpen] = useState(false);
   const [popupPos, setPopupPos] = useState({ x: 0, y: 0 });
   const [popupSize, setPopupSize] = useState({ w: 380, h: 520 });
@@ -34,6 +42,46 @@ export default function App() {
   const popupResizeRef = useRef(false);
   const popupPosRef = useRef({ x: 0, y: 0 });
   const popupSizeRef = useRef({ w: 380, h: 520 });
+
+  // ── Auth: validate existing token on mount ──
+  useEffect(() => {
+    if (!getToken()) {
+      // Check if auth is even required by trying /auth/me
+      // If gateway is not configured, 501 → treat as no-auth mode
+      fetch('/auth/me')
+        .then((res) => {
+          if (res.status === 501) {
+            // Auth not configured — skip login
+            setUser({ username: 'local', role: 'admin' });
+          }
+          // 401 or other → need login
+        })
+        .catch(() => {
+          // Network error calling /auth/me — assume auth not configured
+          setUser({ username: 'local', role: 'admin' });
+        })
+        .finally(() => setAuthChecked(true));
+      return;
+    }
+    fetchMe()
+      .then((u) => setUser(u))
+      .catch(() => clearToken())
+      .finally(() => setAuthChecked(true));
+  }, []);
+
+  // Listen for 401 events dispatched by authFetch
+  useEffect(() => {
+    const handler = () => {
+      setUser(null);
+    };
+    window.addEventListener('wick-auth-expired', handler);
+    return () => window.removeEventListener('wick-auth-expired', handler);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    clearToken();
+    setUser(null);
+  }, []);
 
   const { messages, traceEvents, canvasArtifacts, status, threadId, error, send, stop, reset, updateArtifactContent, removeArtifact } =
     useAgentStream();
@@ -56,16 +104,48 @@ export default function App() {
     fetchHealth()
       .then(() => setHealthy(true))
       .catch(() => setHealthy(false));
-    // Auto-select the first agent on mount
-    fetchAgents()
-      .then((data) => {
-        if (data.length > 0 && !agentId) setAgentId(data[0]!.agent_id);
-      })
-      .catch(() => {});
-  }, []);
+    // Only fetch agents once authenticated (avoids 401 before login)
+    if (!user) return;
+    const loadAgents = () => {
+      fetchAgents()
+        .then((data) => {
+          setAgents(data);
+          if (data.length > 0 && !agentId) setAgentId(data[0]!.agent_id);
+        })
+        .catch(() => {});
+    };
+    loadAgents();
+
+    // SSE listener for container_status changes
+    const token = getToken();
+    const url = token
+      ? `/agents/events?token=${encodeURIComponent(token)}`
+      : '/agents/events';
+    const es = new EventSource(url);
+    es.addEventListener('container_status', loadAgents);
+    return () => es.close();
+  }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleTheme = useCallback(() => {
     setTheme((t) => (t === 'light' ? 'dark' : 'light'));
+  }, []);
+
+  const currentAgent = agents.find((a) => a.agent_id === agentId);
+  const containerLaunched = currentAgent?.container_status === 'launched';
+
+  // Auto-close terminal when container is no longer launched
+  useEffect(() => {
+    if (!containerLaunched && terminalOpen) {
+      setTerminalOpen(false);
+    }
+  }, [containerLaunched, terminalOpen]);
+
+  const handleOpenTerminal = useCallback(() => {
+    setTerminalOpen(true);
+  }, []);
+
+  const handleCloseTerminal = useCallback(() => {
+    setTerminalOpen(false);
   }, []);
 
   const handleSend = (content: string) => {
@@ -209,6 +289,14 @@ export default function App() {
     document.addEventListener('mouseup', handleUp);
   }, []);
 
+  // ── Auth gate ──
+  if (!authChecked) {
+    return <div className="login-page"><div className="login-card" style={{ textAlign: 'center', color: 'var(--text-muted)' }}>Loading...</div></div>;
+  }
+  if (!user) {
+    return <LoginPage onLoginSuccess={(u) => setUser(u)} />;
+  }
+
   return (
     <div className="app">
       <header className="app-header">
@@ -237,8 +325,23 @@ export default function App() {
               theme={theme}
               onToggleTheme={toggleTheme}
               disabled={isActive}
+              onOpenTerminal={handleOpenTerminal}
             />
           </div>
+          {containerLaunched && (
+            <button
+              className={`terminal-toggle-btn ${terminalOpen ? 'active' : ''}`}
+              onClick={() => setTerminalOpen((o) => !o)}
+              title={terminalOpen ? 'Close terminal' : 'Open terminal'}
+              aria-label={terminalOpen ? 'Close terminal' : 'Open terminal'}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="4 17 10 11 4 5" />
+                <line x1="12" y1="19" x2="20" y2="19" />
+              </svg>
+              Terminal
+            </button>
+          )}
           <button
             className={`canvas-collapse-toggle ${canvasCollapsed ? 'collapsed' : ''}`}
             onClick={toggleCanvas}
@@ -266,6 +369,19 @@ export default function App() {
                   : 'Checking...'
             }
           />
+          {user && user.username !== 'local' && (
+            <div className="user-badge">
+              <span className="user-badge-name">{user.username}</span>
+              <span className="user-badge-role">{user.role}</span>
+              <button className="user-badge-logout" onClick={handleLogout} title="Logout">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                  <polyline points="16 17 21 12 16 7" />
+                  <line x1="21" y1="12" x2="9" y2="12" />
+                </svg>
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
@@ -311,6 +427,14 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {terminalOpen && agentId && containerLaunched && (
+        <TerminalPanel
+          agentId={agentId}
+          onClose={handleCloseTerminal}
+          theme={theme}
+        />
+      )}
 
       {/* Floating chat in fullscreen canvas mode */}
       {canvasFullscreen && (

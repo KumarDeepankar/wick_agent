@@ -13,10 +13,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Docker CLI (only the binary — no daemon, no apt repo needed)
+COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps
@@ -30,8 +32,8 @@ COPY agents.yaml .
 COPY run.py .
 COPY .env* ./
 
-# Built UI
-COPY --from=ui-build /ui/dist/ static/
+# Built UI (vite.config.ts outputs to ../static relative to /ui)
+COPY --from=ui-build /static/ static/
 
 EXPOSE 8000
 

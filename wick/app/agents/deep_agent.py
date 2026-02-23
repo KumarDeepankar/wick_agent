@@ -11,6 +11,7 @@ Supports every customization knob from the deep-agents docs:
 
 from __future__ import annotations
 
+import copy
 import logging
 import time
 import uuid
@@ -134,6 +135,19 @@ def _build_backend(
             workdir=backend_cfg.get("workdir", "/workspace"),
             timeout=backend_cfg.get("timeout", 120.0),
             max_output_bytes=backend_cfg.get("max_output_bytes", 100_000),
+            docker_host=backend_cfg.get("docker_host"),
+            image=backend_cfg.get("image", "python:3.11-slim"),
+            username=backend_cfg.get("_username", "local"),
+        ), None
+
+    if btype == "local":
+        from app.agents.local_backend import LocalSandboxBackend
+
+        return LocalSandboxBackend(
+            workdir=backend_cfg.get("workdir", "/workspace"),
+            timeout=backend_cfg.get("timeout", 120.0),
+            max_output_bytes=backend_cfg.get("max_output_bytes", 100_000),
+            username=backend_cfg.get("_username", "local"),
         ), None
 
     return None, None
@@ -232,18 +246,54 @@ def _build_cache(cache_cfg: dict[str, Any] | None) -> Any | None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Agent registry
+# Template + Agent registries
 # ═══════════════════════════════════════════════════════════════════════════
 
-_AGENT_REGISTRY: dict[str, dict[str, Any]] = {}
+_TEMPLATE_REGISTRY: dict[str, dict[str, Any]] = {}   # key = bare agent_id
+_AGENT_REGISTRY: dict[str, dict[str, Any]] = {}       # key = "agent_id:username"
 
 # Shared checkpointer for all agents
 _checkpointer = MemorySaver()
 
 
+def _scoped_key(agent_id: str, username: str) -> str:
+    return f"{agent_id}:{username}"
+
+
+def register_template(agent_id: str, **creation_kwargs: Any) -> dict[str, Any]:
+    """Store an agent template from YAML. No live agent is created."""
+    template = {
+        "agent_id": agent_id,
+        "name": creation_kwargs.get("name"),
+        "model": creation_kwargs.get("model"),
+        "_creation_kwargs": creation_kwargs,
+    }
+    _TEMPLATE_REGISTRY[agent_id] = template
+    return template
+
+
+def get_or_clone_agent(agent_id: str, username: str = "local") -> dict[str, Any]:
+    """Return the user's agent instance, cloning from template if needed."""
+    key = _scoped_key(agent_id, username)
+    meta = _AGENT_REGISTRY.get(key)
+    if meta is not None:
+        return meta
+    # Clone from template
+    template = _TEMPLATE_REGISTRY.get(agent_id)
+    if template is None:
+        raise KeyError(f"Agent template '{agent_id}' not found.")
+    creation_kwargs = copy.deepcopy(template["_creation_kwargs"])
+    return create_deep_agent_from_config(agent_id, username=username, **creation_kwargs)
+
+
+def list_templates() -> list[str]:
+    return list(_TEMPLATE_REGISTRY.keys())
+
+
 def create_deep_agent_from_config(
     agent_id: str,
     *,
+    username: str = "local",
     # Identity
     name: str | None = None,
     # Model — string ("ollama:llama3.1:8b") or dict with full config
@@ -388,6 +438,7 @@ def create_deep_agent_from_config(
     # ── Store metadata ───────────────────────────────────────────────────
     meta: dict[str, Any] = {
         "agent_id": agent_id,
+        "_username": username,
         "agent": agent,
         "name": name,
         "model": model_str,
@@ -397,6 +448,7 @@ def create_deep_agent_from_config(
         "middleware": resolved_mw_names,
         "subagents": subagent_names,
         "backend_type": (backend_cfg or {}).get("type", "state"),
+        "sandbox_url": (backend_cfg or {}).get("docker_host"),
         "has_interrupt_on": bool(interrupt_on),
         "interrupt_on": interrupt_on or {},
         "skills": skills_paths or [],
@@ -423,68 +475,167 @@ def create_deep_agent_from_config(
             "debug": debug,
         },
     }
-    _AGENT_REGISTRY[agent_id] = meta
+    key = _scoped_key(agent_id, username)
+    _AGENT_REGISTRY[key] = meta
     return meta
 
 
-def update_agent_tools(agent_id: str, tool_names: list[str]) -> dict[str, Any]:
+def update_agent_tools(agent_id: str, tool_names: list[str], username: str = "local") -> dict[str, Any]:
     """Rebuild an existing agent with a different set of tools.
 
     Preserves all other configuration. Thread state is retained via
     the shared checkpointer.
     """
-    meta = get_agent(agent_id)
+    meta = get_or_clone_agent(agent_id, username)
     creation_kwargs = meta["_creation_kwargs"].copy()
     creation_kwargs["tool_names"] = tool_names
-    return create_deep_agent_from_config(agent_id, **creation_kwargs)
+    return create_deep_agent_from_config(agent_id, username=username, **creation_kwargs)
 
 
-def get_or_create_default_agent() -> dict[str, Any]:
-    """Return the default agent, creating it on first access."""
-    if "default" not in _AGENT_REGISTRY:
-        tool_names = list_tools() or None
-        create_deep_agent_from_config("default", tool_names=tool_names)
-    return _AGENT_REGISTRY["default"]
+def update_agent_backend(
+    agent_id: str,
+    backend_updates: dict[str, Any],
+    username: str = "local",
+) -> dict[str, Any]:
+    """Rebuild an existing agent with modified backend config.
+
+    Preserves all other configuration. Thread state is retained via
+    the shared checkpointer.
+    """
+    meta = get_or_clone_agent(agent_id, username)
+    new_type = backend_updates.get("type")
+
+    # Always clean up old Docker backend (cancel in-flight launch + stop container)
+    # This covers: docker→local, docker→docker (URL change), docker→anything
+    old_backend = meta.get("_backend")
+    if old_backend:
+        if hasattr(old_backend, "cancel_launch"):
+            old_backend.cancel_launch()
+        if hasattr(old_backend, "stop_container"):
+            old_backend.stop_container()
+
+    # Per-user scoping for both backend modes
+    backend_updates["_username"] = username
+    if new_type == "docker":
+        backend_updates["container_name"] = f"wick-sandbox-{username}"
+
+    creation_kwargs = meta["_creation_kwargs"].copy()
+    # Reset backend config when switching types to avoid stale keys
+    current_backend = creation_kwargs.get("backend_cfg") or {}
+    if new_type and new_type != current_backend.get("type"):
+        creation_kwargs["backend_cfg"] = backend_updates
+    else:
+        creation_kwargs["backend_cfg"] = {**current_backend, **backend_updates}
+    return create_deep_agent_from_config(agent_id, username=username, **creation_kwargs)
 
 
-def get_agent(agent_id: str) -> dict[str, Any]:
-    meta = _AGENT_REGISTRY.get(agent_id)
+def get_agent(agent_id: str, username: str = "local") -> dict[str, Any]:
+    key = _scoped_key(agent_id, username)
+    meta = _AGENT_REGISTRY.get(key)
     if meta is None:
-        raise KeyError(f"Agent '{agent_id}' not found. Available: {list(_AGENT_REGISTRY.keys())}")
+        raise KeyError(f"Agent '{agent_id}' not found for user '{username}'.")
     return meta
 
 
-def list_agents() -> list[dict[str, Any]]:
-    return [
-        {
-            "agent_id": m["agent_id"],
-            "name": m.get("name"),
-            "model": m["model"],
-            "system_prompt": (
-                m["system_prompt"][:120] + "..."
-                if m.get("system_prompt") and len(m["system_prompt"]) > 120
-                else m.get("system_prompt")
-            ),
-            "tools": m["tools"],
-            "subagents": m["subagents"],
-            "middleware": m.get("middleware", []),
-            "backend_type": m.get("backend_type", "state"),
-            "has_interrupt_on": m.get("has_interrupt_on", False),
-            "skills": m.get("skills", []),
-            "loaded_skills": m.get("loaded_skills", []),
-            "memory": m.get("memory_paths", []),
-            "has_response_format": m.get("has_response_format", False),
-            "cache_enabled": m.get("cache_enabled", False),
-            "debug": m.get("debug", False),
-        }
-        for m in _AGENT_REGISTRY.values()
-    ]
+def _get_container_status(meta: dict) -> str | None:
+    backend = meta.get("_backend")
+    return getattr(backend, "container_status", None) if backend else None
 
 
-def delete_agent(agent_id: str) -> None:
-    if agent_id not in _AGENT_REGISTRY:
-        raise KeyError(f"Agent '{agent_id}' not found.")
-    del _AGENT_REGISTRY[agent_id]
+def _get_container_error(meta: dict) -> str | None:
+    backend = meta.get("_backend")
+    return getattr(backend, "container_error", None) if backend else None
+
+
+def _agent_summary(m: dict[str, Any]) -> dict[str, Any]:
+    """Build a JSON-safe summary dict from agent metadata."""
+    return {
+        "agent_id": m["agent_id"],
+        "name": m.get("name"),
+        "model": m.get("model", ""),
+        "system_prompt": (
+            m["system_prompt"][:120] + "..."
+            if m.get("system_prompt") and len(m["system_prompt"]) > 120
+            else m.get("system_prompt")
+        ),
+        "tools": m.get("tools", []),
+        "subagents": m.get("subagents", []),
+        "middleware": m.get("middleware", []),
+        "backend_type": m.get("backend_type", "state"),
+        "sandbox_url": m.get("sandbox_url"),
+        "has_interrupt_on": m.get("has_interrupt_on", False),
+        "skills": m.get("skills", []),
+        "loaded_skills": m.get("loaded_skills", []),
+        "memory": m.get("memory_paths", []),
+        "has_response_format": m.get("has_response_format", False),
+        "cache_enabled": m.get("cache_enabled", False),
+        "debug": m.get("debug", False),
+        "container_status": _get_container_status(m),
+        "container_error": _get_container_error(m),
+    }
+
+
+def _template_summary(t: dict[str, Any]) -> dict[str, Any]:
+    """Build a placeholder summary from a template (not yet cloned)."""
+    kw = t.get("_creation_kwargs", {})
+    model_input = kw.get("model") or ""
+    model_str = model_input if isinstance(model_input, str) else (
+        f"{model_input.get('provider', '')}:{model_input.get('model', '')}"
+    )
+    sp = kw.get("system_prompt")
+    return {
+        "agent_id": t["agent_id"],
+        "name": t.get("name"),
+        "model": model_str,
+        "system_prompt": (sp[:120] + "..." if sp and len(sp) > 120 else sp),
+        "tools": kw.get("tool_names") or [],
+        "subagents": [sa.get("name", "") for sa in (kw.get("subagents") or [])],
+        "middleware": kw.get("middleware_names") or [],
+        "backend_type": (kw.get("backend_cfg") or {}).get("type", "state"),
+        "sandbox_url": (kw.get("backend_cfg") or {}).get("docker_host"),
+        "has_interrupt_on": bool(kw.get("interrupt_on_cfg")),
+        "skills": [],
+        "loaded_skills": [],
+        "memory": [],
+        "has_response_format": bool(kw.get("response_format_cfg")),
+        "cache_enabled": bool(kw.get("cache_cfg") and kw["cache_cfg"].get("enabled")),
+        "debug": kw.get("debug", False),
+        "container_status": None,
+        "container_error": None,
+    }
+
+
+def list_agents(username: str = "local") -> list[dict[str, Any]]:
+    """List agents for a specific user. Includes un-cloned templates as placeholders."""
+    result: list[dict[str, Any]] = []
+    seen_agent_ids: set[str] = set()
+
+    # Live agent instances for this user
+    for key, m in _AGENT_REGISTRY.items():
+        if m.get("_username") == username:
+            result.append(_agent_summary(m))
+            seen_agent_ids.add(m["agent_id"])
+
+    # Templates not yet cloned for this user
+    for agent_id, t in _TEMPLATE_REGISTRY.items():
+        if agent_id not in seen_agent_ids:
+            result.append(_template_summary(t))
+
+    return result
+
+
+def delete_agent(agent_id: str, username: str = "local") -> None:
+    key = _scoped_key(agent_id, username)
+    if key not in _AGENT_REGISTRY:
+        raise KeyError(f"Agent '{agent_id}' not found for user '{username}'.")
+    meta = _AGENT_REGISTRY.pop(key)
+    # Clean up Docker container if running
+    backend = meta.get("_backend")
+    if backend:
+        if hasattr(backend, "cancel_launch"):
+            backend.cancel_launch()
+        if hasattr(backend, "stop_container"):
+            backend.stop_container()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -550,6 +701,7 @@ def invoke_agent(
     messages: list[dict[str, str]],
     thread_id: str | None = None,
     trace_enabled: bool = True,
+    username: str = "local",
 ) -> dict[str, Any]:
     """Invoke an agent synchronously.
 
@@ -558,10 +710,7 @@ def invoke_agent(
     trace (when trace_enabled=True).
     """
     resolved_agent_id = agent_id or "default"
-    if agent_id and agent_id != "default":
-        meta = get_agent(agent_id)
-    else:
-        meta = get_or_create_default_agent()
+    meta = get_or_clone_agent(resolved_agent_id, username)
 
     agent = meta["agent"]
     is_new_thread = thread_id is None
@@ -639,15 +788,14 @@ def resume_agent(
     thread_id: str,
     decision: str = "approve",
     edit_args: dict[str, Any] | None = None,
+    username: str = "local",
 ) -> dict[str, Any]:
     """Resume an interrupted agent after human-in-the-loop decision.
 
     Decisions: approve, reject, edit (with edit_args).
     """
-    if agent_id and agent_id != "default":
-        meta = get_agent(agent_id)
-    else:
-        meta = get_or_create_default_agent()
+    resolved_agent_id = agent_id or "default"
+    meta = get_or_clone_agent(resolved_agent_id, username)
 
     agent = meta["agent"]
     config = {"configurable": {"thread_id": thread_id}}
@@ -668,6 +816,7 @@ async def stream_agent(
     agent_id: str | None,
     messages: list[dict[str, str]],
     thread_id: str | None = None,
+    username: str = "local",
 ):
     """Async generator yielding SSE events from the agent.
 
@@ -677,10 +826,7 @@ async def stream_agent(
       - error — something went wrong
     """
     resolved_agent_id = agent_id or "default"
-    if agent_id and agent_id != "default":
-        meta = get_agent(agent_id)
-    else:
-        meta = get_or_create_default_agent()
+    meta = get_or_clone_agent(resolved_agent_id, username)
 
     agent = meta["agent"]
     thread_id = thread_id or str(uuid.uuid4())

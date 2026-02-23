@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import type { AgentInfo } from '../types';
-import { fetchAgents, fetchTools, updateAgentTools } from '../api';
+import { fetchAgents, fetchTools, updateAgentTools, updateAgentBackend, getToken } from '../api';
 
 type Theme = 'light' | 'dark';
+type SandboxMode = 'local' | 'remote';
 
 interface Props {
   isOpen: boolean;
@@ -12,6 +13,7 @@ interface Props {
   theme: Theme;
   onToggleTheme: () => void;
   disabled: boolean;
+  onOpenTerminal?: () => void;
 }
 
 export function SettingsPanel({
@@ -22,6 +24,7 @@ export function SettingsPanel({
   theme,
   onToggleTheme,
   disabled,
+  onOpenTerminal,
 }: Props) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [allTools, setAllTools] = useState<string[]>([]);
@@ -30,6 +33,7 @@ export function SettingsPanel({
   const [updating, setUpdating] = useState(false);
   // Optimistic tool set — updated instantly on toggle, reconciled with server
   const [optimisticTools, setOptimisticTools] = useState<Set<string> | null>(null);
+  const [sandboxUrl, setSandboxUrl] = useState('');
   const panelRef = useRef<HTMLDivElement>(null);
 
   const loadData = useCallback(() => {
@@ -49,6 +53,40 @@ export function SettingsPanel({
   useEffect(() => {
     if (isOpen) loadData();
   }, [isOpen, loadData]);
+
+  // Refresh agents + tools — fetches are independent so one failure
+  // doesn't block the other from updating.
+  const refreshData = useCallback(() => {
+    setOptimisticTools(null);
+    fetchAgents()
+      .then((agentsData) => setAgents(agentsData))
+      .catch(() => {});
+    fetchTools()
+      .then((toolsData) => setAllTools(toolsData))
+      .catch(() => {});
+  }, []);
+
+  // SSE for instant updates + 5s polling as reliable fallback
+  useEffect(() => {
+    if (!isOpen) return;
+
+    // SSE — fires instantly when gateway config changes
+    const token = getToken();
+    const url = token
+      ? `/agents/events?token=${encodeURIComponent(token)}`
+      : '/agents/events';
+    const es = new EventSource(url);
+    es.addEventListener('config_changed', refreshData);
+    es.addEventListener('container_status', refreshData);
+
+    // Polling — reliable fallback, same interval as the original
+    const interval = setInterval(refreshData, 5_000);
+
+    return () => {
+      es.close();
+      clearInterval(interval);
+    };
+  }, [isOpen, refreshData]);
 
   // Close on click outside
   useEffect(() => {
@@ -125,9 +163,58 @@ export function SettingsPanel({
     [currentAgent, updating, disabled, agentTools, loadData],
   );
 
+  // ── Sandbox mode ────────────────────────────────────────────────────
+  const isSandboxAgent = currentAgent?.backend_type === 'docker' || currentAgent?.backend_type === 'local';
+  const sandboxMode: SandboxMode = currentAgent?.backend_type === 'local' ? 'local' : 'remote';
+
+  // Sync sandbox URL from server state
+  useEffect(() => {
+    setSandboxUrl(currentAgent?.sandbox_url ?? '');
+  }, [currentAgent?.sandbox_url]);
+
+  const handleModeSwitch = useCallback(async (mode: SandboxMode) => {
+    if (!currentAgent || disabled || updating) return;
+    if (mode === sandboxMode) return;
+    setUpdating(true);
+    try {
+      if (mode === 'local') {
+        await updateAgentBackend(currentAgent.agent_id, { mode: 'local' });
+      } else {
+        await updateAgentBackend(currentAgent.agent_id, {
+          mode: 'remote',
+          sandbox_url: sandboxUrl.trim() || null,
+        });
+      }
+      loadData();
+    } catch {
+      // revert — loadData will refresh
+      loadData();
+    } finally {
+      setUpdating(false);
+    }
+  }, [currentAgent, disabled, updating, sandboxMode, sandboxUrl, loadData]);
+
+  const handleSaveSandboxUrl = useCallback(async () => {
+    if (!currentAgent || disabled || sandboxMode !== 'remote') return;
+    const newUrl = sandboxUrl.trim() || null;
+    if (newUrl === (currentAgent.sandbox_url ?? null)) return; // no change
+    setUpdating(true);
+    try {
+      await updateAgentBackend(currentAgent.agent_id, {
+        mode: 'remote',
+        sandbox_url: newUrl,
+      });
+      loadData();
+    } catch {
+      setSandboxUrl(currentAgent.sandbox_url ?? ''); // revert
+    } finally {
+      setUpdating(false);
+    }
+  }, [currentAgent, sandboxUrl, disabled, sandboxMode, loadData]);
+
   if (!isOpen) return null;
 
-  const activeCount = agentTools.size;
+  const activeCount = allTools.filter((t) => agentTools.has(t)).length;
   const totalCount = allTools.length;
 
   return (
@@ -165,6 +252,92 @@ export function SettingsPanel({
               <span className="settings-hint">Model: {currentAgent.model}</span>
             )}
           </section>
+
+          {/* Sandbox Mode (local/docker agents only) */}
+          {isSandboxAgent && (
+            <section className="settings-section">
+              <label className="settings-label">Execution Mode</label>
+              <div className="settings-theme-toggle">
+                <button
+                  className={`settings-theme-btn ${sandboxMode === 'local' ? 'active' : ''}`}
+                  onClick={() => handleModeSwitch('local')}
+                  disabled={updating || disabled}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                    <line x1="8" y1="21" x2="16" y2="21" />
+                    <line x1="12" y1="17" x2="12" y2="21" />
+                  </svg>
+                  Local
+                </button>
+                <button
+                  className={`settings-theme-btn ${sandboxMode === 'remote' ? 'active' : ''}`}
+                  onClick={() => handleModeSwitch('remote')}
+                  disabled={updating || disabled}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="2" width="20" height="8" rx="2" ry="2" />
+                    <rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
+                    <line x1="6" y1="6" x2="6.01" y2="6" />
+                    <line x1="6" y1="18" x2="6.01" y2="18" />
+                  </svg>
+                  Remote
+                </button>
+              </div>
+              <span className="settings-hint">
+                {sandboxMode === 'local'
+                  ? 'Commands run directly on the host machine.'
+                  : 'Commands run in a Docker container.'}
+              </span>
+
+              {/* Remote Docker URL input */}
+              {sandboxMode === 'remote' && (
+                <>
+                  <label className="settings-label" style={{ marginTop: '8px' }}>Docker Host</label>
+                  <input
+                    className="settings-filter"
+                    type="text"
+                    placeholder="tcp://192.168.1.50:2375"
+                    value={sandboxUrl}
+                    onChange={(e) => setSandboxUrl(e.target.value)}
+                    onBlur={handleSaveSandboxUrl}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSaveSandboxUrl()}
+                    disabled={updating || disabled}
+                    style={{ marginBottom: 0 }}
+                  />
+                  <span className="settings-hint">
+                    Optional. Remote Docker daemon URL (e.g. tcp://host:2375). Leave empty for local Docker.
+                  </span>
+
+                  {/* Container status indicator */}
+                  {currentAgent && currentAgent.backend_type === 'docker' && (
+                    <div className={`container-status container-status--${currentAgent.container_status ?? 'idle'}`}>
+                      <span className="container-status-dot" />
+                      <span className="container-status-text">
+                        {(!currentAgent.container_status || currentAgent.container_status === 'idle') && 'No container'}
+                        {currentAgent.container_status === 'launching' && 'Launching container...'}
+                        {currentAgent.container_status === 'launched' && 'Container running'}
+                        {currentAgent.container_status === 'error' && (currentAgent.container_error || 'Container error')}
+                      </span>
+                      {currentAgent.container_status === 'launched' && onOpenTerminal && (
+                        <button
+                          className="container-terminal-btn"
+                          onClick={onOpenTerminal}
+                          title="Open terminal"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="4 17 10 11 4 5" />
+                            <line x1="12" y1="19" x2="20" y2="19" />
+                          </svg>
+                          Terminal
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </section>
+          )}
 
           {/* Tools */}
           <section className="settings-section">

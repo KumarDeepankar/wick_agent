@@ -297,6 +297,7 @@ class AgentInfo(BaseModel):
     subagents: list[str]
     middleware: list[str] = Field(default_factory=list)
     backend_type: str = "state"
+    sandbox_url: str | None = Field(default=None, description="Remote Docker host URL for sandbox execution")
     has_interrupt_on: bool = False
     skills: list[str] = Field(default_factory=list, description="Skill directory virtual paths")
     loaded_skills: list[str] = Field(default_factory=list, description="Skill names loaded from disk")
@@ -304,6 +305,8 @@ class AgentInfo(BaseModel):
     has_response_format: bool = False
     cache_enabled: bool = False
     debug: bool = False
+    container_status: str | None = Field(default=None, description="Container lifecycle: idle | launching | launched | error")
+    container_error: str | None = Field(default=None, description="Container error message when status is 'error'")
 
 
 class HealthResponse(BaseModel):

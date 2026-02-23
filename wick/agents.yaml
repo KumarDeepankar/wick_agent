@@ -4,11 +4,13 @@
 mcp_servers:
   gateway:
     url: "http://localhost:8080/mcp"
+    auth:
+      client_id: "wick-agent"
+      client_secret: "wick-agent-secret"
 
 defaults:
   backend:
-    type: docker
-    container_name: "wick-skills-sandbox"
+    type: local
     workdir: "/workspace"
   debug: true
 

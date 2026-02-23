@@ -15,11 +15,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.agents.config_loader import CONFIG_PATH, load_agents_from_yaml
-from app.agents.deep_agent import list_agents
+from app.agents.deep_agent import list_templates
 from app.agents.mcp_client import close_all_mcp_clients
 import app.agents.tools  # noqa: F401 – registers custom tools/middleware on import
+import app.events as gateway_events
 from app.models.schemas import HealthResponse
-from app.routes.agent import router as agent_router
+from app.routes.agent import router as agent_router, ws_router as agent_ws_router
+from app.routes.auth_proxy import router as auth_proxy_router
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +33,10 @@ async def lifespan(app: FastAPI):
     logger.info("Loading agent configs from %s", CONFIG_PATH)
     count = load_agents_from_yaml()
     logger.info("Loaded %d agent(s) from agents.yaml", count)
+    await gateway_events.start()
     yield
-    # Shutdown: close persistent MCP sessions
+    # Shutdown: stop gateway SSE subscriber, close persistent MCP sessions
+    await gateway_events.stop()
     await close_all_mcp_clients()
 
 
@@ -57,14 +61,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_proxy_router)
 app.include_router(agent_router)
+app.include_router(agent_ws_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])
 async def health_check():
     return HealthResponse(
         status="ok",
-        agents_loaded=len(list_agents()),
+        agents_loaded=len(list_templates()),
     )
 
 
@@ -72,9 +78,10 @@ async def health_check():
 # Looks for static/ directory (copied from ui/dist/ in Docker build).
 # In dev, the Vite dev server proxies API calls instead.
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
-if _STATIC_DIR.is_dir():
+if (_STATIC_DIR / "index.html").is_file():
     # Serve all static files (JS, CSS, images, logo, etc.)
-    app.mount("/assets", StaticFiles(directory=_STATIC_DIR / "assets"), name="static-assets")
+    if (_STATIC_DIR / "assets").is_dir():
+        app.mount("/assets", StaticFiles(directory=_STATIC_DIR / "assets"), name="static-assets")
 
     # Serve root-level static files (logo.png, favicon, etc.)
     @app.get("/{filename:path}", include_in_schema=False)

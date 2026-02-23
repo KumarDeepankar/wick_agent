@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react';
 import type { ChatMessage, TraceEvent, StreamStatus, CanvasArtifact } from '../types';
 import { extractExtension, extractFileName, resolveContentType, resolveLanguage, isBinaryExtension, isSlideContent } from '../utils/canvasUtils';
-import { fetchFileDownload } from '../api';
+import { fetchFileDownload, getToken } from '../api';
 
 interface SSEEvent {
   event: string;
@@ -119,9 +119,13 @@ export function useAgentStream() {
       const url = agentId ? `/agents/${agentId}/stream` : '/agents/stream';
 
       try {
+        const fetchHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+        const token = getToken();
+        if (token) fetchHeaders['Authorization'] = `Bearer ${token}`;
+
         const res = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: fetchHeaders,
           body: JSON.stringify({
             messages: [{ role: 'user', content: content.trim() }],
             thread_id: threadId ?? undefined,

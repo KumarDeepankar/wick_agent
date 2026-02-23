@@ -7,6 +7,7 @@ export interface AgentInfo {
   subagents: string[];
   middleware: string[];
   backend_type: string;
+  sandbox_url: string | null;
   has_interrupt_on: boolean;
   skills: string[];
   loaded_skills: string[];
@@ -14,6 +15,8 @@ export interface AgentInfo {
   has_response_format: boolean;
   cache_enabled: boolean;
   debug: boolean;
+  container_status: 'idle' | 'launching' | 'launched' | 'error' | null;
+  container_error: string | null;
 }
 
 export interface ChatMessage {

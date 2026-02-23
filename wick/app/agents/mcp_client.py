@@ -8,6 +8,9 @@ Persistent sessions: Each MCP server gets a single long-lived Client session
 stored in ``_MCP_CLIENTS``.  Tool calls reuse the session instead of
 reconnecting every time.  If a call fails the session is automatically
 reconnected and the call retried once.
+
+Authentication uses the MCP-spec-compliant OAuth 2.1 client_credentials flow
+via ``ClientCredentialsOAuthProvider`` from the ``mcp`` package.
 """
 
 from __future__ import annotations
@@ -15,7 +18,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
 from typing import Any
+
+from mcp.client.auth.extensions.client_credentials import ClientCredentialsOAuthProvider
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 from app.agents.deep_agent import register_tool
 
@@ -23,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 # Persistent client sessions keyed by server name → (Client instance, server_url)
 _MCP_CLIENTS: dict[str, tuple[Any, str]] = {}
+
+# Cached OAuth providers keyed by server name (for reconnection)
+_OAUTH_PROVIDERS: dict[str, Any] = {}
 
 # JSON-Schema type → Python type mapping
 _JSON_TYPE_MAP: dict[str, type] = {
@@ -33,6 +43,26 @@ _JSON_TYPE_MAP: dict[str, type] = {
     "array": list,
     "object": dict,
 }
+
+
+class InMemoryTokenStorage:
+    """Simple in-memory implementation of the ``TokenStorage`` protocol."""
+
+    def __init__(self) -> None:
+        self._tokens: OAuthToken | None = None
+        self._client_info: OAuthClientInformationFull | None = None
+
+    async def get_tokens(self) -> OAuthToken | None:
+        return self._tokens
+
+    async def set_tokens(self, tokens: OAuthToken) -> None:
+        self._tokens = tokens
+
+    async def get_client_info(self) -> OAuthClientInformationFull | None:
+        return self._client_info
+
+    async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
+        self._client_info = client_info
 
 
 def _run_async(coro: Any) -> Any:
@@ -51,20 +81,26 @@ def _run_async(coro: Any) -> Any:
         return asyncio.run(coro)
 
 
-async def _connect_client(server_name: str, server_url: str) -> Any:
+async def _connect_client(server_name: str, server_url: str, auth: Any | None = None) -> Any:
     """Create and connect a persistent Client session for a server.
 
     Stores the session in ``_MCP_CLIENTS`` and returns the connected client.
+    When ``auth`` is provided (an httpx.Auth instance such as
+    ClientCredentialsOAuthProvider), it handles authentication automatically.
     """
     from fastmcp import Client
 
     # Close existing session if any
     await _close_client(server_name)
 
-    client = Client(server_url)
+    kwargs: dict[str, Any] = {}
+    if auth is not None:
+        kwargs["auth"] = auth
+
+    client = Client(server_url, **kwargs)
     connected = await client.__aenter__()
     _MCP_CLIENTS[server_name] = (connected, server_url)
-    logger.info("Persistent MCP session opened for '%s' at %s", server_name, server_url)
+    logger.info("Persistent MCP session opened for '%s' at %s (auth=%s)", server_name, server_url, auth is not None)
     return connected
 
 
@@ -116,7 +152,7 @@ async def _call_with_reconnect(
                     tool_name, server_name, exc,
                 )
                 try:
-                    await _connect_client(server_name, server_url)
+                    await _connect_client(server_name, server_url, _OAUTH_PROVIDERS.get(server_name))
                 except Exception as reconn_exc:
                     return f"Error: reconnect to '{server_name}' failed ({reconn_exc})"
             else:
@@ -180,14 +216,14 @@ def _build_tool_wrapper(
     return wrapper
 
 
-async def _discover_and_register(server_name: str, server_url: str) -> int:
+async def _discover_and_register(server_name: str, server_url: str, auth: Any | None = None) -> int:
     """Open a persistent session to one MCP server, discover tools, register them.
 
     Returns the number of tools registered.
     """
     count = 0
     try:
-        client = await _connect_client(server_name, server_url)
+        client = await _connect_client(server_name, server_url, auth)
         tools = await client.list_tools()
         for tool in tools:
             wrapper = _build_tool_wrapper(
@@ -216,7 +252,8 @@ def load_mcp_tools(servers_config: dict[str, Any]) -> int:
     ``servers_config`` maps server names to config dicts, each containing
     at least a ``url`` key.  Example::
 
-        {"wick": {"url": "http://localhost:8001/mcp"}}
+        {"wick": {"url": "http://localhost:8001/mcp",
+                  "auth": {"client_id": "agent", "client_secret": "secret"}}}
 
     Returns total number of MCP tools registered.
     """
@@ -226,12 +263,39 @@ def load_mcp_tools(servers_config: dict[str, Any]) -> int:
     total = 0
     for name, cfg in servers_config.items():
         url = cfg.get("url") if isinstance(cfg, dict) else None
+        # Environment variable override: WICK_MCP_<NAME>_URL
+        env_url = os.environ.get(f"WICK_MCP_{name.upper()}_URL")
+        if env_url:
+            url = env_url
         if not url:
             logger.warning("MCP server '%s' has no url — skipping", name)
             continue
 
-        logger.info("Discovering tools from MCP server '%s' at %s", name, url)
-        count = _run_async(_discover_and_register(name, url))
+        # Build OAuth provider if client credentials are configured
+        auth: Any | None = None
+        auth_cfg = cfg.get("auth") if isinstance(cfg, dict) else None
+        if auth_cfg and isinstance(auth_cfg, dict):
+            client_id = auth_cfg.get("client_id", "")
+            client_secret = auth_cfg.get("client_secret", "")
+            if client_id and client_secret:
+                try:
+                    provider = ClientCredentialsOAuthProvider(
+                        server_url=url,
+                        storage=InMemoryTokenStorage(),
+                        client_id=client_id,
+                        client_secret=client_secret,
+                    )
+                    auth = provider
+                    _OAUTH_PROVIDERS[name] = provider
+                    logger.info("OAuth client_credentials provider created for '%s'", name)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to create OAuth provider for '%s' — trying without auth (%s)",
+                        name, exc,
+                    )
+
+        logger.info("Discovering tools from MCP server '%s' at %s (auth=%s)", name, url, auth is not None)
+        count = _run_async(_discover_and_register(name, url, auth))
         total += count
 
     logger.info("Registered %d MCP tool(s) total", total)

@@ -17,7 +17,7 @@ from typing import Any
 
 import yaml
 
-from app.agents.deep_agent import create_deep_agent_from_config, delete_agent, list_tools
+from app.agents.deep_agent import register_template, list_tools
 from app.agents.mcp_client import load_mcp_tools
 
 logger = logging.getLogger(__name__)
@@ -92,7 +92,7 @@ def load_agents_from_yaml() -> int:
             )
 
         try:
-            create_deep_agent_from_config(
+            register_template(
                 agent_id=agent_id,
                 name=cfg.get("name"),
                 model=cfg.get("model"),
@@ -109,9 +109,9 @@ def load_agents_from_yaml() -> int:
                 debug=cfg.get("debug", False),
             )
             loaded += 1
-            logger.info("Loaded agent '%s' from agents.yaml", agent_id)
+            logger.info("Registered agent template '%s' from agents.yaml", agent_id)
         except Exception:
-            logger.exception("Failed to load agent '%s' from agents.yaml", agent_id)
+            logger.exception("Failed to register template '%s' from agents.yaml", agent_id)
 
     return loaded
 

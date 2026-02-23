@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     default_backend: str = "state"
     default_debug: bool = False
 
+    # Wick Gateway (auth & RBAC — empty = auth disabled)
+    wick_gateway_url: str = ""
+
     # Server
     host: str = "0.0.0.0"
     port: int = 8000
