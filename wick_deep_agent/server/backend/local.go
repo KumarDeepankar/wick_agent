@@ -29,9 +29,13 @@ func NewLocalBackend(workdir string, timeout float64, maxOutputBytes int, userna
 		maxOutputBytes = 100_000
 	}
 
-	// Scope workdir per user
+	// Scope workdir per user — create full path including parents
 	scopedWorkdir := filepath.Join(workdir, username)
-	os.MkdirAll(scopedWorkdir, 0755)
+	if err := os.MkdirAll(scopedWorkdir, 0755); err != nil {
+		log.Printf("Warning: could not create workdir %s: %v", scopedWorkdir, err)
+		// Fall back to OS temp dir so commands don't fail with chdir errors
+		scopedWorkdir = os.TempDir()
+	}
 
 	log.Printf("Local sandbox backend ready (workdir=%s, user=%s)", scopedWorkdir, username)
 
@@ -46,6 +50,11 @@ func NewLocalBackend(workdir string, timeout float64, maxOutputBytes int, userna
 func (b *LocalBackend) ID() string             { return "local" }
 func (b *LocalBackend) ContainerStatus() string { return "launched" } // always ready
 func (b *LocalBackend) ContainerError() string  { return "" }
+func (b *LocalBackend) Workdir() string         { return b.workdir }
+
+func (b *LocalBackend) ResolvePath(path string) (string, error) {
+	return resolvePath(b.workdir, path)
+}
 
 // Execute runs a command via sh -c in the workdir.
 func (b *LocalBackend) Execute(command string) ExecuteResponse {
@@ -124,16 +133,21 @@ func (b *LocalBackend) Execute(command string) ExecuteResponse {
 func (b *LocalBackend) UploadFiles(files []FileUpload) []FileUploadResponse {
 	responses := make([]FileUploadResponse, len(files))
 	for i, f := range files {
-		dir := filepath.Dir(f.Path)
+		resolved, err := b.ResolvePath(f.Path)
+		if err != nil {
+			responses[i] = FileUploadResponse{Path: f.Path, Error: err.Error()}
+			continue
+		}
+		dir := filepath.Dir(resolved)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			responses[i] = FileUploadResponse{Path: f.Path, Error: "permission_denied"}
 			continue
 		}
-		if err := os.WriteFile(f.Path, f.Content, 0644); err != nil {
+		if err := os.WriteFile(resolved, f.Content, 0644); err != nil {
 			responses[i] = FileUploadResponse{Path: f.Path, Error: "permission_denied"}
 			continue
 		}
-		responses[i] = FileUploadResponse{Path: f.Path}
+		responses[i] = FileUploadResponse{Path: resolved}
 	}
 	return responses
 }
@@ -142,16 +156,21 @@ func (b *LocalBackend) UploadFiles(files []FileUpload) []FileUploadResponse {
 func (b *LocalBackend) DownloadFiles(paths []string) []FileDownloadResponse {
 	responses := make([]FileDownloadResponse, len(paths))
 	for i, path := range paths {
-		data, err := os.ReadFile(path)
+		resolved, err := b.ResolvePath(path)
+		if err != nil {
+			responses[i] = FileDownloadResponse{Path: path, Error: err.Error()}
+			continue
+		}
+		data, err := os.ReadFile(resolved)
 		if err != nil {
 			if os.IsNotExist(err) {
-				responses[i] = FileDownloadResponse{Path: path, Error: "file_not_found"}
+				responses[i] = FileDownloadResponse{Path: resolved, Error: "file_not_found"}
 			} else {
-				responses[i] = FileDownloadResponse{Path: path, Error: "permission_denied"}
+				responses[i] = FileDownloadResponse{Path: resolved, Error: "permission_denied"}
 			}
 			continue
 		}
-		responses[i] = FileDownloadResponse{Path: path, Content: data}
+		responses[i] = FileDownloadResponse{Path: resolved, Content: data}
 	}
 	return responses
 }

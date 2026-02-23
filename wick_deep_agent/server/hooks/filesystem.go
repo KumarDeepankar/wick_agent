@@ -26,6 +26,10 @@ func NewFilesystemHook(b backend.Backend) *FilesystemHook {
 
 func (h *FilesystemHook) Name() string { return "filesystem" }
 
+func (h *FilesystemHook) Phases() []string {
+	return []string{"before_agent", "wrap_tool_call"}
+}
+
 // BeforeAgent registers the 7 file-operation tools on the agent state.
 func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentState) error {
 	b := h.backend
@@ -37,15 +41,16 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 		ToolParams: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path": map[string]any{"type": "string", "description": "Directory path to list (default: /workspace)"},
+				"path": map[string]any{"type": "string", "description": fmt.Sprintf("Directory path to list (default: %s)", b.Workdir())},
 			},
 		},
 		Fn: func(ctx context.Context, args map[string]any) (string, error) {
 			path, _ := args["path"].(string)
-			if path == "" {
-				path = "/workspace"
+			resolved, err := b.ResolvePath(path)
+			if err != nil {
+				return "Error: " + err.Error(), nil
 			}
-			cmd := backend.LsCommand(path)
+			cmd := backend.LsCommand(resolved)
 			result := b.Execute(cmd)
 			return result.Output, nil
 		},
@@ -67,7 +72,11 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			if path == "" {
 				return "Error: file_path is required", nil
 			}
-			cmd := backend.ReadFileCommand(path)
+			resolved, err := b.ResolvePath(path)
+			if err != nil {
+				return "Error: " + err.Error(), nil
+			}
+			cmd := backend.ReadFileCommand(resolved)
 			result := b.Execute(cmd)
 			return result.Output, nil
 		},
@@ -91,7 +100,11 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			if path == "" {
 				return "Error: file_path is required", nil
 			}
-			cmd := backend.WriteFileCommand(path, content)
+			resolved, err := b.ResolvePath(path)
+			if err != nil {
+				return "Error: " + err.Error(), nil
+			}
+			cmd := backend.WriteFileCommand(resolved, content)
 			result := b.Execute(cmd)
 			if result.ExitCode != 0 {
 				return "Error: " + result.Output, nil
@@ -100,8 +113,8 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			if state.Files == nil {
 				state.Files = make(map[string]string)
 			}
-			state.Files[path] = content
-			return fmt.Sprintf("File written: %s (%d bytes)", path, len(content)), nil
+			state.Files[resolved] = content
+			return fmt.Sprintf("File written: %s (%d bytes)", resolved, len(content)), nil
 		},
 	})
 
@@ -125,7 +138,11 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			if path == "" {
 				return "Error: file_path is required", nil
 			}
-			cmd := backend.EditFileCommand(path, oldText, newText)
+			resolved, err := b.ResolvePath(path)
+			if err != nil {
+				return "Error: " + err.Error(), nil
+			}
+			cmd := backend.EditFileCommand(resolved, oldText, newText)
 			result := b.Execute(cmd)
 			return result.Output, nil
 		},
@@ -139,17 +156,18 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			"type": "object",
 			"properties": map[string]any{
 				"pattern": map[string]any{"type": "string", "description": "Glob pattern (e.g., '*.py', '**/*.js')"},
-				"path":    map[string]any{"type": "string", "description": "Directory to search in (default: /workspace)"},
+				"path":    map[string]any{"type": "string", "description": fmt.Sprintf("Directory to search in (default: %s)", b.Workdir())},
 			},
 			"required": []string{"pattern"},
 		},
 		Fn: func(ctx context.Context, args map[string]any) (string, error) {
 			pattern, _ := args["pattern"].(string)
 			path, _ := args["path"].(string)
-			if path == "" {
-				path = "/workspace"
+			resolved, err := b.ResolvePath(path)
+			if err != nil {
+				return "Error: " + err.Error(), nil
 			}
-			cmd := backend.GlobCommand(pattern, path)
+			cmd := backend.GlobCommand(pattern, resolved)
 			result := b.Execute(cmd)
 			return result.Output, nil
 		},
@@ -163,17 +181,18 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			"type": "object",
 			"properties": map[string]any{
 				"pattern": map[string]any{"type": "string", "description": "Search pattern (regex supported)"},
-				"path":    map[string]any{"type": "string", "description": "File or directory to search in (default: /workspace)"},
+				"path":    map[string]any{"type": "string", "description": fmt.Sprintf("File or directory to search in (default: %s)", b.Workdir())},
 			},
 			"required": []string{"pattern"},
 		},
 		Fn: func(ctx context.Context, args map[string]any) (string, error) {
 			pattern, _ := args["pattern"].(string)
 			path, _ := args["path"].(string)
-			if path == "" {
-				path = "/workspace"
+			resolved, err := b.ResolvePath(path)
+			if err != nil {
+				return "Error: " + err.Error(), nil
 			}
-			cmd := backend.GrepCommand(pattern, path)
+			cmd := backend.GrepCommand(pattern, resolved)
 			result := b.Execute(cmd)
 			return result.Output, nil
 		},

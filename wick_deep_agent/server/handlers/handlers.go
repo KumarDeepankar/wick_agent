@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +16,7 @@ import (
 	"wick_go/hooks"
 	"wick_go/llm"
 	"wick_go/sse"
+	"wick_go/tracing"
 )
 
 // Config holds handler-level configuration.
@@ -42,6 +46,12 @@ type Deps struct {
 	// ResolveUser extracts the username from the request context.
 	// Set by main to bridge the auth middleware's context key into handlers.
 	ResolveUser func(r *http.Request) string
+
+	// TraceStore holds recent request traces.
+	TraceStore *tracing.Store
+
+	// ExternalTools stores tools registered at runtime via HTTP callback.
+	ExternalTools *ToolStore
 }
 
 // RegisterRoutes registers all /agents/ routes on the given mux.
@@ -80,6 +90,27 @@ func RegisterRoutes(mux *http.ServeMux, deps *Deps) {
 			h.availableTools(w, r)
 			return
 		}
+		if path == "tools/register" && r.Method == http.MethodPost {
+			h.registerTool(w, r)
+			return
+		}
+		if strings.HasPrefix(path, "tools/deregister/") {
+			if r.Method == http.MethodDelete {
+				toolName := strings.TrimPrefix(path, "tools/deregister/")
+				h.deregisterTool(w, r, toolName)
+			} else {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			}
+			return
+		}
+		if path == "skills/available" {
+			h.availableSkills(w, r)
+			return
+		}
+		if path == "hooks/available" {
+			h.availableHooks(w, r)
+			return
+		}
 		if path == "messages/test" {
 			h.messagesTest(w, r)
 			return
@@ -102,6 +133,10 @@ func RegisterRoutes(mux *http.ServeMux, deps *Deps) {
 		}
 		if path == "files/upload" {
 			h.uploadFile(w, r)
+			return
+		}
+		if strings.HasPrefix(path, "traces") {
+			h.traces(w, r, strings.TrimPrefix(path, "traces"))
 			return
 		}
 
@@ -129,8 +164,10 @@ func RegisterRoutes(mux *http.ServeMux, deps *Deps) {
 			h.stream(w, r, &agentID)
 		case "resume":
 			h.resume(w, r, &agentID)
-		case "tools":
-			h.patchTools(w, r, agentID)
+		case "flow":
+			h.getFlow(w, r, agentID)
+		case "hooks":
+			h.patchHooks(w, r, agentID)
 		case "backend":
 			h.patchBackend(w, r, agentID)
 		case "files/list":
@@ -173,6 +210,8 @@ func (h *agentHandler) getAgent(w http.ResponseWriter, r *http.Request, agentID 
 		writeJSONError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	// Ensure agent is built so hooks are populated in the response
+	h.buildAgent(inst, username)
 	info := buildAgentInfo(inst, h.deps.Backends)
 	writeJSON(w, http.StatusOK, info)
 }
@@ -283,7 +322,19 @@ func (h *agentHandler) invoke(w http.ResponseWriter, r *http.Request, agentID *s
 		threadID = *req.ThreadID
 	}
 
-	state, err := a.Run(r.Context(), msgs, threadID)
+	// Create trace
+	trace := tracing.NewTrace(resolvedID, threadID, inst.Config.ModelStr(), "invoke", len(msgs))
+	ctx := tracing.WithTrace(r.Context(), trace)
+
+	state, err := a.Run(ctx, msgs, threadID)
+
+	// Finalize trace
+	trace.Finish(err)
+	if state != nil {
+		trace.Output = map[string]any{"message_count": len(state.Messages)}
+	}
+	h.deps.TraceStore.Put(trace)
+
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -299,6 +350,7 @@ func (h *agentHandler) invoke(w http.ResponseWriter, r *http.Request, agentID *s
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
+		"trace_id":            trace.TraceID,
 		"thread_id":           state.ThreadID,
 		"response":            response,
 		"tool_calls":          []any{},
@@ -359,11 +411,15 @@ func (h *agentHandler) stream(w http.ResponseWriter, r *http.Request, agentID *s
 		threadID = *req.ThreadID
 	}
 
+	// Create trace
+	trace := tracing.NewTrace(resolvedID, threadID, inst.Config.ModelStr(), "stream", len(msgs))
+	ctx := tracing.WithTrace(r.Context(), trace)
+
 	startTime := time.Now()
 
 	// Run agent in goroutine, stream events to SSE
 	eventCh := make(chan agent.StreamEvent, 64)
-	go a.RunStream(r.Context(), msgs, threadID, eventCh)
+	go a.RunStream(ctx, msgs, threadID, eventCh)
 
 	for evt := range eventCh {
 		// The frontend parses JSON from the data field.
@@ -405,13 +461,18 @@ func (h *agentHandler) stream(w http.ResponseWriter, r *http.Request, agentID *s
 			})
 
 		case "done":
+			trace.Finish(nil)
+			h.deps.TraceStore.Put(trace)
 			elapsed := time.Since(startTime).Milliseconds()
 			sseWriter.SendEvent("done", map[string]any{
+				"trace_id":          trace.TraceID,
 				"thread_id":         threadID,
 				"total_duration_ms": elapsed,
 			})
 
 		case "error":
+			trace.Finish(fmt.Errorf("%v", evt.Data))
+			h.deps.TraceStore.Put(trace)
 			sseWriter.SendEvent("error", evt.Data)
 		}
 	}
@@ -426,15 +487,246 @@ func (h *agentHandler) resume(w http.ResponseWriter, r *http.Request, agentID *s
 
 // --- Tools / Backend ---
 
-func (h *agentHandler) availableTools(w http.ResponseWriter, r *http.Request) {
-	// Return built-in tool names
-	tools := []string{
-		"ls", "read_file", "write_file", "edit_file",
-		"glob", "grep", "execute",
-		"internet_search", "calculate", "current_datetime",
-		"write_todos",
+func (h *agentHandler) availableSkills(w http.ResponseWriter, r *http.Request) {
+	type skillEntry struct {
+		Name          string   `json:"name"`
+		Description   string   `json:"description"`
+		SamplePrompts []string `json:"sample_prompts"`
+		Icon          string   `json:"icon"`
 	}
+
+	// Collect all skill paths from agent configs via registry.
+	seen := map[string]bool{}
+	var skillDirs []string
+	for _, cfg := range h.deps.Registry.AllConfigs() {
+		if cfg.Skills == nil {
+			continue
+		}
+		for _, s := range cfg.Skills.Paths {
+			if seen[s] {
+				continue
+			}
+			seen[s] = true
+			skillDirs = append(skillDirs, s)
+		}
+	}
+
+	// Resolve skills paths relative to the config file directory.
+	configDir := filepath.Dir(h.deps.AppConfig.ConfigPath)
+
+	var skills []skillEntry
+	for _, dir := range skillDirs {
+		absDir := dir
+		if !filepath.IsAbs(dir) {
+			absDir = filepath.Join(configDir, dir)
+		}
+		// dir is a parent folder containing subdirectories, one per skill
+		entries, err := os.ReadDir(absDir)
+		if err != nil {
+			log.Printf("skills: cannot read %s: %v", absDir, err)
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			skillFile := filepath.Join(absDir, entry.Name(), "SKILL.md")
+			data, err := os.ReadFile(skillFile)
+			if err != nil {
+				continue
+			}
+			skill := parseSkillFrontmatter(string(data))
+			if skill.Name == "" {
+				skill.Name = entry.Name()
+			}
+			skills = append(skills, skill)
+		}
+	}
+
+	if skills == nil {
+		skills = []skillEntry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"skills": skills})
+}
+
+// parseSkillFrontmatter extracts name, description, icon, sample-prompts
+// from a SKILL.md YAML frontmatter block (between --- delimiters).
+func parseSkillFrontmatter(content string) struct {
+	Name          string   `json:"name"`
+	Description   string   `json:"description"`
+	SamplePrompts []string `json:"sample_prompts"`
+	Icon          string   `json:"icon"`
+} {
+	type entry = struct {
+		Name          string   `json:"name"`
+		Description   string   `json:"description"`
+		SamplePrompts []string `json:"sample_prompts"`
+		Icon          string   `json:"icon"`
+	}
+
+	result := entry{SamplePrompts: []string{}}
+
+	// Extract frontmatter between --- delimiters
+	parts := strings.SplitN(content, "---", 3)
+	if len(parts) < 3 {
+		return result
+	}
+	fm := strings.TrimSpace(parts[1])
+
+	// Simple line-by-line parse (avoids full YAML dependency for this)
+	lines := strings.Split(fm, "\n")
+	var currentKey string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// List item under a key
+		if strings.HasPrefix(trimmed, "- ") && currentKey == "sample-prompts" {
+			result.SamplePrompts = append(result.SamplePrompts, strings.TrimPrefix(trimmed, "- "))
+			continue
+		}
+		// Key: value
+		if idx := strings.Index(line, ":"); idx > 0 && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			key := strings.TrimSpace(line[:idx])
+			val := strings.TrimSpace(line[idx+1:])
+			// Handle YAML multiline > indicator
+			if val == ">" || val == "|" {
+				currentKey = key
+				continue
+			}
+			currentKey = key
+			switch key {
+			case "name":
+				result.Name = val
+			case "description":
+				result.Description = val
+			case "icon":
+				result.Icon = val
+			}
+		} else if currentKey == "description" && (strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t")) {
+			// Continuation of multiline description
+			if result.Description != "" {
+				result.Description += " "
+			}
+			result.Description += trimmed
+		}
+	}
+
+	return result
+}
+
+func (h *agentHandler) availableHooks(w http.ResponseWriter, r *http.Request) {
+	type hookEntry struct {
+		Name         string   `json:"name"`
+		Description  string   `json:"description"`
+		Phases       []string `json:"phases"`
+		Configurable bool     `json:"configurable"`
+		Tools        []string `json:"tools"`
+	}
+
+	hooksInfo := []hookEntry{
+		{Name: "tracing", Description: "Records timed spans for LLM and tool calls", Phases: []string{"wrap_model_call", "wrap_tool_call"}, Configurable: false, Tools: []string{}},
+		{Name: "todolist", Description: "Tracks task progress via a write_todos tool", Phases: []string{"before_agent"}, Configurable: false, Tools: []string{"write_todos"}},
+		{Name: "filesystem", Description: "Registers file-operation tools (ls, read, write, edit, glob, grep, execute)", Phases: []string{"before_agent", "wrap_tool_call"}, Configurable: false, Tools: []string{"ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute"}},
+		{Name: "skills", Description: "Discovers SKILL.md files and injects catalog into system prompt", Phases: []string{"before_agent", "modify_request"}, Configurable: true, Tools: []string{}},
+		{Name: "memory", Description: "Loads AGENTS.md memory files and injects into system prompt", Phases: []string{"before_agent", "modify_request"}, Configurable: true, Tools: []string{}},
+		{Name: "summarization", Description: "Compresses conversation when context window nears capacity", Phases: []string{"wrap_model_call"}, Configurable: false, Tools: []string{}},
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"hooks": hooksInfo})
+}
+
+func (h *agentHandler) availableTools(w http.ResponseWriter, r *http.Request) {
+	type toolEntry struct {
+		Name   string `json:"name"`
+		Source string `json:"source"` // "builtin", or hook name e.g. "filesystem", "todolist"
+	}
+
+	tools := []toolEntry{
+		// Builtin tools (always available, not tied to any hook)
+		{Name: "calculate", Source: "builtin"},
+		{Name: "current_datetime", Source: "builtin"},
+	}
+	if h.deps.AppConfig.TavilyAPIKey != "" {
+		tools = append(tools, toolEntry{Name: "internet_search", Source: "builtin"})
+	}
+
+	// Hook-provided tools (system tools — controlled via hook toggles)
+	tools = append(tools,
+		toolEntry{Name: "ls", Source: "filesystem"},
+		toolEntry{Name: "read_file", Source: "filesystem"},
+		toolEntry{Name: "write_file", Source: "filesystem"},
+		toolEntry{Name: "edit_file", Source: "filesystem"},
+		toolEntry{Name: "glob", Source: "filesystem"},
+		toolEntry{Name: "grep", Source: "filesystem"},
+		toolEntry{Name: "execute", Source: "filesystem"},
+		toolEntry{Name: "write_todos", Source: "todolist"},
+	)
+
+	// External tools registered via HTTP callback
+	if h.deps.ExternalTools != nil {
+		for _, name := range h.deps.ExternalTools.Names() {
+			tools = append(tools, toolEntry{Name: name, Source: "external"})
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"tools": tools})
+}
+
+func (h *agentHandler) registerTool(w http.ResponseWriter, r *http.Request) {
+	if h.deps.ExternalTools == nil {
+		writeJSONError(w, http.StatusInternalServerError, "external tools not initialized")
+		return
+	}
+
+	var req struct {
+		Name        string         `json:"name"`
+		Description string         `json:"description"`
+		Parameters  map[string]any `json:"parameters"`
+		CallbackURL string         `json:"callback_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Name == "" {
+		writeJSONError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if req.CallbackURL == "" {
+		writeJSONError(w, http.StatusBadRequest, "callback_url is required")
+		return
+	}
+
+	tool := agent.NewHTTPTool(req.Name, req.Description, req.Parameters, req.CallbackURL)
+	h.deps.ExternalTools.Register(tool)
+	h.deps.Registry.InvalidateAllAgents()
+
+	log.Printf("Registered external tool %q (callback: %s)", req.Name, req.CallbackURL)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "registered",
+		"name":   req.Name,
+	})
+}
+
+func (h *agentHandler) deregisterTool(w http.ResponseWriter, r *http.Request, name string) {
+	if h.deps.ExternalTools == nil {
+		writeJSONError(w, http.StatusInternalServerError, "external tools not initialized")
+		return
+	}
+
+	if !h.deps.ExternalTools.Remove(name) {
+		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("tool %q not found", name))
+		return
+	}
+	h.deps.Registry.InvalidateAllAgents()
+
+	log.Printf("Deregistered external tool %q", name)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "deregistered",
+		"name":   name,
+	})
 }
 
 // messagesTest exercises the Messages chain primitives and returns the results.
@@ -498,34 +790,6 @@ func (h *agentHandler) messagesTest(w http.ResponseWriter, r *http.Request) {
 		"spoof_error":     userInputErr,
 		"merged_length":   merged.Len(),
 		"token_estimate":  tokens,
-	})
-}
-
-func (h *agentHandler) patchTools(w http.ResponseWriter, r *http.Request, agentID string) {
-	if r.Method != http.MethodPatch {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var body struct {
-		Tools []string `json:"tools"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid JSON")
-		return
-	}
-
-	username := h.resolveUsername(r)
-	inst, err := h.deps.Registry.GetOrClone(agentID, username)
-	if err != nil {
-		writeJSONError(w, http.StatusNotFound, err.Error())
-		return
-	}
-
-	inst.Config.Tools = body.Tools
-	inst.Agent = nil // force rebuild
-	writeJSON(w, http.StatusOK, map[string]any{
-		"agent_id": agentID,
-		"tools":    body.Tools,
 	})
 }
 
@@ -610,9 +874,6 @@ func (h *agentHandler) patchBackend(w http.ResponseWriter, r *http.Request, agen
 
 func (h *agentHandler) listFiles(w http.ResponseWriter, r *http.Request, agentID string) {
 	path := r.URL.Query().Get("path")
-	if path == "" {
-		path = "/workspace"
-	}
 
 	username := h.resolveUsername(r)
 	b := h.deps.Backends.Get(agentID, username)
@@ -621,9 +882,15 @@ func (h *agentHandler) listFiles(w http.ResponseWriter, r *http.Request, agentID
 		return
 	}
 
+	resolved, err := b.ResolvePath(path)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	result := b.Execute(fmt.Sprintf(
 		`stat -c "%%n\t%%F\t%%s" %s/* %s/.* 2>/dev/null | grep -v "/\.$" | grep -v "/\.\.$"`,
-		path, path,
+		resolved, resolved,
 	))
 
 	var entries []map[string]any
@@ -654,14 +921,11 @@ func (h *agentHandler) listFiles(w http.ResponseWriter, r *http.Request, agentID
 		entries = []map[string]any{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"path": path, "entries": entries})
+	writeJSON(w, http.StatusOK, map[string]any{"path": resolved, "entries": entries})
 }
 
 func (h *agentHandler) readFile(w http.ResponseWriter, r *http.Request, agentID string) {
 	path := r.URL.Query().Get("path")
-	if path == "" {
-		path = "/workspace"
-	}
 
 	username := h.resolveUsername(r)
 	b := h.deps.Backends.Get(agentID, username)
@@ -670,21 +934,24 @@ func (h *agentHandler) readFile(w http.ResponseWriter, r *http.Request, agentID 
 		return
 	}
 
-	result := b.Execute(fmt.Sprintf("cat '%s'", strings.ReplaceAll(path, "'", "'\\''")))
-	if result.ExitCode != 0 {
-		writeJSONError(w, http.StatusNotFound, "file not found: "+path)
+	resolved, err := b.ResolvePath(path)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"path": path, "content": result.Output})
+	result := b.Execute(fmt.Sprintf("cat '%s'", strings.ReplaceAll(resolved, "'", "'\\''")))
+	if result.ExitCode != 0 {
+		writeJSONError(w, http.StatusNotFound, "file not found: "+resolved)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"path": resolved, "content": result.Output})
 }
 
 func (h *agentHandler) downloadFile(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	agentIDParam := r.URL.Query().Get("agent_id")
-	if path == "" {
-		path = "/workspace"
-	}
 	if agentIDParam == "" {
 		agentIDParam = "default"
 	}
@@ -696,15 +963,21 @@ func (h *agentHandler) downloadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := b.DownloadFiles([]string{path})
-	if len(results) == 0 || results[0].Error != "" {
-		writeJSONError(w, http.StatusNotFound, "file not found: "+path)
+	resolved, err := b.ResolvePath(path)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	filename := path
-	if idx := strings.LastIndex(path, "/"); idx >= 0 {
-		filename = path[idx+1:]
+	results := b.DownloadFiles([]string{resolved})
+	if len(results) == 0 || results[0].Error != "" {
+		writeJSONError(w, http.StatusNotFound, "file not found: "+resolved)
+		return
+	}
+
+	filename := resolved
+	if idx := strings.LastIndex(resolved, "/"); idx >= 0 {
+		filename = resolved[idx+1:]
 	}
 
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -792,6 +1065,340 @@ func (h *agentHandler) agentEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// --- Traces ---
+
+func (h *agentHandler) traces(w http.ResponseWriter, r *http.Request, sub string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	sub = strings.TrimPrefix(sub, "/")
+
+	// GET /agents/traces — list recent
+	if sub == "" {
+		limit := 50
+		if l := r.URL.Query().Get("limit"); l != "" {
+			if n, err := strconv.Atoi(l); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		writeJSON(w, http.StatusOK, h.deps.TraceStore.List(limit))
+		return
+	}
+
+	// GET /agents/traces/{trace_id}
+	t := h.deps.TraceStore.Get(sub)
+	if t == nil {
+		writeJSONError(w, http.StatusNotFound, "trace not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
+}
+
+// --- Flow & Hooks ---
+
+func (h *agentHandler) getFlow(w http.ResponseWriter, r *http.Request, agentID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	username := h.resolveUsername(r)
+	inst, err := h.deps.Registry.GetOrClone(agentID, username)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	// Ensure agent is built so hooks are populated
+	a := h.buildAgent(inst, username)
+
+	// Build hook info
+	type hookInfo struct {
+		Name   string   `json:"name"`
+		Phases []string `json:"phases"`
+	}
+	var hooksInfo []hookInfo
+	for _, hook := range a.Hooks {
+		hooksInfo = append(hooksInfo, hookInfo{
+			Name:   hook.Name(),
+			Phases: hook.Phases(),
+		})
+	}
+
+	// Collect tool names
+	toolNames := make([]string, 0, len(a.Tools))
+	for _, t := range a.Tools {
+		toolNames = append(toolNames, t.Name())
+	}
+
+	// Build flow steps
+	buildPhaseHooks := func(phase string) []string {
+		var names []string
+		for _, hook := range a.Hooks {
+			for _, p := range hook.Phases() {
+				if p == phase {
+					names = append(names, hook.Name())
+					break
+				}
+			}
+		}
+		return names
+	}
+
+	maxIter := agent.MaxIterations
+	flow := []map[string]any{
+		{"step": "before_agent", "hooks": buildPhaseHooks("before_agent")},
+		{"step": "loop_start", "max_iterations": maxIter},
+		{"step": "modify_request", "hooks": buildPhaseHooks("modify_request")},
+		{"step": "model_call", "wraps": buildPhaseHooks("wrap_model_call"), "model": inst.Config.ModelStr()},
+		{"step": "tool_execution", "wraps": buildPhaseHooks("wrap_tool_call"), "parallel": true},
+		{"step": "loop_end", "exit_when": "no_tool_calls"},
+		{"step": "done"},
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"agent_id":       agentID,
+		"max_iterations": maxIter,
+		"model":          inst.Config.ModelStr(),
+		"hooks":          hooksInfo,
+		"tools":          toolNames,
+		"flow":           flow,
+	})
+}
+
+func (h *agentHandler) patchHooks(w http.ResponseWriter, r *http.Request, agentID string) {
+	if r.Method != http.MethodPatch {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		Add    []string       `json:"add"`
+		Remove []string       `json:"remove"`
+		Config map[string]any `json:"config"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	// Validate hook names
+	knownHooks := map[string]bool{
+		"tracing": true, "todolist": true, "filesystem": true,
+		"skills": true, "memory": true, "summarization": true,
+	}
+	for _, name := range body.Add {
+		if !knownHooks[name] {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("unknown hook: %q", name))
+			return
+		}
+	}
+	for _, name := range body.Remove {
+		if !knownHooks[name] {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("unknown hook: %q", name))
+			return
+		}
+	}
+
+	username := h.resolveUsername(r)
+	inst, err := h.deps.Registry.GetOrClone(agentID, username)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	// Build new overrides by merging with existing (copy to avoid races)
+	var overrides agent.HookOverrides
+	if inst.HookOverrides != nil {
+		overrides = *inst.HookOverrides
+		// Deep-copy slices to avoid aliasing
+		overrides.Remove = append([]string{}, inst.HookOverrides.Remove...)
+		overrides.Add = append([]string{}, inst.HookOverrides.Add...)
+		if inst.HookOverrides.Config != nil {
+			overrides.Config = make(map[string]any, len(inst.HookOverrides.Config))
+			for k, v := range inst.HookOverrides.Config {
+				overrides.Config[k] = v
+			}
+		}
+	}
+	if len(body.Add) > 0 {
+		overrides.Add = mergeStringSlice(overrides.Add, body.Add)
+		// If adding something previously removed, un-remove it
+		overrides.Remove = removeFromSlice(overrides.Remove, body.Add)
+	}
+	if len(body.Remove) > 0 {
+		overrides.Remove = mergeStringSlice(overrides.Remove, body.Remove)
+		// If removing something previously added, un-add it
+		overrides.Add = removeFromSlice(overrides.Add, body.Remove)
+	}
+	if body.Config != nil {
+		if overrides.Config == nil {
+			overrides.Config = make(map[string]any)
+		}
+		for k, v := range body.Config {
+			overrides.Config[k] = v
+		}
+	}
+
+	// Atomically update overrides and force agent rebuild
+	if err := h.deps.Registry.UpdateHookOverrides(agentID, username, &overrides); err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	// Rebuild agent to get updated hooks
+	a := h.buildAgent(inst, username)
+
+	hookNames := make([]string, len(a.Hooks))
+	for i, hook := range a.Hooks {
+		hookNames[i] = hook.Name()
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"agent_id": agentID,
+		"hooks":    hookNames,
+	})
+}
+
+// mergeStringSlice appends items from b that are not already in a.
+func mergeStringSlice(a, b []string) []string {
+	set := make(map[string]bool, len(a))
+	for _, s := range a {
+		set[s] = true
+	}
+	for _, s := range b {
+		if !set[s] {
+			a = append(a, s)
+			set[s] = true
+		}
+	}
+	return a
+}
+
+// removeFromSlice returns a new slice containing elements of a not present in toRemove.
+func removeFromSlice(a, toRemove []string) []string {
+	set := make(map[string]bool, len(toRemove))
+	for _, s := range toRemove {
+		set[s] = true
+	}
+	var result []string
+	for _, s := range a {
+		if !set[s] {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+// applyHookOverrides filters the default hooks based on overrides and adds extra hooks.
+func applyHookOverrides(
+	agentHooks []agent.Hook,
+	overrides *agent.HookOverrides,
+	b backend.Backend,
+	llmClient llm.Client,
+	cfg *agent.AgentConfig,
+) []agent.Hook {
+	// Build removal set
+	removeSet := make(map[string]bool, len(overrides.Remove))
+	for _, name := range overrides.Remove {
+		removeSet[name] = true
+	}
+
+	// Filter out removed hooks
+	var filtered []agent.Hook
+	for _, h := range agentHooks {
+		if !removeSet[h.Name()] {
+			filtered = append(filtered, h)
+		}
+	}
+
+	// Track what's already present
+	present := make(map[string]bool, len(filtered))
+	for _, h := range filtered {
+		present[h.Name()] = true
+	}
+
+	// Add requested hooks that aren't already present
+	for _, name := range overrides.Add {
+		if present[name] {
+			continue
+		}
+		hook := createHookByName(name, b, llmClient, cfg, overrides.Config)
+		if hook != nil {
+			filtered = append(filtered, hook)
+			present[name] = true
+		}
+	}
+
+	return filtered
+}
+
+// createHookByName creates a hook instance by its name.
+func createHookByName(name string, b backend.Backend, llmClient llm.Client, cfg *agent.AgentConfig, hookConfig map[string]any) agent.Hook {
+	switch name {
+	case "tracing":
+		return tracing.NewTracingHook()
+	case "todolist":
+		return hooks.NewTodoListHook()
+	case "filesystem":
+		if b != nil {
+			return hooks.NewFilesystemHook(b)
+		}
+	case "skills":
+		paths := getConfigPaths(hookConfig, "skills")
+		if len(paths) == 0 && cfg.Skills != nil {
+			paths = cfg.Skills.Paths
+		}
+		if len(paths) > 0 && b != nil {
+			return hooks.NewSkillsHook(b, paths)
+		}
+	case "memory":
+		paths := getConfigPaths(hookConfig, "memory")
+		if len(paths) == 0 && cfg.Memory != nil {
+			paths = cfg.Memory.Paths
+		}
+		if len(paths) > 0 && b != nil {
+			return hooks.NewMemoryHook(b, paths)
+		}
+	case "summarization":
+		return hooks.NewSummarizationHook(llmClient, 128_000)
+	}
+	return nil
+}
+
+// getConfigPaths extracts a paths []string from hookConfig[name]["paths"].
+func getConfigPaths(hookConfig map[string]any, name string) []string {
+	if hookConfig == nil {
+		return nil
+	}
+	raw, ok := hookConfig[name]
+	if !ok {
+		return nil
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	rawPaths, ok := m["paths"]
+	if !ok {
+		return nil
+	}
+	switch v := rawPaths.(type) {
+	case []any:
+		paths := make([]string, 0, len(v))
+		for _, p := range v {
+			if s, ok := p.(string); ok {
+				paths = append(paths, s)
+			}
+		}
+		return paths
+	case []string:
+		return v
+	}
+	return nil
+}
+
 // --- Agent builder ---
 
 func (h *agentHandler) buildAgent(inst *agent.Instance, username string) *agent.Agent {
@@ -846,6 +1453,9 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) *agent.
 	// Build hooks
 	var agentHooks []agent.Hook
 
+	// Tracing hook (outermost — index 0 becomes outermost wrapper)
+	agentHooks = append(agentHooks, tracing.NewTracingHook())
+
 	// TodoList hook (always active)
 	agentHooks = append(agentHooks, hooks.NewTodoListHook())
 
@@ -867,9 +1477,19 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) *agent.
 	// Summarization hook
 	agentHooks = append(agentHooks, hooks.NewSummarizationHook(llmClient, 128_000))
 
+	// Apply hook overrides if configured
+	if inst.HookOverrides != nil {
+		agentHooks = applyHookOverrides(agentHooks, inst.HookOverrides, b, llmClient, cfg)
+	}
+
 	// Build tools (built-in tools from config)
 	var tools []agent.Tool
 	tools = append(tools, newBuiltinTools(h.deps.AppConfig)...)
+
+	// Append externally registered tools (HTTP callback tools)
+	if h.deps.ExternalTools != nil {
+		tools = append(tools, h.deps.ExternalTools.All()...)
+	}
 
 	a := agent.NewAgent(inst.AgentID, cfg, llmClient, tools, agentHooks)
 	inst.Agent = a
@@ -884,13 +1504,20 @@ func buildAgentInfo(inst *agent.Instance, backends *BackendStore) agent.AgentInf
 		AgentID:      inst.AgentID,
 		Tools:        nonNilStrings(cfg.Tools),
 		Subagents:    subagentNames(cfg.Subagents),
-		Middleware:    nonNilStrings(cfg.Middleware),
+		Middleware:   nonNilStrings(cfg.Middleware),
+		Hooks:        []string{},
 		BackendType:  "state",
 		Skills:       []string{},
 		LoadedSkills: []string{},
 		Memory:       []string{},
 		Model:        cfg.ModelStr(),
 		Debug:        cfg.Debug,
+	}
+	// Populate hook names from the live Agent if available
+	if inst.Agent != nil {
+		for _, h := range inst.Agent.Hooks {
+			info.Hooks = append(info.Hooks, h.Name())
+		}
 	}
 	if cfg.Name != "" {
 		info.Name = &cfg.Name

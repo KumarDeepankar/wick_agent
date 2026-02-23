@@ -60,7 +60,12 @@ func NewDockerBackend(containerName, workdir string, timeout float64, maxOutputB
 	}
 }
 
-func (b *DockerBackend) ID() string { return b.containerName }
+func (b *DockerBackend) ID() string      { return b.containerName }
+func (b *DockerBackend) Workdir() string { return b.workdir }
+
+func (b *DockerBackend) ResolvePath(path string) (string, error) {
+	return resolvePath(b.workdir, path)
+}
 
 func (b *DockerBackend) ContainerStatus() string {
 	b.mu.Lock()
@@ -325,23 +330,29 @@ func (b *DockerBackend) UploadFiles(files []FileUpload) []FileUploadResponse {
 	responses := make([]FileUploadResponse, len(files))
 
 	for i, f := range files {
+		resolved, err := b.ResolvePath(f.Path)
+		if err != nil {
+			responses[i] = FileUploadResponse{Path: f.Path, Error: err.Error()}
+			continue
+		}
+
 		// Ensure parent directory
-		parent := filepath.Dir(f.Path)
+		parent := filepath.Dir(resolved)
 		mkdirCmd := b.dockerCmd("exec", b.containerName, "mkdir", "-p", parent)
 		exec.Command(mkdirCmd[0], mkdirCmd[1:]...).Run()
 
 		// Pipe base64-encoded content
 		b64 := base64.StdEncoding.EncodeToString(f.Content)
 		decodeCmd := b.dockerCmd("exec", "-i", b.containerName,
-			"sh", "-c", fmt.Sprintf("base64 -d > '%s'", f.Path))
+			"sh", "-c", fmt.Sprintf("base64 -d > '%s'", resolved))
 		cmd := exec.Command(decodeCmd[0], decodeCmd[1:]...)
 		cmd.Stdin = strings.NewReader(b64)
 
 		if err := cmd.Run(); err != nil {
-			responses[i] = FileUploadResponse{Path: f.Path, Error: "permission_denied"}
+			responses[i] = FileUploadResponse{Path: resolved, Error: "permission_denied"}
 			continue
 		}
-		responses[i] = FileUploadResponse{Path: f.Path}
+		responses[i] = FileUploadResponse{Path: resolved}
 	}
 
 	return responses
@@ -353,20 +364,26 @@ func (b *DockerBackend) DownloadFiles(paths []string) []FileDownloadResponse {
 	responses := make([]FileDownloadResponse, len(paths))
 
 	for i, path := range paths {
+		resolved, err := b.ResolvePath(path)
+		if err != nil {
+			responses[i] = FileDownloadResponse{Path: path, Error: err.Error()}
+			continue
+		}
+
 		cmd := b.dockerCmd("exec", b.containerName,
-			"sh", "-c", fmt.Sprintf("base64 '%s'", path))
+			"sh", "-c", fmt.Sprintf("base64 '%s'", resolved))
 		out, err := exec.Command(cmd[0], cmd[1:]...).Output()
 		if err != nil {
-			responses[i] = FileDownloadResponse{Path: path, Error: "file_not_found"}
+			responses[i] = FileDownloadResponse{Path: resolved, Error: "file_not_found"}
 			continue
 		}
 
 		content, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(out)))
 		if err != nil {
-			responses[i] = FileDownloadResponse{Path: path, Error: "decode_error"}
+			responses[i] = FileDownloadResponse{Path: resolved, Error: "decode_error"}
 			continue
 		}
-		responses[i] = FileDownloadResponse{Path: path, Content: content}
+		responses[i] = FileDownloadResponse{Path: resolved, Content: content}
 	}
 
 	return responses
