@@ -212,114 +212,95 @@ async def resolve_keyword_filter(
     Resolve a keyword filter value using OpenSearch.
 
     Strategy:
-    Phase 1 (combined): Run exact + prefix + contains together, merge all matched values.
-    Phase 2 (fallback):  If Phase 1 found nothing, try fuzzy match on .fuzzy field.
-    Phase 3:             If nothing matched, return none.
+    Phase 1: Single wildcard contains query (*value*) - covers exact, prefix, and substring.
+             Match type determined by comparing results to input.
+    Phase 2: If Phase 1 found nothing, try fuzzy match on .fuzzy field (typo tolerance).
+    Phase 3: If nothing matched, return none.
 
     Returns:
         {
-            "match_type": "exact" | "prefix" | "contains" | "combined" | "approximate" | "none",
+            "match_type": "exact" | "prefix" | "contains" | "approximate" | "none",
             "query_value": original value,
             "matched_values": [list of matched values],
             "filter_clause": OpenSearch filter clause or None,
-            "confidence": 100 for exact, <100 for fuzzy
+            "confidence": 100 for exact, 95 for prefix, 85 for contains, <100 for fuzzy
         }
     """
     import shared_state
     opensearch_request = shared_state.opensearch_request
     # Use module's INDEX_NAME (not shared_state)
 
-    # ===== Phase 1: Collect matches from exact + prefix + contains =====
-    combined_values = []  # accumulate all matched values
-    match_types_found = []  # track which strategies matched
-    total_hits = 0
-
-    # Step 1: Check exact match
-    exact_query = {
-        "size": 0,
-        "query": {"term": {field: value}},
-        "aggs": {"check": {"terms": {"field": field, "size": 1}}}
-    }
-    try:
-        result = await opensearch_request("POST", f"{INDEX_NAME}/_search", exact_query)
-        hits = result.get("hits", {}).get("total", {}).get("value", 0)
-        if hits > 0:
-            combined_values.append(value)
-            match_types_found.append("exact")
-            total_hits += hits
-    except Exception as e:
-        logger.warning(f"Exact match query failed: {e}")
-
-    # Step 2: Try prefix match on keyword field (case-insensitive)
-    if field in FUZZY_SEARCH_FIELDS:
-        prefix_query = {
-            "size": 0,
-            "query": {"prefix": {field: {"value": value, "case_insensitive": True}}},
-            "aggs": {"matched_values": {"terms": {"field": field, "size": 10}}}
-        }
-        try:
-            result = await opensearch_request("POST", f"{INDEX_NAME}/_search", prefix_query)
-            hits = result.get("hits", {}).get("total", {}).get("value", 0)
-            buckets = result.get("aggregations", {}).get("matched_values", {}).get("buckets", [])
-            if hits > 0 and buckets:
-                combined_values.extend([b["key"] for b in buckets])
-                match_types_found.append("prefix")
-                total_hits += hits
-        except Exception as e:
-            logger.warning(f"Prefix match query failed: {e}")
-
-    # Step 3: Try contains/substring match via wildcard (case-insensitive)
+    # ===== Phase 1: Single wildcard query (covers exact + prefix + contains) =====
     if field in FUZZY_SEARCH_FIELDS:
         wildcard_query = {
             "size": 0,
             "query": {"wildcard": {field: {"value": f"*{value}*", "case_insensitive": True}}},
-            "aggs": {"matched_values": {"terms": {"field": field, "size": 10}}}
+            "aggs": {"matched_values": {"terms": {"field": field, "size": 50}}}
         }
         try:
             result = await opensearch_request("POST", f"{INDEX_NAME}/_search", wildcard_query)
             hits = result.get("hits", {}).get("total", {}).get("value", 0)
             buckets = result.get("aggregations", {}).get("matched_values", {}).get("buckets", [])
+
             if hits > 0 and buckets:
-                combined_values.extend([b["key"] for b in buckets])
-                match_types_found.append("contains")
-                total_hits += hits
+                matched_values = [b["key"] for b in buckets]
+                value_lower = value.lower()
+
+                # Determine best match type by comparing input to matched values
+                has_exact = any(v.lower() == value_lower for v in matched_values)
+                has_prefix = any(v.lower().startswith(value_lower) for v in matched_values)
+
+                if has_exact and len(matched_values) == 1:
+                    match_type = "exact"
+                    confidence = 100
+                elif has_exact:
+                    match_type = "exact"
+                    confidence = 100
+                elif has_prefix:
+                    match_type = "prefix"
+                    confidence = 95
+                else:
+                    match_type = "contains"
+                    confidence = 85
+
+                if len(matched_values) == 1:
+                    filter_clause = {"term": {field: matched_values[0]}}
+                else:
+                    filter_clause = {"terms": {field: matched_values}}
+
+                return {
+                    "match_type": match_type,
+                    "query_value": value,
+                    "matched_values": matched_values,
+                    "filter_clause": filter_clause,
+                    "confidence": confidence,
+                    "hit_count": hits,
+                    "warning": f"{match_type} match: '{value}' matched to {matched_values}" if match_type != "exact" else None
+                }
         except Exception as e:
-            logger.warning(f"Contains match query failed: {e}")
+            logger.warning(f"Wildcard match query failed: {e}")
 
-    # ===== Phase 1 result: return combined matches if any found =====
-    if combined_values:
-        # Deduplicate while preserving order
-        unique_values = list(dict.fromkeys(combined_values))
-
-        # Determine match type label
-        if match_types_found == ["exact"]:
-            match_type = "exact"
-            confidence = 100
-        elif len(match_types_found) == 1:
-            match_type = match_types_found[0]
-            confidence = 95 if match_type == "prefix" else 85
-        else:
-            match_type = "combined"
-            # Highest confidence from the strategies that matched
-            conf_map = {"exact": 100, "prefix": 95, "contains": 85}
-            confidence = max(conf_map.get(mt, 85) for mt in match_types_found)
-
-        if len(unique_values) == 1:
-            filter_clause = {"term": {field: unique_values[0]}}
-        else:
-            filter_clause = {"terms": {field: unique_values}}
-
-        warning = f"{'+'.join(match_types_found)} match: '{value}' matched to {unique_values}"
-
-        return {
-            "match_type": match_type,
-            "query_value": value,
-            "matched_values": unique_values,
-            "filter_clause": filter_clause,
-            "confidence": confidence,
-            "hit_count": total_hits,
-            "warning": warning if match_type != "exact" else None
+    # Fallback for fields NOT in FUZZY_SEARCH_FIELDS: try exact term match only
+    if field not in FUZZY_SEARCH_FIELDS:
+        exact_query = {
+            "size": 0,
+            "query": {"term": {field: value}},
+            "aggs": {"check": {"terms": {"field": field, "size": 1}}}
         }
+        try:
+            result = await opensearch_request("POST", f"{INDEX_NAME}/_search", exact_query)
+            hits = result.get("hits", {}).get("total", {}).get("value", 0)
+            if hits > 0:
+                return {
+                    "match_type": "exact",
+                    "query_value": value,
+                    "matched_values": [value],
+                    "filter_clause": {"term": {field: value}},
+                    "confidence": 100,
+                    "hit_count": hits
+                }
+        except Exception as e:
+            logger.warning(f"Exact match query failed: {e}")
 
     # ===== Phase 2: Try fuzzy match on .fuzzy field and word match on .words field =====
     # The normalized_fuzzy analyzer handles case-insensitive + whitespace normalization
@@ -1268,26 +1249,33 @@ async def analyze_events_by_conclusion(
     )
 
     # Build filter_resolution - clear summary of what was actually searched
+    # Pattern matches (exact/prefix/contains) are deterministic and assertive.
+    # Only fuzzy (approximate) matches indicate uncertainty.
+    CONFIDENT_MATCH_TYPES = {"exact", "prefix", "contains"}
+
     filter_resolution = {}
     for field, meta in match_metadata.items():
         matched = meta.get("matched_values", [])
-        if meta.get("match_type") == "exact":
+        mt = meta.get("match_type", "none")
+
+        if mt in CONFIDENT_MATCH_TYPES:
             filter_resolution[field] = {
-                "searched": matched[0] if len(matched) == 1 else matched,
+                "matched": matched[0] if len(matched) == 1 else matched,
+                "match_count": len(matched),
                 "exact_match": True
             }
         else:
             filter_resolution[field] = {
                 "you_searched": meta.get("query_value"),
                 "closest_match": matched[0] if matched else None,
-                "searched": matched[0] if len(matched) == 1 else matched,
+                "matched": matched[0] if len(matched) == 1 else matched,
                 "exact_match": False,
                 "confidence": meta.get("confidence")
             }
 
-    # Check if all matches are exact (None if no filters applied)
+    # All confident if every filter is exact/prefix/contains (not fuzzy)
     all_exact = all(
-        m.get("match_type") == "exact"
+        m.get("match_type") in CONFIDENT_MATCH_TYPES
         for m in match_metadata.values()
     ) if match_metadata else None
 
