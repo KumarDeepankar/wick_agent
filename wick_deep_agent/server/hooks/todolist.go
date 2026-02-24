@@ -21,6 +21,10 @@ func NewTodoListHook() *TodoListHook {
 
 func (h *TodoListHook) Name() string { return "todolist" }
 
+func (h *TodoListHook) Phases() []string {
+	return []string{"before_agent"}
+}
+
 // BeforeAgent initializes the todo state and registers the write_todos tool.
 func (h *TodoListHook) BeforeAgent(ctx context.Context, state *agent.AgentState) error {
 	if state.Todos == nil {

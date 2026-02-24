@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,34 +13,23 @@ import (
 
 	"wick_go/agent"
 	"wick_go/handlers"
+	"wick_go/tracing"
 )
 
 func main() {
-	configPath := flag.String("config", "agents.yaml", "Path to agents.yaml config file")
-	flag.Parse()
-
 	appCfg := LoadAppConfig()
-	appCfg.ConfigPath = *configPath
 
-	// Load agent templates from YAML
-	agentConfigs, err := LoadAgentsYAML(appCfg.ConfigPath)
-	if err != nil {
-		log.Printf("WARNING: Failed to load agents.yaml: %v", err)
-		agentConfigs = make(map[string]*agent.AgentConfig)
-	}
-
-	// Create registry and register templates
+	// Server starts with zero agents — all config comes via API
 	registry := agent.NewRegistry()
-	for id, cfg := range agentConfigs {
-		registry.RegisterTemplate(id, cfg)
-		log.Printf("Registered agent template %q", id)
-	}
 
 	// Create handler context with shared dependencies
 	deps := &handlers.Deps{
-		Registry:    registry,
-		AppConfig:   toHandlerConfig(appCfg),
-		ResolveUser: ResolveUser,
+		Registry:      registry,
+		AppConfig:     &handlers.Config{WickGatewayURL: appCfg.WickGatewayURL},
+		ResolveUser:   ResolveUser,
+		ResolveRole:   ResolveRole,
+		TraceStore:    tracing.NewStore(1000),
+		ExternalTools: handlers.NewToolStore(),
 	}
 
 	// Build route mux
@@ -55,6 +43,18 @@ func main() {
 		})
 	})
 
+	// Auth routing: proxy to gateway when configured, otherwise 501 stub
+	// so the UI knows to skip login and use local mode.
+	if appCfg.WickGatewayURL != "" {
+		proxy := authProxy(appCfg.WickGatewayURL)
+		mux.Handle("/auth/login", proxy)
+		mux.Handle("/auth/me", proxy)
+	} else {
+		mux.HandleFunc("/auth/me", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotImplemented) // 501
+		})
+	}
+
 	// Agent routes (auth required when gateway configured)
 	agentMux := http.NewServeMux()
 	handlers.RegisterRoutes(agentMux, deps)
@@ -62,11 +62,7 @@ func main() {
 	mux.Handle("/agents", authMiddleware(appCfg.WickGatewayURL, agentMux))
 
 	// Static file serving with SPA fallback
-	staticDir := flag.Lookup("static")
 	staticPath := "static"
-	if staticDir != nil {
-		staticPath = staticDir.Value.String()
-	}
 	if info, err := os.Stat(staticPath); err == nil && info.IsDir() {
 		log.Printf("Serving static files from %s", staticPath)
 		fs := http.FileServer(http.Dir(staticPath))
@@ -104,23 +100,13 @@ func main() {
 		srv.Shutdown(ctx)
 	}()
 
-	log.Printf("wick_go starting on %s (agents=%d)", addr, registry.TemplateCount())
+	if appCfg.WickGatewayURL != "" {
+		log.Printf("wick_go starting on %s (agents=%d, gateway=%s)", addr, registry.TemplateCount(), appCfg.WickGatewayURL)
+	} else {
+		log.Printf("wick_go starting on %s (agents=%d, auth=disabled)", addr, registry.TemplateCount())
+	}
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
-	}
-}
-
-func toHandlerConfig(cfg *AppConfig) *handlers.Config {
-	return &handlers.Config{
-		WickGatewayURL: cfg.WickGatewayURL,
-		DefaultModel:   cfg.DefaultModel,
-		OllamaBaseURL:  cfg.OllamaBaseURL,
-		GatewayBaseURL:  cfg.GatewayBaseURL,
-		GatewayAPIKey:   cfg.GatewayAPIKey,
-		OpenAIAPIKey:    cfg.OpenAIAPIKey,
-		AnthropicAPIKey: cfg.AnthropicAPIKey,
-		TavilyAPIKey:    cfg.TavilyAPIKey,
-		ConfigPath:      cfg.ConfigPath,
 	}
 }
 

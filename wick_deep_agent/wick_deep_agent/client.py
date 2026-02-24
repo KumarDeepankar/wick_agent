@@ -106,9 +106,17 @@ class WickClient:
         self,
         agent_id: str,
         name: str = "",
-        model: str = "",
+        model: Any = "",
         system_prompt: str = "",
         tools: list[str] | None = None,
+        middleware: list[str] | None = None,
+        subagents: list[dict[str, Any]] | None = None,
+        backend: dict[str, Any] | None = None,
+        skills: dict[str, Any] | None = None,
+        memory: dict[str, Any] | None = None,
+        debug: bool = False,
+        context_window: int = 0,
+        builtin_config: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """POST /agents/"""
         body: dict[str, Any] = {"agent_id": agent_id}
@@ -120,6 +128,22 @@ class WickClient:
             body["system_prompt"] = system_prompt
         if tools is not None:
             body["tools"] = tools
+        if middleware is not None:
+            body["middleware"] = middleware
+        if subagents is not None:
+            body["subagents"] = subagents
+        if backend is not None:
+            body["backend"] = backend
+        if skills is not None:
+            body["skills"] = skills
+        if memory is not None:
+            body["memory"] = memory
+        if debug:
+            body["debug"] = debug
+        if context_window > 0:
+            body["context_window"] = context_window
+        if builtin_config is not None:
+            body["builtin_config"] = builtin_config
         resp = self._session.post(
             f"{self.base_url}/agents/", json=body, timeout=self.timeout
         )
@@ -140,6 +164,85 @@ class WickClient:
         )
         resp.raise_for_status()
         return resp.json()["tools"]
+
+    # -- External Tool Registration -------------------------------------------
+
+    def register_tool(
+        self,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        callback_url: str,
+    ) -> dict[str, Any]:
+        """POST /agents/tools/register — register an external HTTP callback tool."""
+        body = {
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+            "callback_url": callback_url,
+        }
+        resp = self._session.post(
+            f"{self.base_url}/agents/tools/register",
+            json=body,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def deregister_tool(self, name: str) -> dict[str, Any]:
+        """DELETE /agents/tools/deregister/{name} — remove an external tool."""
+        resp = self._session.delete(
+            f"{self.base_url}/agents/tools/deregister/{name}",
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # -- Flow & Hooks --------------------------------------------------------
+
+    def get_flow(self, agent_id: str) -> dict[str, Any]:
+        """GET /agents/{agent_id}/flow — returns loop structure + hooks."""
+        resp = self._session.get(
+            f"{self.base_url}/agents/{agent_id}/flow", timeout=self.timeout
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_hooks(self, agent_id: str) -> list[str]:
+        """Returns the active hook names for an agent."""
+        info = self.get_agent(agent_id)
+        return info.get("hooks", [])
+
+    def update_hooks(
+        self,
+        agent_id: str,
+        *,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """PATCH /agents/{agent_id}/hooks — add/remove hooks."""
+        body: dict[str, Any] = {}
+        if add:
+            body["add"] = add
+        if remove:
+            body["remove"] = remove
+        if config:
+            body["config"] = config
+        resp = self._session.patch(
+            f"{self.base_url}/agents/{agent_id}/hooks",
+            json=body,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def print_flow(self, agent_id: str) -> None:
+        """Fetch the flow for an agent and print an ASCII diagram."""
+        from .flow import print_flow
+
+        flow_data = self.get_flow(agent_id)
+        print_flow(flow_data)
 
     # -- Invoke / Stream -----------------------------------------------------
 
@@ -200,6 +303,26 @@ class WickClient:
         resp.raise_for_status()
 
         yield from _parse_sse(resp)
+
+    # -- Traces --------------------------------------------------------------
+
+    def get_trace(self, trace_id: str) -> dict[str, Any]:
+        """GET /agents/traces/{trace_id}"""
+        resp = self._session.get(
+            f"{self.base_url}/agents/traces/{trace_id}", timeout=self.timeout
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_traces(self, limit: int = 50) -> list[dict[str, Any]]:
+        """GET /agents/traces?limit=N"""
+        resp = self._session.get(
+            f"{self.base_url}/agents/traces",
+            params={"limit": limit},
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     # -- Raw request (escape hatch) ------------------------------------------
 

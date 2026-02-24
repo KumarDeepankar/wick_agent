@@ -63,7 +63,7 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 		ToolParams: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string", "description": "Path to the file to read"},
+				"file_path": map[string]any{"type": "string", "description": fmt.Sprintf("Path to the file to read (relative to %s, or absolute within it)", b.Workdir())},
 			},
 			"required": []string{"file_path"},
 		},
@@ -89,7 +89,7 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 		ToolParams: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string", "description": "Path to write the file"},
+				"file_path": map[string]any{"type": "string", "description": fmt.Sprintf("Path to write the file (relative to %s, or absolute within it)", b.Workdir())},
 				"content":   map[string]any{"type": "string", "description": "Content to write"},
 			},
 			"required": []string{"file_path", "content"},
@@ -125,7 +125,7 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 		ToolParams: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string", "description": "Path to the file to edit"},
+				"file_path": map[string]any{"type": "string", "description": fmt.Sprintf("Path to the file to edit (relative to %s, or absolute within it)", b.Workdir())},
 				"old_text":  map[string]any{"type": "string", "description": "Exact text to find and replace"},
 				"new_text":  map[string]any{"type": "string", "description": "Text to replace old_text with"},
 			},
@@ -144,6 +144,17 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			}
 			cmd := backend.EditFileCommand(resolved, oldText, newText)
 			result := b.Execute(cmd)
+			if result.ExitCode != 0 {
+				return result.Output, nil
+			}
+			// Read back edited file and update state tracker
+			readResult := b.Execute(backend.ReadFileCommand(resolved))
+			if readResult.ExitCode == 0 {
+				if state.Files == nil {
+					state.Files = make(map[string]string)
+				}
+				state.Files[resolved] = readResult.Output
+			}
 			return result.Output, nil
 		},
 	})

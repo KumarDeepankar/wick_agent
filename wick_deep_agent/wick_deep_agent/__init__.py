@@ -9,12 +9,18 @@ Primary API::
 from __future__ import annotations
 
 from .client import WickClient
+from .flow import print_flow
 from .launcher import WickServer
+from .model import model
+from .tool import tool
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "__version__",
     "WickClient",
     "WickServer",
+    "model",
+    "print_flow",
+    "tool",
 ]

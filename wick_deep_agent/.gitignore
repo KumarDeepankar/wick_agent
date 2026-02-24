@@ -11,6 +11,8 @@ build/
 
 # Built Go binary
 server/wick_go
+wick_deep_agent/bin/wick_go
+wick_deep_agent/bin/wick_go.exe
 
 # Runtime state
 .wick_deep_agent/

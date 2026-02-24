@@ -64,7 +64,9 @@ type AgentConfig struct {
 	Backend     *BackendCfg    `yaml:"backend" json:"backend"`
 	Skills      *SkillsCfg     `yaml:"skills" json:"skills"`
 	Memory      *MemoryCfg     `yaml:"memory" json:"memory"`
-	Debug       bool           `yaml:"debug" json:"debug"`
+	Debug         bool              `yaml:"debug" json:"debug"`
+	ContextWindow int               `yaml:"context_window" json:"context_window"`
+	BuiltinConfig map[string]string `yaml:"builtin_config" json:"builtin_config"`
 }
 
 // SubAgentCfg describes a subagent template.
@@ -107,6 +109,7 @@ type AgentInfo struct {
 	Tools           []string `json:"tools"`
 	Subagents       []string `json:"subagents"`
 	Middleware      []string `json:"middleware"`
+	Hooks           []string `json:"hooks"`
 	BackendType     string   `json:"backend_type"`
 	SandboxURL      *string  `json:"sandbox_url"`
 	HasInterruptOn  bool     `json:"has_interrupt_on"`

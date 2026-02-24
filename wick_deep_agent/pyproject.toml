@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wick-deep-agent"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python client and server manager for the wick_go agent server."
 readme = "README.md"
 license = "Apache-2.0"
@@ -45,7 +45,7 @@ wick-agent = "wick_deep_agent.cli:main"
 include = ["wick_deep_agent*"]
 
 [tool.setuptools.package-data]
-wick_deep_agent = ["py.typed"]
+wick_deep_agent = ["py.typed", "bin/*"]
 
 [tool.ruff]
 target-version = "py39"

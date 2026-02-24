@@ -15,11 +15,17 @@ import (
 )
 
 // newBuiltinTools returns the set of built-in tools (not backend-dependent).
-func newBuiltinTools(cfg *Config) []agent.Tool {
+// Tavily API key is read from the agent's BuiltinConfig map.
+func newBuiltinTools(cfg *agent.AgentConfig) []agent.Tool {
 	var tools []agent.Tool
 
-	// internet_search — uses Tavily API
-	if cfg.TavilyAPIKey != "" {
+	// internet_search — uses Tavily API from agent's builtin_config
+	tavilyKey := ""
+	if cfg.BuiltinConfig != nil {
+		tavilyKey = cfg.BuiltinConfig["tavily_api_key"]
+	}
+	if tavilyKey != "" {
+		key := tavilyKey // capture for closure
 		tools = append(tools, &agent.FuncTool{
 			ToolName: "internet_search",
 			ToolDesc: "Search the internet for information. Returns relevant search results with snippets.",
@@ -35,7 +41,7 @@ func newBuiltinTools(cfg *Config) []agent.Tool {
 				if query == "" {
 					return "Error: query is required", nil
 				}
-				return tavilySearch(ctx, cfg.TavilyAPIKey, query)
+				return tavilySearch(ctx, key, query)
 			},
 		})
 	}

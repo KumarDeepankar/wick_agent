@@ -4,6 +4,7 @@ export interface AgentInfo {
   model: string;
   system_prompt: string;
   tools: string[];
+  hooks: string[];
   subagents: string[];
   middleware: string[];
   backend_type: string;
@@ -17,6 +18,19 @@ export interface AgentInfo {
   debug: boolean;
   container_status: 'idle' | 'launching' | 'launched' | 'error' | null;
   container_error: string | null;
+}
+
+export interface HookInfo {
+  name: string;
+  description: string;
+  phases: string[];
+  configurable: boolean;
+  tools: string[];
+}
+
+export interface ToolInfo {
+  name: string;
+  source: string; // "builtin", "filesystem", "todolist", "external"
 }
 
 export interface ChatMessage {

@@ -11,7 +11,7 @@ _inner = _importlib.import_module("wick_deep_agent.wick_deep_agent")
 _sys.modules[__name__] = _inner
 
 # Alias submodules so `from wick_deep_agent.messages import X` works.
-for _name in ("messages", "client", "launcher", "cli"):
+for _name in ("messages", "client", "launcher", "cli", "models", "model", "tool", "flow"):
     _inner_key = f"wick_deep_agent.wick_deep_agent.{_name}"
     if _inner_key in _sys.modules:
         _sys.modules[f"wick_deep_agent.{_name}"] = _sys.modules[_inner_key]

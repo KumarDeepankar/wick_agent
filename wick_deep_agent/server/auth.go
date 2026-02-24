@@ -36,6 +36,16 @@ func ResolveUser(r *http.Request) string {
 	return "local"
 }
 
+// ResolveRole returns the role from the request context.
+// Falls back to "admin" when no auth user is present (local mode).
+func ResolveRole(r *http.Request) string {
+	u := userFromContext(r.Context())
+	if u != nil {
+		return u.Role
+	}
+	return "admin"
+}
+
 // authMiddleware validates Bearer tokens against the gateway /auth/me endpoint.
 // If gatewayURL is empty, auth is disabled and all requests pass through with username="local".
 func authMiddleware(gatewayURL string, next http.Handler) http.Handler {
@@ -93,5 +103,56 @@ func authMiddleware(gatewayURL string, next http.Handler) http.Handler {
 
 		ctx := context.WithValue(r.Context(), userCtxKey, &user)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// authProxy returns a handler that reverse-proxies auth routes (/auth/login,
+// /auth/me) to the gateway, so the UI can call them as same-origin requests.
+func authProxy(gatewayURL string) http.Handler {
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetURL := gatewayURL + r.URL.Path
+
+		var bodyReader io.Reader
+		if r.Body != nil {
+			bodyReader = r.Body
+			defer r.Body.Close()
+		}
+
+		proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, bodyReader)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "failed to create proxy request")
+			return
+		}
+
+		// Copy relevant headers
+		if ct := r.Header.Get("Content-Type"); ct != "" {
+			proxyReq.Header.Set("Content-Type", ct)
+		}
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			proxyReq.Header.Set("Authorization", auth)
+		}
+
+		resp, err := client.Do(proxyReq)
+		if err != nil {
+			log.Printf("auth proxy error: %v", err)
+			writeJSONError(w, http.StatusBadGateway, "auth gateway unreachable")
+			return
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "failed to read gateway response")
+			return
+		}
+
+		// Copy response content-type and status from gateway
+		if ct := resp.Header.Get("Content-Type"); ct != "" {
+			w.Header().Set("Content-Type", ct)
+		}
+		w.WriteHeader(resp.StatusCode)
+		w.Write(body)
 	})
 }
