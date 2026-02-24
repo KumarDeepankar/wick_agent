@@ -1242,15 +1242,22 @@ export function ChatInterface() {
             overflowX: 'hidden',
             paddingLeft: '32px',
             paddingRight: '32px',
-            paddingTop: '0px',
-            paddingBottom: '20px',
+            paddingTop: state.messages.length === 0 ? '0px' : '0px',
+            paddingBottom: state.messages.length === 0 ? '0px' : '20px',
             scrollbarWidth: 'thin',
             scrollbarColor: `${themeColors.border} transparent`,
           }}
         >
           {/* Center content + input for first search only */}
           {state.messages.length === 0 && (
-            <div style={{ minHeight: 'calc(100vh - 200px)', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+            <div style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'flex-end',
+              alignItems: 'center',
+              paddingBottom: '20vh',
+            }}>
               <h1 style={{ margin: 0, marginBottom: '32px', fontSize: '32px', fontWeight: '600', textAlign: 'center' }}>
                 Agentic Search
               </h1>
