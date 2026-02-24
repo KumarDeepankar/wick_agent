@@ -29,6 +29,10 @@ func NewMemoryHook(b backend.Backend, paths []string) *MemoryHook {
 
 func (h *MemoryHook) Name() string { return "memory" }
 
+func (h *MemoryHook) Phases() []string {
+	return []string{"before_agent", "modify_request"}
+}
+
 // BeforeAgent loads AGENTS.md content from configured paths.
 func (h *MemoryHook) BeforeAgent(ctx context.Context, state *agent.AgentState) error {
 	var parts []string

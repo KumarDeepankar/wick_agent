@@ -3,14 +3,17 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"wick_go/agent"
 	"wick_go/backend"
 	"wick_go/hooks"
@@ -21,15 +24,7 @@ import (
 
 // Config holds handler-level configuration.
 type Config struct {
-	WickGatewayURL  string
-	DefaultModel    string
-	OllamaBaseURL   string
-	GatewayBaseURL  string
-	GatewayAPIKey   string
-	OpenAIAPIKey    string
-	AnthropicAPIKey string
-	TavilyAPIKey    string
-	ConfigPath      string
+	WickGatewayURL string
 }
 
 // Deps holds shared dependencies injected into handlers.
@@ -46,6 +41,9 @@ type Deps struct {
 	// ResolveUser extracts the username from the request context.
 	// Set by main to bridge the auth middleware's context key into handlers.
 	ResolveUser func(r *http.Request) string
+
+	// ResolveRole extracts the user's role from the request context.
+	ResolveRole func(r *http.Request) string
 
 	// TraceStore holds recent request traces.
 	TraceStore *tracing.Store
@@ -170,6 +168,8 @@ func RegisterRoutes(mux *http.ServeMux, deps *Deps) {
 			h.patchHooks(w, r, agentID)
 		case "backend":
 			h.patchBackend(w, r, agentID)
+		case "terminal":
+			h.terminal(w, r, agentID)
 		case "files/list":
 			h.listFiles(w, r, agentID)
 		case "files/read":
@@ -192,6 +192,26 @@ func (h *agentHandler) resolveUsername(r *http.Request) string {
 	return "local"
 }
 
+// resolveRole extracts the user's role from the request via the injected ResolveRole func.
+func (h *agentHandler) resolveRole(r *http.Request) string {
+	if h.deps.ResolveRole != nil {
+		return h.deps.ResolveRole(r)
+	}
+	return "admin"
+}
+
+// requireAdmin checks that the request comes from an admin user.
+// Returns true if authorized, false if it wrote a 403 response.
+func (h *agentHandler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if h.deps.AppConfig != nil && h.deps.AppConfig.WickGatewayURL != "" {
+		if h.resolveRole(r) != "admin" {
+			writeJSONError(w, http.StatusForbidden, "admin role required")
+			return false
+		}
+	}
+	return true
+}
+
 // --- CRUD ---
 
 func (h *agentHandler) listAgents(w http.ResponseWriter, r *http.Request) {
@@ -199,6 +219,18 @@ func (h *agentHandler) listAgents(w http.ResponseWriter, r *http.Request) {
 	agents := h.deps.Registry.ListAgents(username)
 	if agents == nil {
 		agents = []agent.AgentInfo{}
+	}
+	// Enrich with container status from backend store
+	for i := range agents {
+		b := h.deps.Backends.Get(agents[i].AgentID, username)
+		if b != nil {
+			if s := b.ContainerStatus(); s != "" {
+				agents[i].ContainerStatus = &s
+			}
+			if e := b.ContainerError(); e != "" {
+				agents[i].ContainerError = &e
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, agents)
 }
@@ -211,19 +243,33 @@ func (h *agentHandler) getAgent(w http.ResponseWriter, r *http.Request, agentID 
 		return
 	}
 	// Ensure agent is built so hooks are populated in the response
-	h.buildAgent(inst, username)
+	if _, err := h.buildAgent(inst, username); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	info := buildAgentInfo(inst, h.deps.Backends)
 	writeJSON(w, http.StatusOK, info)
 }
 
 func (h *agentHandler) createAgent(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+
 	var req struct {
-		AgentID      string   `json:"agent_id"`
-		Name         string   `json:"name"`
-		Model        any      `json:"model"`
-		SystemPrompt string   `json:"system_prompt"`
-		Tools        []string `json:"tools"`
-		Debug        bool     `json:"debug"`
+		AgentID       string              `json:"agent_id"`
+		Name          string              `json:"name"`
+		Model         any                 `json:"model"`
+		SystemPrompt  string              `json:"system_prompt"`
+		Tools         []string            `json:"tools"`
+		Middleware    []string             `json:"middleware"`
+		Subagents    []agent.SubAgentCfg   `json:"subagents"`
+		Backend      *agent.BackendCfg     `json:"backend"`
+		Skills       *agent.SkillsCfg      `json:"skills"`
+		Memory       *agent.MemoryCfg      `json:"memory"`
+		Debug         bool                 `json:"debug"`
+		ContextWindow int                  `json:"context_window"`
+		BuiltinConfig map[string]string    `json:"builtin_config"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -231,20 +277,62 @@ func (h *agentHandler) createAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := &agent.AgentConfig{
-		Name:         req.Name,
-		Model:        req.Model,
-		SystemPrompt: req.SystemPrompt,
-		Tools:        req.Tools,
-		Debug:        req.Debug,
+		Name:          req.Name,
+		Model:         req.Model,
+		SystemPrompt:  req.SystemPrompt,
+		Tools:         req.Tools,
+		Middleware:    req.Middleware,
+		Subagents:    req.Subagents,
+		Backend:      req.Backend,
+		Skills:       req.Skills,
+		Memory:       req.Memory,
+		Debug:         req.Debug,
+		ContextWindow: req.ContextWindow,
+		BuiltinConfig: req.BuiltinConfig,
 	}
 
 	username := h.resolveUsername(r)
 	h.deps.Registry.RegisterTemplate(req.AgentID, cfg)
 	inst, _ := h.deps.Registry.GetOrClone(req.AgentID, username)
+
+	// Eagerly initialize backend so container_status is available immediately
+	if cfg.Backend != nil && h.deps.Backends.Get(req.AgentID, username) == nil {
+		var b backend.Backend
+		switch cfg.Backend.Type {
+		case "local":
+			workdir := cfg.Backend.Workdir
+			if workdir == "" {
+				workdir = "/workspace"
+			}
+			b = backend.NewLocalBackend(workdir, cfg.Backend.Timeout, cfg.Backend.MaxOutputBytes, username)
+		case "docker":
+			containerName := cfg.Backend.ContainerName
+			if containerName == "" {
+				containerName = fmt.Sprintf("wick-sandbox-%s", username)
+			}
+			db := backend.NewDockerBackend(
+				containerName, cfg.Backend.Workdir,
+				cfg.Backend.Timeout, cfg.Backend.MaxOutputBytes,
+				cfg.Backend.DockerHost, cfg.Backend.Image, username,
+			)
+			db.LaunchContainerAsync(func(event, user string) {
+				h.deps.EventBus.Broadcast(event + ":" + user)
+			})
+			b = db
+		}
+		if b != nil {
+			h.deps.Backends.Set(req.AgentID, username, b)
+		}
+	}
+
 	writeJSON(w, http.StatusCreated, buildAgentInfo(inst, h.deps.Backends))
 }
 
 func (h *agentHandler) deleteAgent(w http.ResponseWriter, r *http.Request, agentID string) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+
 	username := h.resolveUsername(r)
 	// Clean up backend if present
 	h.deps.Backends.Remove(agentID, username)
@@ -315,7 +403,11 @@ func (h *agentHandler) invoke(w http.ResponseWriter, r *http.Request, agentID *s
 	}
 
 	// Build agent
-	a := h.buildAgent(inst, username)
+	a, buildErr := h.buildAgent(inst, username)
+	if buildErr != nil {
+		writeJSONError(w, http.StatusInternalServerError, buildErr.Error())
+		return
+	}
 
 	threadID := fmt.Sprintf("%d", time.Now().UnixNano())
 	if req.ThreadID != nil {
@@ -404,7 +496,11 @@ func (h *agentHandler) stream(w http.ResponseWriter, r *http.Request, agentID *s
 	}
 
 	// Build agent
-	a := h.buildAgent(inst, username)
+	a, buildErr := h.buildAgent(inst, username)
+	if buildErr != nil {
+		writeJSONError(w, http.StatusInternalServerError, buildErr.Error())
+		return
+	}
 
 	threadID := fmt.Sprintf("%d", time.Now().UnixNano())
 	if req.ThreadID != nil {
@@ -511,14 +607,13 @@ func (h *agentHandler) availableSkills(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Resolve skills paths relative to the config file directory.
-	configDir := filepath.Dir(h.deps.AppConfig.ConfigPath)
-
 	var skills []skillEntry
 	for _, dir := range skillDirs {
 		absDir := dir
 		if !filepath.IsAbs(dir) {
-			absDir = filepath.Join(configDir, dir)
+			// Relative paths are not supported without a config file — skip
+			log.Printf("skills: skipping relative path %q (requires absolute path from Python caller)", dir)
+			continue
 		}
 		// dir is a parent folder containing subdirectories, one per skill
 		entries, err := os.ReadDir(absDir)
@@ -647,9 +742,8 @@ func (h *agentHandler) availableTools(w http.ResponseWriter, r *http.Request) {
 		// Builtin tools (always available, not tied to any hook)
 		{Name: "calculate", Source: "builtin"},
 		{Name: "current_datetime", Source: "builtin"},
-	}
-	if h.deps.AppConfig.TavilyAPIKey != "" {
-		tools = append(tools, toolEntry{Name: "internet_search", Source: "builtin"})
+		// internet_search availability depends on per-agent builtin_config.tavily_api_key
+		{Name: "internet_search", Source: "builtin"},
 	}
 
 	// Hook-provided tools (system tools — controlled via hook toggles)
@@ -799,6 +893,10 @@ func (h *agentHandler) patchBackend(w http.ResponseWriter, r *http.Request, agen
 		return
 	}
 
+	if !h.requireAdmin(w, r) {
+		return
+	}
+
 	var body struct {
 		Mode       string  `json:"mode"`        // "local" or "remote"
 		SandboxURL *string `json:"sandbox_url"`
@@ -821,14 +919,35 @@ func (h *agentHandler) patchBackend(w http.ResponseWriter, r *http.Request, agen
 	var b backend.Backend
 	containerStatus := ""
 
+	// Read defaults from agent config backend (if set by Python caller)
+	cfgBackend := inst.Config.Backend
+	defaultWorkdir := "/workspace"
+	defaultTimeout := 120.0
+	defaultMaxOutput := 100_000
+	defaultImage := "python:3.11-slim"
+	defaultContainerName := fmt.Sprintf("wick-sandbox-%s", username)
+	if cfgBackend != nil {
+		if cfgBackend.Workdir != "" {
+			defaultWorkdir = cfgBackend.Workdir
+		}
+		if cfgBackend.Timeout > 0 {
+			defaultTimeout = cfgBackend.Timeout
+		}
+		if cfgBackend.MaxOutputBytes > 0 {
+			defaultMaxOutput = cfgBackend.MaxOutputBytes
+		}
+		if cfgBackend.Image != "" {
+			defaultImage = cfgBackend.Image
+		}
+		if cfgBackend.ContainerName != "" {
+			defaultContainerName = cfgBackend.ContainerName
+		}
+	}
+
 	switch body.Mode {
 	case "local":
-		workdir := "/workspace"
-		if inst.Config.Backend != nil && inst.Config.Backend.Workdir != "" {
-			workdir = inst.Config.Backend.Workdir
-		}
-		b = backend.NewLocalBackend(workdir, 120, 100_000, username)
-		inst.Config.Backend = &agent.BackendCfg{Type: "local", Workdir: workdir}
+		b = backend.NewLocalBackend(defaultWorkdir, defaultTimeout, defaultMaxOutput, username)
+		inst.Config.Backend = &agent.BackendCfg{Type: "local", Workdir: defaultWorkdir}
 		containerStatus = "launched"
 
 	case "remote":
@@ -836,10 +955,9 @@ func (h *agentHandler) patchBackend(w http.ResponseWriter, r *http.Request, agen
 		if body.SandboxURL != nil {
 			dockerHost = *body.SandboxURL
 		}
-		containerName := fmt.Sprintf("wick-sandbox-%s", username)
-		db := backend.NewDockerBackend(containerName, "/workspace", 120, 100_000, dockerHost, "python:3.11-slim", username)
+		db := backend.NewDockerBackend(defaultContainerName, defaultWorkdir, defaultTimeout, defaultMaxOutput, dockerHost, defaultImage, username)
 		b = db
-		inst.Config.Backend = &agent.BackendCfg{Type: "docker", DockerHost: dockerHost, ContainerName: containerName}
+		inst.Config.Backend = &agent.BackendCfg{Type: "docker", DockerHost: dockerHost, ContainerName: defaultContainerName}
 
 		// Async container launch
 		db.LaunchContainerAsync(func(event, user string) {
@@ -870,6 +988,94 @@ func (h *agentHandler) patchBackend(w http.ResponseWriter, r *http.Request, agen
 	writeJSON(w, http.StatusOK, result)
 }
 
+// --- Terminal WebSocket ---
+
+var wsUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+func (h *agentHandler) terminal(w http.ResponseWriter, r *http.Request, agentID string) {
+	username := h.resolveUsername(r)
+	b := h.deps.Backends.Get(agentID, username)
+	if b == nil {
+		http.Error(w, "agent has no backend", http.StatusBadRequest)
+		return
+	}
+
+	if b.ContainerStatus() != "launched" {
+		http.Error(w, "container not launched", http.StatusBadRequest)
+		return
+	}
+
+	cmdArgs := b.TerminalCmd()
+	if len(cmdArgs) == 0 {
+		http.Error(w, "terminal not supported", http.StatusBadRequest)
+		return
+	}
+
+	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("terminal: websocket upgrade failed: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("Error: "+err.Error()))
+		return
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("Error: "+err.Error()))
+		return
+	}
+	cmd.Stderr = cmd.Stdout // merge stderr into stdout
+
+	if err := cmd.Start(); err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("Error: "+err.Error()))
+		return
+	}
+
+	done := make(chan struct{})
+
+	// stdout → websocket
+	go func() {
+		defer close(done)
+		buf := make([]byte, 4096)
+		for {
+			n, err := stdout.Read(buf)
+			if n > 0 {
+				if werr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
+					break
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	// websocket → stdin
+	go func() {
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				break
+			}
+			if _, err := io.WriteString(stdin, string(msg)); err != nil {
+				break
+			}
+		}
+		stdin.Close()
+	}()
+
+	<-done
+	cmd.Process.Kill()
+	cmd.Wait()
+}
+
 // --- Files ---
 
 func (h *agentHandler) listFiles(w http.ResponseWriter, r *http.Request, agentID string) {
@@ -888,10 +1094,8 @@ func (h *agentHandler) listFiles(w http.ResponseWriter, r *http.Request, agentID
 		return
 	}
 
-	result := b.Execute(fmt.Sprintf(
-		`stat -c "%%n\t%%F\t%%s" %s/* %s/.* 2>/dev/null | grep -v "/\.$" | grep -v "/\.\.$"`,
-		resolved, resolved,
-	))
+	cmd := backend.LsCommand(resolved)
+	result := b.Execute(cmd)
 
 	var entries []map[string]any
 	if result.ExitCode == 0 && strings.TrimSpace(result.Output) != "" {
@@ -1013,8 +1217,14 @@ func (h *agentHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resolved, err := b.ResolvePath(req.Path)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	content := []byte(req.Content)
-	results := b.UploadFiles([]backend.FileUpload{{Path: req.Path, Content: content}})
+	results := b.UploadFiles([]backend.FileUpload{{Path: resolved, Content: content}})
 	if len(results) > 0 && results[0].Error != "" {
 		writeJSONError(w, http.StatusInternalServerError, "upload failed: "+results[0].Error)
 		return
@@ -1022,7 +1232,7 @@ func (h *agentHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok",
-		"path":   req.Path,
+		"path":   resolved,
 		"size":   len(content),
 	})
 }
@@ -1111,7 +1321,11 @@ func (h *agentHandler) getFlow(w http.ResponseWriter, r *http.Request, agentID s
 	}
 
 	// Ensure agent is built so hooks are populated
-	a := h.buildAgent(inst, username)
+	a, buildErr := h.buildAgent(inst, username)
+	if buildErr != nil {
+		writeJSONError(w, http.StatusInternalServerError, buildErr.Error())
+		return
+	}
 
 	// Build hook info
 	type hookInfo struct {
@@ -1170,6 +1384,10 @@ func (h *agentHandler) getFlow(w http.ResponseWriter, r *http.Request, agentID s
 func (h *agentHandler) patchHooks(w http.ResponseWriter, r *http.Request, agentID string) {
 	if r.Method != http.MethodPatch {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !h.requireAdmin(w, r) {
 		return
 	}
 
@@ -1248,7 +1466,11 @@ func (h *agentHandler) patchHooks(w http.ResponseWriter, r *http.Request, agentI
 	}
 
 	// Rebuild agent to get updated hooks
-	a := h.buildAgent(inst, username)
+	a, buildErr := h.buildAgent(inst, username)
+	if buildErr != nil {
+		writeJSONError(w, http.StatusInternalServerError, buildErr.Error())
+		return
+	}
 
 	hookNames := make([]string, len(a.Hooks))
 	for i, hook := range a.Hooks {
@@ -1401,27 +1623,17 @@ func getConfigPaths(hookConfig map[string]any, name string) []string {
 
 // --- Agent builder ---
 
-func (h *agentHandler) buildAgent(inst *agent.Instance, username string) *agent.Agent {
+func (h *agentHandler) buildAgent(inst *agent.Instance, username string) (*agent.Agent, error) {
 	if inst.Agent != nil {
-		return inst.Agent
+		return inst.Agent, nil
 	}
 
 	cfg := inst.Config
 
-	// Resolve LLM client
-	resolverCfg := &llm.ResolverConfig{
-		OllamaBaseURL:   h.deps.AppConfig.OllamaBaseURL,
-		GatewayBaseURL:  h.deps.AppConfig.GatewayBaseURL,
-		GatewayAPIKey:   h.deps.AppConfig.GatewayAPIKey,
-		OpenAIAPIKey:    h.deps.AppConfig.OpenAIAPIKey,
-		AnthropicAPIKey: h.deps.AppConfig.AnthropicAPIKey,
-	}
-
-	llmClient, _, err := llm.Resolve(cfg.Model, resolverCfg)
+	// Resolve LLM client — model spec must be self-contained
+	llmClient, _, err := llm.Resolve(cfg.Model)
 	if err != nil {
-		log.Printf("WARNING: failed to resolve model for agent %s: %v", inst.AgentID, err)
-		// Fall back to default
-		llmClient, _, _ = llm.Resolve(h.deps.AppConfig.DefaultModel, resolverCfg)
+		return nil, fmt.Errorf("failed to resolve model for agent %s: %w", inst.AgentID, err)
 	}
 
 	// Resolve backend
@@ -1474,17 +1686,21 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) *agent.
 		agentHooks = append(agentHooks, hooks.NewMemoryHook(b, cfg.Memory.Paths))
 	}
 
-	// Summarization hook
-	agentHooks = append(agentHooks, hooks.NewSummarizationHook(llmClient, 128_000))
+	// Summarization hook — use agent's ContextWindow (default 128k)
+	contextWindow := cfg.ContextWindow
+	if contextWindow <= 0 {
+		contextWindow = 128_000
+	}
+	agentHooks = append(agentHooks, hooks.NewSummarizationHook(llmClient, contextWindow))
 
 	// Apply hook overrides if configured
 	if inst.HookOverrides != nil {
 		agentHooks = applyHookOverrides(agentHooks, inst.HookOverrides, b, llmClient, cfg)
 	}
 
-	// Build tools (built-in tools from config)
+	// Build tools (built-in tools from agent config)
 	var tools []agent.Tool
-	tools = append(tools, newBuiltinTools(h.deps.AppConfig)...)
+	tools = append(tools, newBuiltinTools(cfg)...)
 
 	// Append externally registered tools (HTTP callback tools)
 	if h.deps.ExternalTools != nil {
@@ -1493,7 +1709,7 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) *agent.
 
 	a := agent.NewAgent(inst.AgentID, cfg, llmClient, tools, agentHooks)
 	inst.Agent = a
-	return a
+	return a, nil
 }
 
 // --- Helpers ---

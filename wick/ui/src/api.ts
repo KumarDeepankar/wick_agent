@@ -1,4 +1,4 @@
-import type { AgentInfo, HealthResponse, SkillInfo } from './types';
+import type { AgentInfo, HealthResponse, HookInfo, SkillInfo, ToolInfo } from './types';
 
 // ── Token management ───────────────────────────────────────────────────
 const TOKEN_KEY = 'wick-auth-token';
@@ -117,11 +117,33 @@ export async function saveFileContent(
   return res.json();
 }
 
-export async function fetchTools(): Promise<string[]> {
+export async function fetchHooks(): Promise<HookInfo[]> {
+  const res = await authFetch('/agents/hooks/available');
+  if (!res.ok) throw new Error(`Failed to fetch hooks: ${res.status}`);
+  const data = await res.json();
+  return data.hooks ?? [];
+}
+
+export async function updateAgentHooks(
+  agentId: string,
+  payload: { add?: string[]; remove?: string[] },
+): Promise<{ agent_id: string; hooks: string[] }> {
+  const res = await authFetch(`/agents/${agentId}/hooks`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`Failed to update hooks: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchTools(): Promise<ToolInfo[]> {
   const res = await authFetch('/agents/tools/available');
   if (!res.ok) throw new Error(`Failed to fetch tools: ${res.status}`);
   const data = await res.json();
-  return data.tools ?? [];
+  return (data.tools ?? []).map((t: any) =>
+    typeof t === 'string' ? { name: t, source: 'builtin' } : { name: t.name, source: t.source ?? 'builtin' }
+  );
 }
 
 export async function updateAgentTools(

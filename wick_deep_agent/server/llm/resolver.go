@@ -5,31 +5,21 @@ import (
 	"strings"
 )
 
-// ResolverConfig holds provider-specific configuration.
-type ResolverConfig struct {
-	OllamaBaseURL       string
-	GatewayBaseURL      string
-	GatewayAPIKey       string
-	OpenAIAPIKey        string
-	AnthropicAPIKey     string
-	GatewayTokenURL     string
-	GatewayClientID     string
-	GatewayClientSecret string
-}
-
-// Resolve parses a model string (e.g. "ollama:llama3.1:8b") and returns a Client.
-func Resolve(modelSpec any, cfg *ResolverConfig) (Client, string, error) {
+// Resolve parses a model spec (string or map) and returns a Client.
+// String specs only work for ollama (e.g. "ollama:llama3.1:8b").
+// All other providers require map format with explicit credentials.
+func Resolve(modelSpec any) (Client, string, error) {
 	switch v := modelSpec.(type) {
 	case string:
-		return resolveString(v, cfg)
+		return resolveString(v)
 	case map[string]any:
-		return resolveMap(v, cfg)
+		return resolveMap(v)
 	default:
 		return nil, "", fmt.Errorf("unsupported model spec type: %T", modelSpec)
 	}
 }
 
-func resolveString(spec string, cfg *ResolverConfig) (Client, string, error) {
+func resolveString(spec string) (Client, string, error) {
 	parts := strings.SplitN(spec, ":", 2)
 	provider := parts[0]
 	model := ""
@@ -39,20 +29,20 @@ func resolveString(spec string, cfg *ResolverConfig) (Client, string, error) {
 
 	switch provider {
 	case "ollama":
-		return NewOpenAIClient(cfg.OllamaBaseURL+"/v1", "ollama", model), model, nil
+		return NewOpenAIClient("http://localhost:11434/v1", "ollama", model), model, nil
 	case "openai":
-		return NewOpenAIClient("https://api.openai.com/v1", cfg.OpenAIAPIKey, model), model, nil
+		return nil, "", fmt.Errorf("openai provider requires map format with api_key (e.g. {\"provider\":\"openai\",\"model\":\"gpt-4\",\"api_key\":\"...\"})")
 	case "anthropic":
-		return NewAnthropicClient(cfg.AnthropicAPIKey, model), model, nil
+		return nil, "", fmt.Errorf("anthropic provider requires map format with api_key (e.g. {\"provider\":\"anthropic\",\"model\":\"claude-3\",\"api_key\":\"...\"})")
 	case "gateway":
-		return NewOpenAIClient(cfg.GatewayBaseURL+"/v1", cfg.GatewayAPIKey, model), model, nil
+		return nil, "", fmt.Errorf("gateway provider requires map format with base_url and api_key")
 	default:
 		// Try as an Ollama model (e.g. "llama3.1:8b")
-		return NewOpenAIClient(cfg.OllamaBaseURL+"/v1", "ollama", spec), spec, nil
+		return NewOpenAIClient("http://localhost:11434/v1", "ollama", spec), spec, nil
 	}
 }
 
-func resolveMap(spec map[string]any, cfg *ResolverConfig) (Client, string, error) {
+func resolveMap(spec map[string]any) (Client, string, error) {
 	provider, _ := spec["provider"].(string)
 	model, _ := spec["model"].(string)
 	baseURL, _ := spec["base_url"].(string)
@@ -61,30 +51,36 @@ func resolveMap(spec map[string]any, cfg *ResolverConfig) (Client, string, error
 	switch provider {
 	case "ollama":
 		if baseURL == "" {
-			baseURL = cfg.OllamaBaseURL + "/v1"
+			baseURL = "http://localhost:11434/v1"
 		}
 		return NewOpenAIClient(baseURL, "ollama", model), model, nil
 	case "openai":
+		if apiKey == "" {
+			return nil, "", fmt.Errorf("openai provider requires api_key in model spec")
+		}
 		if baseURL == "" {
 			baseURL = "https://api.openai.com/v1"
-		}
-		if apiKey == "" {
-			apiKey = cfg.OpenAIAPIKey
 		}
 		return NewOpenAIClient(baseURL, apiKey, model), model, nil
 	case "anthropic":
 		if apiKey == "" {
-			apiKey = cfg.AnthropicAPIKey
+			return nil, "", fmt.Errorf("anthropic provider requires api_key in model spec")
 		}
 		return NewAnthropicClient(apiKey, model), model, nil
 	case "gateway":
 		if baseURL == "" {
-			baseURL = cfg.GatewayBaseURL + "/v1"
+			return nil, "", fmt.Errorf("gateway provider requires base_url in model spec")
 		}
 		if apiKey == "" {
-			apiKey = cfg.GatewayAPIKey
+			return nil, "", fmt.Errorf("gateway provider requires api_key in model spec")
 		}
 		return NewOpenAIClient(baseURL, apiKey, model), model, nil
+	case "proxy":
+		callbackURL, _ := spec["callback_url"].(string)
+		if callbackURL == "" {
+			return nil, "", fmt.Errorf("proxy provider requires callback_url")
+		}
+		return NewHTTPProxyClient(callbackURL, model), model, nil
 	default:
 		return nil, "", fmt.Errorf("unknown provider: %q", provider)
 	}

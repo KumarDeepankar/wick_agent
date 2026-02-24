@@ -56,6 +56,10 @@ func (b *LocalBackend) ResolvePath(path string) (string, error) {
 	return resolvePath(b.workdir, path)
 }
 
+func (b *LocalBackend) TerminalCmd() []string {
+	return []string{"sh", "-c", fmt.Sprintf("cd %s && exec /bin/sh", shellQuote(b.workdir))}
+}
+
 // Execute runs a command via sh -c in the workdir.
 func (b *LocalBackend) Execute(command string) ExecuteResponse {
 	if command == "" {
@@ -143,7 +147,7 @@ func (b *LocalBackend) UploadFiles(files []FileUpload) []FileUploadResponse {
 			responses[i] = FileUploadResponse{Path: f.Path, Error: "permission_denied"}
 			continue
 		}
-		if err := os.WriteFile(resolved, f.Content, 0644); err != nil {
+		if err := os.WriteFile(resolved, f.Content, 0666); err != nil {
 			responses[i] = FileUploadResponse{Path: f.Path, Error: "permission_denied"}
 			continue
 		}

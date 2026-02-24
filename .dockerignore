@@ -1,0 +1,13 @@
+**/node_modules/
+**/ui/dist/
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/.env
+**/.git/
+**/static/
+wick_gateway/
+deep-agents-ui/
+franklin/
+eval_service/
+liwc/

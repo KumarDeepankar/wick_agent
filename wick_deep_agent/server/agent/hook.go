@@ -18,6 +18,10 @@ type Hook interface {
 	// Name returns the hook identifier.
 	Name() string
 
+	// Phases returns which phases this hook is active in.
+	// Valid values: "before_agent", "modify_request", "wrap_model_call", "wrap_tool_call"
+	Phases() []string
+
 	// BeforeAgent is called once before the agent loop starts.
 	// Use for one-time setup: load skills catalog, memory files, register tools.
 	BeforeAgent(ctx context.Context, state *AgentState) error
@@ -39,6 +43,10 @@ type Hook interface {
 type BaseHook struct{}
 
 func (BaseHook) Name() string { return "base" }
+
+func (BaseHook) Phases() []string {
+	return []string{"before_agent", "modify_request", "wrap_model_call", "wrap_tool_call"}
+}
 
 func (BaseHook) BeforeAgent(ctx context.Context, state *AgentState) error {
 	return nil

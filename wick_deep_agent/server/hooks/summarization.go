@@ -30,6 +30,10 @@ func NewSummarizationHook(client llm.Client, contextWindow int) *SummarizationHo
 
 func (h *SummarizationHook) Name() string { return "summarization" }
 
+func (h *SummarizationHook) Phases() []string {
+	return []string{"wrap_model_call"}
+}
+
 // WrapModelCall checks token count and summarizes if needed.
 func (h *SummarizationHook) WrapModelCall(ctx context.Context, msgs []agent.Message, next agent.ModelCallWrapFunc) (*llm.Response, error) {
 	totalTokens := estimateTokens(msgs)

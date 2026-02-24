@@ -67,6 +67,15 @@ func (b *DockerBackend) ResolvePath(path string) (string, error) {
 	return resolvePath(b.workdir, path)
 }
 
+func (b *DockerBackend) TerminalCmd() []string {
+	return b.dockerCmd("exec", "-i",
+		"-e", "TERM=xterm-256color",
+		"-w", b.workdir,
+		b.containerName,
+		"sh",
+	)
+}
+
 func (b *DockerBackend) ContainerStatus() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -344,7 +353,7 @@ func (b *DockerBackend) UploadFiles(files []FileUpload) []FileUploadResponse {
 		// Pipe base64-encoded content
 		b64 := base64.StdEncoding.EncodeToString(f.Content)
 		decodeCmd := b.dockerCmd("exec", "-i", b.containerName,
-			"sh", "-c", fmt.Sprintf("base64 -d > '%s'", resolved))
+			"sh", "-c", fmt.Sprintf("base64 -d > '%s' && chmod 666 '%s'", resolved, resolved))
 		cmd := exec.Command(decodeCmd[0], decodeCmd[1:]...)
 		cmd.Stdin = strings.NewReader(b64)
 

@@ -33,6 +33,10 @@ type Backend interface {
 	// ResolvePath resolves a path relative to the workdir and validates
 	// it does not escape the workspace boundary.
 	ResolvePath(path string) (string, error)
+
+	// TerminalCmd returns the command and args to spawn an interactive shell
+	// for the WebSocket terminal. Returns nil if terminal is not supported.
+	TerminalCmd() []string
 }
 
 // resolvePath is a shared helper that resolves a path relative to a workdir

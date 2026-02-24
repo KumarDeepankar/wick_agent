@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import type { AgentInfo } from '../types';
-import { fetchAgents, fetchTools, updateAgentTools, updateAgentBackend, getToken } from '../api';
+import type { AgentInfo, HookInfo, ToolInfo } from '../types';
+import { fetchAgents, fetchTools, fetchHooks, updateAgentTools, updateAgentHooks, updateAgentBackend, getToken } from '../api';
 
 type Theme = 'light' | 'dark';
 type SandboxMode = 'local' | 'remote';
@@ -27,21 +27,24 @@ export function SettingsPanel({
   onOpenTerminal,
 }: Props) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [allTools, setAllTools] = useState<string[]>([]);
+  const [allTools, setAllTools] = useState<ToolInfo[]>([]);
+  const [allHooks, setAllHooks] = useState<HookInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [toolFilter, setToolFilter] = useState('');
   const [updating, setUpdating] = useState(false);
   // Optimistic tool set — updated instantly on toggle, reconciled with server
   const [optimisticTools, setOptimisticTools] = useState<Set<string> | null>(null);
+  const [optimisticHooks, setOptimisticHooks] = useState<Set<string> | null>(null);
   const [sandboxUrl, setSandboxUrl] = useState('');
   const panelRef = useRef<HTMLDivElement>(null);
 
   const loadData = useCallback(() => {
     setLoading(true);
-    Promise.all([fetchAgents(), fetchTools()])
-      .then(([agentsData, toolsData]) => {
+    Promise.all([fetchAgents(), fetchTools(), fetchHooks()])
+      .then(([agentsData, toolsData, hooksData]) => {
         setAgents(agentsData);
         setAllTools(toolsData);
+        setAllHooks(hooksData);
         if (agentsData.length > 0 && !selectedAgent) {
           onSelectAgent(agentsData[0]!.agent_id);
         }
@@ -58,11 +61,15 @@ export function SettingsPanel({
   // doesn't block the other from updating.
   const refreshData = useCallback(() => {
     setOptimisticTools(null);
+    setOptimisticHooks(null);
     fetchAgents()
       .then((agentsData) => setAgents(agentsData))
       .catch(() => {});
     fetchTools()
       .then((toolsData) => setAllTools(toolsData))
+      .catch(() => {});
+    fetchHooks()
+      .then((hooksData) => setAllHooks(hooksData))
       .catch(() => {});
   }, []);
 
@@ -126,7 +133,7 @@ export function SettingsPanel({
   const filteredTools = useMemo(() => {
     if (!toolFilter.trim()) return allTools;
     const q = toolFilter.toLowerCase();
-    return allTools.filter((t) => t.toLowerCase().includes(q));
+    return allTools.filter((t) => t.name.toLowerCase().includes(q));
   }, [allTools, toolFilter]);
 
   const handleToggleTool = useCallback(
@@ -161,6 +168,50 @@ export function SettingsPanel({
       }
     },
     [currentAgent, updating, disabled, agentTools, loadData],
+  );
+
+  // ── Hooks ──────────────────────────────────────────────────────────
+  const serverHooks = useMemo(() => new Set(currentAgent?.hooks ?? []), [currentAgent]);
+  const agentHooks = optimisticHooks ?? serverHooks;
+
+  useEffect(() => {
+    setOptimisticHooks(null);
+  }, [serverHooks]);
+
+  const handleToggleHook = useCallback(
+    async (hookName: string) => {
+      if (!currentAgent || updating || disabled) return;
+      const isActive = agentHooks.has(hookName);
+      const next = new Set(agentHooks);
+      if (isActive) {
+        next.delete(hookName);
+      } else {
+        next.add(hookName);
+      }
+
+      setOptimisticHooks(next);
+      setUpdating(true);
+
+      try {
+        const payload = isActive
+          ? { remove: [hookName] }
+          : { add: [hookName] };
+        const result = await updateAgentHooks(currentAgent.agent_id, payload);
+        setAgents((prev) =>
+          prev.map((a) =>
+            a.agent_id === currentAgent.agent_id
+              ? { ...a, hooks: result.hooks }
+              : a,
+          ),
+        );
+      } catch {
+        setOptimisticHooks(null);
+        loadData();
+      } finally {
+        setUpdating(false);
+      }
+    },
+    [currentAgent, updating, disabled, agentHooks, loadData],
   );
 
   // ── Sandbox mode ────────────────────────────────────────────────────
@@ -214,7 +265,7 @@ export function SettingsPanel({
 
   if (!isOpen) return null;
 
-  const activeCount = allTools.filter((t) => agentTools.has(t)).length;
+  const activeCount = allTools.filter((t) => agentTools.has(t.name)).length;
   const totalCount = allTools.length;
 
   return (
@@ -339,6 +390,50 @@ export function SettingsPanel({
             </section>
           )}
 
+          {/* Hooks */}
+          <section className="settings-section">
+            <div className="settings-tools-header">
+              <label className="settings-label">
+                Hooks
+                <span className="settings-tools-count">
+                  {allHooks.filter((h) => agentHooks.has(h.name)).length}/{allHooks.length}
+                </span>
+              </label>
+            </div>
+            <div className="settings-tools-list">
+              {allHooks.length === 0 && (
+                <span className="settings-hint">No hooks available</span>
+              )}
+              {allHooks.map((hook) => {
+                const active = agentHooks.has(hook.name);
+                return (
+                  <label
+                    key={hook.name}
+                    className={`settings-tool-row ${active ? 'active' : 'inactive'}`}
+                    title={hook.description}
+                  >
+                    <div className="settings-tool-info">
+                      <span className="settings-tool-name">{hook.name}</span>
+                    </div>
+                    <button
+                      className={`settings-tool-toggle ${active ? 'on' : 'off'}`}
+                      onClick={() => handleToggleHook(hook.name)}
+                      disabled={updating || disabled}
+                      aria-label={`${active ? 'Disable' : 'Enable'} ${hook.name}`}
+                    >
+                      <span className="settings-toggle-knob" />
+                    </button>
+                  </label>
+                );
+              })}
+            </div>
+            {currentAgent && (currentAgent.hooks ?? []).length > 0 && (
+              <span className="settings-hint" style={{ marginTop: '6px', fontSize: '11px' }}>
+                Flow: {(currentAgent.hooks ?? []).join(' → ')}
+              </span>
+            )}
+          </section>
+
           {/* Tools */}
           <section className="settings-section">
             <div className="settings-tools-header">
@@ -361,22 +456,26 @@ export function SettingsPanel({
                 </span>
               )}
               {filteredTools.map((tool) => {
-                const active = agentTools.has(tool);
-                const isMcp = tool.startsWith('mcp_');
+                const active = agentTools.has(tool.name);
+                const isMcp = tool.name.startsWith('mcp_');
+                const isSystem = tool.source !== 'builtin' && tool.source !== 'external';
+                const isExternal = tool.source === 'external';
                 return (
                   <label
-                    key={tool}
+                    key={tool.name}
                     className={`settings-tool-row ${active ? 'active' : 'inactive'}`}
                   >
                     <div className="settings-tool-info">
                       {isMcp && <span className="settings-tool-badge">MCP</span>}
-                      <span className="settings-tool-name">{tool}</span>
+                      {isSystem && <span className="settings-tool-badge" style={{ background: 'var(--color-accent-muted, #e0e7ff)', color: 'var(--color-accent, #4f46e5)' }}>system</span>}
+                      {isExternal && <span className="settings-tool-badge" style={{ background: 'var(--color-success-muted, #d1fae5)', color: 'var(--color-success, #059669)' }}>external</span>}
+                      <span className="settings-tool-name">{tool.name}</span>
                     </div>
                     <button
                       className={`settings-tool-toggle ${active ? 'on' : 'off'}`}
-                      onClick={() => handleToggleTool(tool)}
+                      onClick={() => handleToggleTool(tool.name)}
                       disabled={updating || disabled}
-                      aria-label={`${active ? 'Disable' : 'Enable'} ${tool}`}
+                      aria-label={`${active ? 'Disable' : 'Enable'} ${tool.name}`}
                     >
                       <span className="settings-toggle-knob" />
                     </button>

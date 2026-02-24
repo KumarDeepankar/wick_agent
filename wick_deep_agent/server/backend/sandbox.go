@@ -21,8 +21,8 @@ import (
 func LsCommand(path string) string {
 	safePath := shellQuote(path)
 	return fmt.Sprintf(
-		`stat -c "%%n\t%%F\t%%s" %s/* %s/.* 2>/dev/null | grep -v "/\.$" | grep -v "/\.\.$"`,
-		safePath, safePath,
+		`d=%s; ls -1A "$d" 2>/dev/null | while IFS= read -r name; do stat --printf="%%n\t%%F\t%%s\n" "$d/$name"; done`,
+		safePath,
 	)
 }
 
@@ -37,8 +37,8 @@ func WriteFileCommand(path, content string) string {
 	safePath := shellQuote(path)
 	// Use heredoc to handle special characters in content
 	escapedContent := strings.ReplaceAll(content, "'", "'\\''")
-	return fmt.Sprintf("mkdir -p %s && printf '%%s' '%s' > %s",
-		shellQuote(dir), escapedContent, safePath)
+	return fmt.Sprintf("mkdir -p %s && printf '%%s' '%s' > %s && chmod 666 %s",
+		shellQuote(dir), escapedContent, safePath, safePath)
 }
 
 // EditFileCommand returns a shell command to perform a search-and-replace edit.
@@ -51,7 +51,7 @@ func EditFileCommand(path, oldText, newText string) string {
 	escapedNew := strings.ReplaceAll(newText, "'", "'\\''")
 	return fmt.Sprintf(
 		`python3 -c "
-import sys
+import os, sys
 path = '%s'
 with open(path, 'r') as f: content = f.read()
 old = '''%s'''
@@ -61,6 +61,7 @@ if old not in content:
     sys.exit(1)
 content = content.replace(old, new, 1)
 with open(path, 'w') as f: f.write(content)
+os.chmod(path, 0o666)
 print('OK')
 " 2>&1`, pyPath, escapedOld, escapedNew)
 }

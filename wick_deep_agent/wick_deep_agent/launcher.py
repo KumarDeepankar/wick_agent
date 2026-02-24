@@ -14,9 +14,10 @@
         }
     })
 
-    server.build()
     server.start()
     server.wait_ready()
+    server.register_agents()
+    server.register_tools()
     server.stop()
 
     # Or as a context manager:
@@ -30,9 +31,12 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
+
+from .model import ModelDef
 
 
 STATE_DIR = Path.home() / ".wick_deep_agent"
@@ -40,40 +44,40 @@ DEFAULT_PID_FILE = STATE_DIR / "wick_go.pid"
 DEFAULT_LOG_FILE = STATE_DIR / "wick_go.log"
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
-SERVER_DIR = _PACKAGE_DIR.parent / "server"
+_BIN_NAME = "wick_go.exe" if sys.platform == "win32" else "wick_go"
+_BUNDLED_BINARY = _PACKAGE_DIR / "bin" / _BIN_NAME
 
 
 class WickServer:
     """Manages the wick_go server process.
 
-    Config resolution (first match wins):
-        1. ``config="/path/to/agents.yaml"`` — explicit file path
-        2. ``agents={...}`` — Python dict, auto-written to a temp file
-        3. ``WICK_CONFIG`` env var
-        4. No config — server starts with zero agents (add via REST API)
+    The Go binary starts with zero agents. All agent configuration is
+    registered via the REST API after startup (``register_agents()``).
     """
 
     def __init__(
         self,
         binary: str | None = None,
-        config: str | None = None,
         agents: dict[str, Any] | None = None,
         defaults: dict[str, Any] | None = None,
         port: int = 8000,
         host: str = "0.0.0.0",
         env: dict[str, str] | None = None,
         log_file: str | None = None,
+        tools: list | None = None,
     ) -> None:
         self.port = port
         self.host = host
         self.extra_env = env or {}
         self.log_path = Path(log_file) if log_file else DEFAULT_LOG_FILE
 
+        self._agents = agents
+        self._defaults = defaults
         self.binary = self._resolve_binary(binary)
-        self.config = self._resolve_config(config, agents, defaults)
 
         self._log_fh: Any = None
-        self._owns_config = config is None and agents is not None
+        self._tools = tools
+        self._tool_server: Any = None  # Optional[ToolServer]
 
     # -- Resolution ----------------------------------------------------------
 
@@ -84,56 +88,81 @@ class WickServer:
         from_env = os.environ.get("WICK_GO_BINARY")
         if from_env:
             return from_env
-        built = SERVER_DIR / "wick_go"
-        if built.exists():
-            return str(built)
+        # Bundled binary (pip install)
+        if _BUNDLED_BINARY.exists() and os.access(str(_BUNDLED_BINARY), os.X_OK):
+            return str(_BUNDLED_BINARY)
+        # Dev mode — adjacent server/ dir
+        dev_binary = _PACKAGE_DIR.parent / "server" / _BIN_NAME
+        if dev_binary.exists():
+            return str(dev_binary)
         raise FileNotFoundError(
-            "wick_go binary not found. Run WickServer.build() first, "
+            "wick_go binary not found. Install a platform wheel, "
             "set WICK_GO_BINARY, or pass binary= explicitly."
         )
 
     @staticmethod
-    def _resolve_config(
-        explicit: str | None,
-        agents: dict[str, Any] | None,
-        defaults: dict[str, Any] | None,
-    ) -> str:
-        # 1. Explicit file path
-        if explicit:
-            return explicit
+    def _resolve_model_spec(model: Any) -> Any:
+        """Convert a model value to a self-contained dict for the Go server.
 
-        # 2. Inline agents dict → write temp config (JSON is valid YAML)
-        if agents is not None:
-            STATE_DIR.mkdir(parents=True, exist_ok=True)
-            cfg_path = STATE_DIR / "agents.json"
-            config_data: dict[str, Any] = {"agents": agents}
-            if defaults:
-                config_data["defaults"] = defaults
-            cfg_path.write_text(json.dumps(config_data, indent=2))
-            return str(cfg_path)
+        - ``"ollama:llama3.1:8b"`` → ``{"provider":"ollama","model":"llama3.1:8b","base_url":"http://localhost:11434/v1"}``
+        - ``"openai:gpt-4"`` → ``{"provider":"openai","model":"gpt-4","api_key":"..."}``
+        - ``"anthropic:claude-3"`` → ``{"provider":"anthropic","model":"claude-3","api_key":"..."}``
+        - ``ModelDef`` → ``{"provider":"proxy","model":name,"callback_url":"..."}``  (callback_url filled by caller)
+        - ``dict`` → pass through
+        """
+        if isinstance(model, dict):
+            return model
 
-        # 3. Environment variable
-        from_env = os.environ.get("WICK_CONFIG")
-        if from_env:
-            return from_env
+        if isinstance(model, ModelDef):
+            # Placeholder — callback_url is filled by _start_tool_server
+            return {"provider": "proxy", "model": model.name}
 
-        # 4. No config — write an empty config so server starts clean
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        cfg_path = STATE_DIR / "agents.json"
-        cfg_path.write_text(json.dumps({"agents": {}}, indent=2))
-        return str(cfg_path)
+        if not isinstance(model, str):
+            return model
+
+        parts = model.split(":", 1)
+        provider = parts[0]
+        model_name = parts[1] if len(parts) > 1 else ""
+
+        if provider == "ollama":
+            base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+            return {"provider": "ollama", "model": model_name, "base_url": base_url + "/v1"}
+        elif provider == "openai":
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+            spec: dict[str, Any] = {"provider": "openai", "model": model_name, "api_key": api_key}
+            base_url_env = os.environ.get("OPENAI_BASE_URL")
+            if base_url_env:
+                spec["base_url"] = base_url_env
+            return spec
+        elif provider == "anthropic":
+            return {"provider": "anthropic", "model": model_name, "api_key": os.environ.get("ANTHROPIC_API_KEY", "")}
+        elif provider == "gateway":
+            return {
+                "provider": "gateway",
+                "model": model_name,
+                "base_url": os.environ.get("GATEWAY_BASE_URL", "http://localhost:4000") + "/v1",
+                "api_key": os.environ.get("GATEWAY_API_KEY", ""),
+            }
+        else:
+            # Assume Ollama model (e.g. "llama3.1:8b" without prefix)
+            base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+            return {"provider": "ollama", "model": model, "base_url": base_url + "/v1"}
 
     # -- Build ---------------------------------------------------------------
 
     @staticmethod
     def build(source_dir: str | None = None) -> None:
-        """Compile the Go server binary."""
-        src = Path(source_dir) if source_dir else SERVER_DIR
+        """Compile the Go server binary (dev mode).
+
+        Builds into the source dir, then copies to the bundled bin/ location
+        so that _resolve_binary() picks up the fresh build.
+        """
+        src = Path(source_dir) if source_dir else (_PACKAGE_DIR.parent / "server")
         if not (src / "main.go").exists():
             raise FileNotFoundError(f"main.go not found in {src}")
 
         result = subprocess.run(
-            ["go", "build", "-o", "wick_go", "."],
+            ["go", "build", "-o", _BIN_NAME, "."],
             cwd=str(src),
             capture_output=True,
             text=True,
@@ -141,10 +170,42 @@ class WickServer:
         if result.returncode != 0:
             raise RuntimeError(f"go build failed:\n{result.stderr}")
 
+        # Copy to bundled bin/ so the launcher resolves the fresh binary
+        built = src / _BIN_NAME
+        if built.exists() and _BUNDLED_BINARY.parent.exists():
+            import shutil
+            shutil.copy2(str(built), str(_BUNDLED_BINARY))
+
     # -- Start / Stop --------------------------------------------------------
+
+    def _collect_models_from_agents(self) -> list[ModelDef]:
+        """Scan agent configs for ModelDef instances in the 'model' field."""
+        models: list[ModelDef] = []
+        if not self._agents:
+            return models
+        seen: set[str] = set()
+        for agent_cfg in self._agents.values():
+            m = agent_cfg.get("model")
+            if isinstance(m, ModelDef) and m.name not in seen:
+                models.append(m)
+                seen.add(m.name)
+        return models
 
     def start(self) -> int:
         """Start the server in the background. Returns the PID."""
+        # Collect custom model handlers from agent configs
+        models = self._collect_models_from_agents()
+
+        # Start the tool/model sidecar server before the Go binary
+        if (self._tools or models) and self._tool_server is None:
+            from .tool import ToolServer
+
+            self._tool_server = ToolServer(
+                tools=self._tools or [],
+                models=models,
+            )
+            self._tool_server.start()
+
         info = self.status()
         if info["running"]:
             return info["pid"]
@@ -158,7 +219,7 @@ class WickServer:
 
         self._log_fh = open(self.log_path, "a")  # noqa: SIM115
         proc = subprocess.Popen(
-            [self.binary, "-config", self.config],
+            [self.binary],
             env=env,
             stdout=self._log_fh,
             stderr=subprocess.STDOUT,
@@ -170,8 +231,60 @@ class WickServer:
         DEFAULT_PID_FILE.write_text(str(proc.pid))
         return proc.pid
 
+    def register_agents(self) -> None:
+        """Register agent templates with the running Go server via API."""
+        if not self._agents:
+            return
+
+        import requests as _requests
+
+        callback_url = ""
+        if self._tool_server and self._tool_server.is_alive:
+            callback_url = self._tool_server.callback_url
+
+        url = f"http://localhost:{self.port}/agents/"
+        for agent_id, agent_cfg in self._agents.items():
+            # Merge defaults
+            merged: dict[str, Any] = {**(self._defaults or {}), **agent_cfg}
+
+            # Resolve model spec to self-contained dict
+            raw_model = merged.get("model")
+            resolved = self._resolve_model_spec(raw_model)
+
+            # Inject callback_url for proxy models
+            if isinstance(resolved, dict) and resolved.get("provider") == "proxy" and callback_url:
+                resolved["callback_url"] = callback_url
+            merged["model"] = resolved
+
+            # Inject Tavily key from env if available
+            tavily_key = os.environ.get("TAVILY_API_KEY", "")
+            if tavily_key:
+                merged.setdefault("builtin_config", {})["tavily_api_key"] = tavily_key
+
+            payload = {"agent_id": agent_id, **merged}
+            resp = _requests.post(url, json=payload, timeout=10)
+            resp.raise_for_status()
+
+    def register_tools(self) -> None:
+        """Register external tools with the running Go server."""
+        if not self._tool_server or not self._tool_server.is_alive:
+            return
+
+        import requests as _requests
+
+        url = f"http://localhost:{self.port}/agents/tools/register"
+        for td in self._tool_server.tool_defs:
+            schema = td.to_schema(self._tool_server.callback_url)
+            resp = _requests.post(url, json=schema, timeout=5)
+            resp.raise_for_status()
+
     def stop(self) -> None:
-        """Stop the server via PID file."""
+        """Stop the server and tool sidecar."""
+        # Stop tool server first
+        if self._tool_server is not None:
+            self._tool_server.stop()
+            self._tool_server = None
+
         if not DEFAULT_PID_FILE.exists():
             return
 
@@ -192,6 +305,21 @@ class WickServer:
             pass  # already dead or not ours
         finally:
             DEFAULT_PID_FILE.unlink(missing_ok=True)
+
+    def restart(self, build: bool = True, timeout: int = 10) -> int:
+        """Stop, optionally rebuild, and start the server. Returns the new PID."""
+        self.stop()
+        if build:
+            self.build()
+        pid = self.start()
+        if not self.wait_ready(timeout=timeout):
+            raise RuntimeError(
+                f"Server did not become ready after restart on port {self.port}. "
+                f"Check logs: {self.log_path}"
+            )
+        self.register_agents()
+        self.register_tools()
+        return pid
 
     def status(self) -> dict[str, Any]:
         """Return {running, pid, url}."""
@@ -250,6 +378,8 @@ class WickServer:
                 f"Server did not become ready on port {self.port}. "
                 f"Check logs: {self.log_path}"
             )
+        self.register_agents()
+        self.register_tools()
         return self
 
     def __exit__(self, *exc: object) -> None:

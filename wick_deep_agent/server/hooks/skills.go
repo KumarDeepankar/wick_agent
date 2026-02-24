@@ -41,6 +41,10 @@ func NewSkillsHook(b backend.Backend, paths []string) *SkillsHook {
 
 func (h *SkillsHook) Name() string { return "skills" }
 
+func (h *SkillsHook) Phases() []string {
+	return []string{"before_agent", "modify_request"}
+}
+
 // BeforeAgent scans skills directories and parses YAML frontmatter.
 func (h *SkillsHook) BeforeAgent(ctx context.Context, state *agent.AgentState) error {
 	for _, skillsDir := range h.paths {

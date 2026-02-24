@@ -82,10 +82,23 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 	state := a.threadStore.LoadOrCreate(threadID)
 	state.Messages = append(state.Messages, messages...)
 
+	// Trace recorder (nil-safe — all checks below handle nil)
+	tr := TraceFromContext(ctx)
+
 	// 1. BeforeAgent hooks
 	for _, hook := range a.Hooks {
+		var s SpanHandle
+		if tr != nil {
+			s = tr.StartSpan("hook.before_agent/" + hook.Name())
+		}
 		if err := hook.BeforeAgent(ctx, state); err != nil {
+			if s != nil {
+				s.Set("error", err.Error()).End()
+			}
 			return nil, fmt.Errorf("hook %s BeforeAgent: %w", hook.Name(), err)
+		}
+		if s != nil {
+			s.End()
 		}
 	}
 
@@ -104,6 +117,18 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 	// Build tool schemas for LLM
 	toolSchemas := buildToolSchemas(toolMap)
 
+	// Record available tools
+	if tr != nil {
+		names := make([]string, 0, len(toolMap))
+		for name := range toolMap {
+			names = append(names, name)
+		}
+		tr.RecordEvent("tools.available", map[string]any{
+			"count": len(names),
+			"tools": names,
+		})
+	}
+
 	// 2. LLM-Tool loop
 	for iter := 0; iter < MaxIterations; iter++ {
 		select {
@@ -116,11 +141,68 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 		msgs := make([]Message, len(state.Messages))
 		copy(msgs, state.Messages)
 		for _, hook := range a.Hooks {
+			before := len(msgs)
+			var s SpanHandle
+			if tr != nil {
+				s = tr.StartSpan("hook.modify_request/" + hook.Name())
+				s.Set("iteration", iter)
+				s.Set("message_count_before", before)
+			}
 			var err error
 			msgs, err = hook.ModifyRequest(ctx, msgs)
 			if err != nil {
+				if s != nil {
+					s.Set("error", err.Error()).End()
+				}
 				return nil, fmt.Errorf("hook %s ModifyRequest: %w", hook.Name(), err)
 			}
+			if s != nil {
+				s.Set("message_count_after", len(msgs)).End()
+			}
+		}
+
+		// Record what will be sent to the LLM
+		if tr != nil {
+			inputEvent := map[string]any{
+				"iteration":     iter,
+				"message_count": len(msgs),
+			}
+
+			// System prompt (sent separately via req.SystemPrompt, not in messages)
+			if a.Config.SystemPrompt != "" {
+				sp := a.Config.SystemPrompt
+				if len(sp) <= 1000 {
+					inputEvent["system_prompt"] = sp
+				} else {
+					inputEvent["system_prompt"] = sp[:1000] + "...(truncated)"
+				}
+			}
+
+			msgSummary := make([]map[string]any, len(msgs))
+			for i, m := range msgs {
+				entry := map[string]any{
+					"role":           m.Role,
+					"content_length": len(m.Content),
+				}
+				if len(m.Content) <= 500 {
+					entry["content"] = m.Content
+				} else {
+					entry["content"] = m.Content[:500] + "...(truncated)"
+				}
+				if len(m.ToolCalls) > 0 {
+					tcNames := make([]string, len(m.ToolCalls))
+					for j, tc := range m.ToolCalls {
+						tcNames[j] = tc.Name
+					}
+					entry["tool_calls"] = tcNames
+				}
+				if m.ToolCallID != "" {
+					entry["tool_call_id"] = m.ToolCallID
+				}
+				msgSummary[i] = entry
+			}
+			inputEvent["messages"] = msgSummary
+			tr.RecordEvent("llm.input", inputEvent)
 		}
 
 		// Build model call chain (onion ring)
@@ -161,16 +243,19 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 					},
 				}
 
-				result := a.executeTool(ctx, tc, toolMap)
-
-				// Apply WrapToolCall hooks
-				for _, hook := range a.Hooks {
-					wrapped, err := hook.WrapToolCall(ctx, tc, func(c context.Context, t ToolCall) (*ToolResult, error) {
-						return &result, nil
-					})
-					if err == nil && wrapped != nil {
-						result = *wrapped
+				// Build tool call chain (onion ring wrapping actual execution)
+				toolCallFn := a.buildToolCallChain(toolMap)
+				wrapped, err := toolCallFn(ctx, tc)
+				var result ToolResult
+				if err != nil {
+					result = ToolResult{
+						ToolCallID: tc.ID,
+						Name:       tc.Name,
+						Error:      err.Error(),
+						Output:     "Error: " + err.Error(),
 					}
+				} else if wrapped != nil {
+					result = *wrapped
 				}
 
 				results[idx] = result
@@ -259,12 +344,14 @@ func (a *Agent) buildModelChain(toolSchemas []llm.ToolSchema) ModelCallFunc {
 			req.SystemPrompt = a.Config.SystemPrompt
 		}
 
-		// Use streaming
+		// Use streaming — capture errors from the LLM client
 		chunkCh := make(chan llm.StreamChunk, 64)
+		var llmErr error
+		var llmDone sync.WaitGroup
+		llmDone.Add(1)
 		go func() {
-			if err := a.LLM.Stream(ctx, req, chunkCh); err != nil {
-				// Error will be picked up when chunkCh closes
-			}
+			defer llmDone.Done()
+			llmErr = a.LLM.Stream(ctx, req, chunkCh)
 		}()
 
 		var content string
@@ -294,6 +381,12 @@ func (a *Agent) buildModelChain(toolSchemas []llm.ToolSchema) ModelCallFunc {
 				}
 				toolCalls = append(toolCalls, tc)
 			}
+		}
+
+		// Check if the LLM stream returned an error
+		llmDone.Wait()
+		if llmErr != nil {
+			return nil, llmErr
 		}
 
 		return &ModelResponse{
@@ -349,6 +442,27 @@ func (a *Agent) buildModelChain(toolSchemas []llm.ToolSchema) ModelCallFunc {
 		}
 	}
 
+	return fn
+}
+
+// buildToolCallChain builds an onion-ring chain for tool execution,
+// wrapping the actual executeTool call with all WrapToolCall hooks.
+func (a *Agent) buildToolCallChain(toolMap map[string]Tool) ToolCallFunc {
+	// Base: actual tool execution
+	base := func(ctx context.Context, tc ToolCall) (*ToolResult, error) {
+		r := a.executeTool(ctx, tc, toolMap)
+		return &r, nil
+	}
+
+	// Wrap with hooks (reverse order so index-0 is outermost)
+	fn := base
+	for i := len(a.Hooks) - 1; i >= 0; i-- {
+		hook := a.Hooks[i]
+		prev := fn
+		fn = func(ctx context.Context, tc ToolCall) (*ToolResult, error) {
+			return hook.WrapToolCall(ctx, tc, prev)
+		}
+	}
 	return fn
 }
 
