@@ -34,6 +34,7 @@ export function ChatInterface() {
   const [userInstructions, setUserInstructions] = useState('');
   const [instructionsSaving, setInstructionsSaving] = useState(false);
   const [unviewedShareCount, setUnviewedShareCount] = useState(0);
+  const [sidebarRevealed, setSidebarRevealed] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const toolsDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -216,6 +217,13 @@ export function ChatInterface() {
       document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [dispatch]);
+
+  // Listen for sidebar toggle from InputArea hamburger menu
+  useEffect(() => {
+    const handleToggleSidebar = () => setSidebarRevealed(prev => !prev);
+    window.addEventListener('toggle-sidebar', handleToggleSidebar);
+    return () => window.removeEventListener('toggle-sidebar', handleToggleSidebar);
+  }, []);
 
   // Listen for tools-unavailable event (fired after conversation turn in useStreamingSearch)
   // This handles mid-session tool loss - shows a brief notification
@@ -413,6 +421,9 @@ export function ChatInterface() {
     );
   };
 
+  const isLanding = state.messages.length === 0;
+  const showSidebar = !isLanding || sidebarRevealed;
+
   return (
     <div
       className="chat-interface"
@@ -425,6 +436,7 @@ export function ChatInterface() {
         backgroundColor: themeColors.background,
         color: themeColors.text,
         fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+        transition: 'background-color 0.4s ease, color 0.3s ease',
       }}
     >
       {/* History Sidebar */}
@@ -568,7 +580,7 @@ export function ChatInterface() {
       <div
         style={{
           position: 'fixed',
-          left: 0,
+          left: showSidebar ? 0 : -64,
           top: 0,
           bottom: 0,
           width: '64px',
@@ -582,6 +594,7 @@ export function ChatInterface() {
           justifyContent: 'space-between',
           alignItems: 'center',
           zIndex: 50,
+          transition: 'left 0.3s ease',
         }}
       >
         {/* Title at top - only show when there are messages */}
@@ -1222,10 +1235,11 @@ export function ChatInterface() {
           display: 'flex',
           justifyContent: 'center',
           position: 'relative',
-          marginLeft: '64px',
-          marginRight: '64px',
+          marginLeft: showSidebar ? '64px' : '0px',
+          marginRight: isLanding && !sidebarRevealed ? '0px' : '64px',
           height: '100vh',
           overflow: 'hidden',
+          transition: 'margin-left 0.3s ease, margin-right 0.3s ease',
         }}
       >
         {/* Scrollable chat window */}
@@ -1242,7 +1256,7 @@ export function ChatInterface() {
             overflowX: 'hidden',
             paddingLeft: '32px',
             paddingRight: '32px',
-            paddingTop: state.messages.length === 0 ? '0px' : '0px',
+            paddingTop: '0px',
             paddingBottom: state.messages.length === 0 ? '0px' : '20px',
             scrollbarWidth: 'thin',
             scrollbarColor: `${themeColors.border} transparent`,
@@ -1254,15 +1268,70 @@ export function ChatInterface() {
               flex: 1,
               display: 'flex',
               flexDirection: 'column',
-              justifyContent: 'flex-end',
+              justifyContent: 'flex-start',
               alignItems: 'center',
-              paddingBottom: '20vh',
+              paddingTop: '28vh',
+              position: 'relative',
             }}>
-              <h1 style={{ margin: 0, marginBottom: '32px', fontSize: '32px', fontWeight: '600', textAlign: 'center' }}>
-                Agentic Search
-              </h1>
-              <div style={{ width: '100%', maxWidth: '700px' }}>
+              {/* Ambient background glow */}
+              <div style={{
+                position: 'absolute',
+                top: '18vh',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                width: '700px',
+                height: '500px',
+                background: 'radial-gradient(ellipse at center, rgba(99, 102, 241, 0.08) 0%, rgba(59, 130, 246, 0.05) 30%, rgba(139, 92, 246, 0.03) 50%, transparent 70%)',
+                pointerEvents: 'none',
+                zIndex: 0,
+                filter: 'blur(80px)',
+              }} />
+              {/* Salutation */}
+              <div style={{
+                margin: 0,
+                marginBottom: '40px',
+                textAlign: 'center',
+                position: 'relative',
+                zIndex: 1,
+              }}>
+                <div style={{
+                  fontSize: '36px',
+                  fontWeight: '400',
+                  letterSpacing: '-0.03em',
+                  lineHeight: '1.2',
+                  fontFamily: '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                  color: themeColors.text,
+                  fontFeatureSettings: '"ss01", "cv01"',
+                }}>
+                  {`Hello, ${state.user?.name?.split(' ')[0] || ''}`}
+                </div>
+                <div style={{
+                  fontSize: '14px',
+                  fontWeight: '400',
+                  color: themeColors.textSecondary,
+                  marginTop: '8px',
+                  letterSpacing: '0.01em',
+                  fontFamily: '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                }}>
+                  Your events assistant
+                </div>
+              </div>
+
+              <div style={{ width: '100%', maxWidth: '700px', position: 'relative', zIndex: 1 }}>
                 <InputArea />
+
+                {/* Subtle helper text */}
+                <div style={{
+                  textAlign: 'center',
+                  marginTop: '16px',
+                  fontSize: '12.5px',
+                  color: themeColors.textSecondary,
+                  opacity: 0.6,
+                  fontWeight: '400',
+                  letterSpacing: '0.01em',
+                }}>
+                  Ready to help on any query related to events
+                </div>
               </div>
             </div>
           )}
@@ -1296,11 +1365,12 @@ export function ChatInterface() {
         )}
       </div>
 
-      {/* User info - fixed top right */}
+      {/* User info - fixed in right margin, to the right of scrollbar */}
       <div
+        className="user-info-badge"
         style={{
           position: 'fixed',
-          right: '48px',
+          right: '10px',
           top: '16px',
           textAlign: 'right',
           zIndex: 50,
@@ -1308,18 +1378,11 @@ export function ChatInterface() {
       >
         <div
           style={{
-            fontSize: '11px',
-            fontWeight: '500',
-            color: themeColors.text,
-            marginBottom: '2px',
-          }}
-        >
-          {state.user?.name || 'Loading...'}
-        </div>
-        <div
-          style={{
-            fontSize: '9px',
+            fontSize: '10px',
             color: themeColors.textSecondary,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
           }}
         >
           {state.user?.email || ''}

@@ -1,0 +1,559 @@
+/* Global Styles for Agentic Search React */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  min-width: 320px;
+  height: 100vh;
+  overflow: hidden;
+}
+
+html {
+  scroll-behavior: smooth;
+  overflow: hidden;
+  height: 100vh;
+}
+
+/* Enhanced smooth scrolling for all browsers */
+* {
+  scroll-behavior: smooth;
+}
+
+/* Optimize rendering for smoother scrolling */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Scrollbar styling - Main chat container */
+.main-scroll-container::-webkit-scrollbar {
+  width: 10px;
+}
+
+.main-scroll-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.main-scroll-container::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.4);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.main-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.6);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* Default scrollbar for other elements */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+/* Hide scrollbar for right sidebar but keep functionality */
+.right-sidebar-scroll {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+}
+
+.right-sidebar-scroll::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+}
+
+/* ==========================================================================
+   Standardized Animations
+   All animations use cubic-bezier(0.16, 1, 0.3, 1) easing for consistency
+   Duration standard: 0.2s (fast), 0.3s (normal), 0.4s (slow)
+   ========================================================================== */
+
+/* Fade animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Slide animations */
+@keyframes slideInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInDown {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Scale animations */
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes scaleOut {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+}
+
+/* Utility animations */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes blink {
+  0%, 50%, 100% {
+    opacity: 1;
+  }
+  25%, 75% {
+    opacity: 0;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes bounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+/* Chart-specific animations */
+@keyframes chartSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes sourceSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Dropdown/Modal animations */
+@keyframes dropdownIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes modalIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes backdropIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Legacy support - keeping slideIn for backwards compatibility */
+@keyframes slideIn {
+  from {
+    transform: translateX(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.message {
+  animation: fadeIn 0.3s ease-out;
+}
+
+.processing-chain {
+  /* No animation - appear instantly */
+}
+
+/* ==========================================================================
+   Performance Optimization - will-change hints
+   Use sparingly - only on elements that will animate
+   ========================================================================== */
+
+/* Elements that animate transforms */
+.will-change-transform {
+  will-change: transform;
+}
+
+/* Elements that animate opacity */
+.will-change-opacity {
+  will-change: opacity;
+}
+
+/* Elements that animate both */
+.will-change-all {
+  will-change: transform, opacity;
+}
+
+/* Cards and interactive elements that lift/scale on hover */
+.hover-lift {
+  will-change: transform, box-shadow;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.hover-lift:hover {
+  transform: translateY(-2px);
+}
+
+/* Animated content (charts, sources, messages) */
+.animated-content {
+  will-change: transform, opacity;
+}
+
+/* Selection styling */
+::selection {
+  background-color: rgba(66, 153, 225, 0.3);
+}
+
+/* Focus visible for accessibility */
+button:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #2196F3;
+  outline-offset: 2px;
+}
+
+/* Smooth transitions - use standardized timing */
+button,
+a,
+input,
+textarea {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ==========================================================================
+   Responsive Breakpoints
+   - Desktop: > 1024px (default styles)
+   - Tablet Large: 768px - 1024px
+   - Tablet Small: 640px - 767px
+   - Mobile: 480px - 639px
+   - Mobile Small: < 480px
+   ========================================================================== */
+
+/* User info badge - default max width */
+.user-info-badge {
+  max-width: 200px;
+}
+
+/* Tablet Large (768px - 1024px) */
+@media (max-width: 1024px) {
+  .main-content {
+    padding-left: 72px !important;
+    padding-right: 16px !important;
+  }
+
+  .message-content {
+    max-width: 90% !important;
+  }
+
+  .input-area {
+    margin-left: 24px !important;
+    margin-right: 24px !important;
+  }
+
+  .user-info-badge {
+    max-width: 140px !important;
+    right: 8px !important;
+  }
+}
+
+/* Tablet Small (640px - 767px) */
+@media (max-width: 767px) {
+  .main-content {
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+  }
+
+  .left-sidebar {
+    width: 56px !important;
+  }
+
+  .message-content {
+    max-width: 95% !important;
+  }
+
+  .input-area {
+    margin-left: 16px !important;
+    margin-right: 16px !important;
+  }
+
+  .conversation-turn {
+    padding: 16px !important;
+  }
+
+  /* Hide text labels in sidebar, show only icons */
+  .sidebar-label {
+    display: none !important;
+  }
+
+  .user-info-badge {
+    display: none !important;
+  }
+}
+
+/* Mobile (480px - 639px) */
+@media (max-width: 639px) {
+  .left-sidebar {
+    width: 48px !important;
+  }
+
+  .main-content {
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+  }
+
+  .input-area {
+    margin-left: 12px !important;
+    margin-right: 12px !important;
+  }
+
+  .input-area textarea {
+    padding-left: 80px !important;
+    padding-right: 48px !important;
+    font-size: 14px !important;
+  }
+
+  .message-content {
+    max-width: 100% !important;
+    font-size: 14px !important;
+  }
+
+  .conversation-turn {
+    padding: 12px !important;
+    gap: 12px !important;
+  }
+
+  /* Stack tabs vertically on small screens */
+  .tab-container {
+    flex-wrap: wrap !important;
+  }
+
+  .user-info-badge {
+    display: none !important;
+  }
+}
+
+/* Mobile Small (< 480px) */
+@media (max-width: 479px) {
+  .left-sidebar {
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    top: auto !important;
+    width: 100% !important;
+    height: 56px !important;
+    flex-direction: row !important;
+    justify-content: space-around !important;
+    border-top: 1px solid rgba(255, 255, 255, 0.1) !important;
+    border-right: none !important;
+    z-index: 100 !important;
+  }
+
+  .main-content {
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+    padding-bottom: 120px !important; /* Space for bottom nav + input */
+  }
+
+  .input-area {
+    margin-left: 8px !important;
+    margin-right: 8px !important;
+    bottom: 64px !important; /* Above bottom nav */
+  }
+
+  .input-area textarea {
+    padding-left: 70px !important;
+    padding-right: 44px !important;
+    font-size: 13px !important;
+    min-height: 44px !important;
+  }
+
+  .user-info-display {
+    display: none !important;
+  }
+}
+
+/* Extra small screens (< 360px) */
+@media (max-width: 359px) {
+  .input-area textarea {
+    padding-left: 60px !important;
+    padding-right: 40px !important;
+    font-size: 12px !important;
+  }
+
+  .search-mode-toggle {
+    padding: 4px 8px !important;
+    font-size: 11px !important;
+  }
+
+  .search-mode-toggle span:last-child {
+    display: none !important; /* Hide text, show only icon */
+  }
+}
+
+/* Print styles */
+@media print {
+  .input-area,
+  .left-sidebar {
+    display: none !important;
+  }
+
+  .main-content {
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+}
