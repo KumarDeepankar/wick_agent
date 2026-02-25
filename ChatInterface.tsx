@@ -1366,7 +1366,7 @@ export function ChatInterface() {
       </div>
 
       {/* User info - fixed in right margin, to the right of scrollbar */}
-      <div
+      {false && <div
         className="user-info-badge"
         style={{
           position: 'fixed',
