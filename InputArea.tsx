@@ -37,6 +37,7 @@ const STYLES = {
     display: 'flex',
     alignItems: 'flex-start',
     overflow: 'hidden', // Prevent button/spinner from escaping
+    borderRadius: '28px',
   } as CSSProperties,
   toggleContainer: {
     position: 'absolute',
@@ -81,12 +82,12 @@ const STYLES = {
     flex: 1,
     width: '100%',
     minWidth: 0,
-    borderRadius: '16px',
-    padding: '14px 52px 14px 16px', // Deep mode toggle removed; was 220px
+    borderRadius: '28px',
+    padding: '16px 56px 16px 52px',
     fontSize: '15px',
     fontFamily: 'inherit',
     resize: 'none',
-    minHeight: '52px',
+    minHeight: '56px',
     maxHeight: '200px',
     outline: 'none',
     boxSizing: 'border-box',
@@ -95,20 +96,40 @@ const STYLES = {
     wordWrap: 'break-word',
     overflowWrap: 'break-word',
     whiteSpace: 'pre-wrap',
+    letterSpacing: '0.01em',
+  } as CSSProperties,
+  newButton: {
+    position: 'absolute',
+    left: '10px',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    border: 'none',
+    borderRadius: '50%',
+    width: '34px',
+    height: '34px',
+    minWidth: '34px',
+    minHeight: '34px',
+    maxWidth: '34px',
+    ...FLEX.center,
+    flexShrink: 0,
+    zIndex: 2,
+    boxSizing: 'border-box',
+    cursor: 'pointer',
+    padding: 0,
   } as CSSProperties,
   submitButton: {
     position: 'absolute',
-    right: '8px',
+    right: '10px',
     top: '50%',
     transform: 'translateY(-50%)',
     color: '#ffffff',
     border: 'none',
-    borderRadius: '10px',
-    width: '36px',
-    height: '36px',
-    minWidth: '36px',
-    minHeight: '36px',
-    maxWidth: '36px', // Prevent button from growing
+    borderRadius: '50%',
+    width: '38px',
+    height: '38px',
+    minWidth: '38px',
+    minHeight: '38px',
+    maxWidth: '38px',
     ...FLEX.center,
     flexShrink: 0,
     zIndex: 2,
@@ -127,7 +148,7 @@ const STYLES = {
 export function InputArea() {
   const { themeColors } = useTheme();
   const { performSearch, isSearching, searchMode, setSearchMode } = useStreamingSearch();
-  const { state, dispatch } = useChatContext();
+  const { state, dispatch, resetChat } = useChatContext();
 
   const [query, setQuery] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -148,6 +169,7 @@ export function InputArea() {
   const followUpLimitReached = false;
   const isResearchMode = searchMode === 'research';
   const isDark = themeColors.mode === 'dark';
+  const isLanding = state.messages.length === 0;
   // Disable submit if tools not available
   const canSubmit = query.trim() && !isSearching && !followUpLimitReached && toolsAvailable;
 
@@ -248,13 +270,15 @@ export function InputArea() {
   // Memoized textarea focus/blur handlers
   const handleTextareaFocus = useCallback((e: React.FocusEvent<HTMLTextAreaElement>) => {
     e.currentTarget.style.borderColor = themeColors.accent;
-    e.currentTarget.style.boxShadow = `0 0 0 1px ${themeColors.accent}40`;
+    e.currentTarget.style.boxShadow = `0 0 0 2px ${themeColors.accent}30, 0 4px 24px rgba(0,0,0,0.08)`;
   }, [themeColors.accent]);
 
   const handleTextareaBlur = useCallback((e: React.FocusEvent<HTMLTextAreaElement>) => {
-    e.currentTarget.style.borderColor = textareaBorderColor;
-    e.currentTarget.style.boxShadow = 'none';
-  }, [textareaBorderColor]);
+    e.currentTarget.style.borderColor = themeColors.border;
+    e.currentTarget.style.boxShadow = isDark
+      ? '0 4px 24px rgba(0,0,0,0.4), 0 1px 4px rgba(0,0,0,0.2)'
+      : '0 4px 24px rgba(0,0,0,0.06), 0 1px 4px rgba(0,0,0,0.04)';
+  }, [themeColors.border, isDark]);
 
   // Memoized submit button hover handlers
   const handleSubmitEnter = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
@@ -308,27 +332,34 @@ export function InputArea() {
 
   const textareaStyle = useMemo(() => ({
     ...STYLES.textarea,
-    backgroundColor: isDark ? 'rgba(40, 40, 45, 0.9)' : 'rgba(255, 255, 255, 0.98)',
+    backgroundColor: isDark ? themeColors.surface : '#ffffff',
     color: themeColors.text,
-    border: `1.5px solid ${isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.1)'}`,
+    border: `1.5px solid ${themeColors.border}`,
     boxShadow: isDark
-      ? '0 2px 8px rgba(0,0,0,0.3)'
-      : '0 2px 8px rgba(0,0,0,0.08)',
+      ? '0 4px 24px rgba(0,0,0,0.4), 0 1px 4px rgba(0,0,0,0.2)'
+      : '0 4px 24px rgba(0,0,0,0.06), 0 1px 4px rgba(0,0,0,0.04)',
     transition: TRANSITION.colors,
-  }), [isDark, themeColors.text]);
+  }), [isDark, themeColors]);
 
   const submitButtonStyle = useMemo(() => ({
     ...STYLES.submitButton,
     background: canSubmit
-      ? 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)'
-      : (isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)'),
+      ? `linear-gradient(135deg, ${themeColors.accent} 0%, ${themeColors.primary} 100%)`
+      : (isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)'),
     color: canSubmit ? '#ffffff' : (isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.25)'),
     cursor: canSubmit ? 'pointer' : 'not-allowed',
     boxShadow: canSubmit
-      ? '0 3px 10px rgba(37, 99, 235, 0.4)'
+      ? `0 4px 14px ${themeColors.accent}50`
       : 'none',
     transition: TRANSITION.default,
-  }), [canSubmit, isDark]);
+  }), [canSubmit, isDark, themeColors.accent, themeColors.primary]);
+
+  const newButtonStyle = useMemo(() => ({
+    ...STYLES.newButton,
+    backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)',
+    color: isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.4)',
+    transition: TRANSITION.default,
+  }), [isDark]);
 
   // Memoized placeholder
   const placeholder = useMemo(() => {
@@ -540,6 +571,37 @@ export function InputArea() {
         </div>
         )}
 
+        {/* Left action button: hamburger on landing, + on conversation */}
+        <button
+          onClick={isLanding
+            ? () => window.dispatchEvent(new CustomEvent('toggle-sidebar'))
+            : resetChat
+          }
+          title={isLanding ? 'Menu' : 'New chat'}
+          style={newButtonStyle}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = isDark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.09)';
+            e.currentTarget.style.color = isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.6)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)';
+            e.currentTarget.style.color = isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.4)';
+          }}
+        >
+          {isLanding ? (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="4" y1="7" x2="20" y2="7" />
+              <line x1="4" y1="12" x2="20" y2="12" />
+              <line x1="4" y1="17" x2="20" y2="17" />
+            </svg>
+          ) : (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+          )}
+        </button>
+
         {/* Textarea */}
         <textarea
           ref={inputRef}
@@ -585,7 +647,6 @@ export function InputArea() {
 
 
 
-      {/* Keyframes for spinner animation */}
       <style>{`
         @keyframes spin {
           from { transform: rotate(0deg); }
