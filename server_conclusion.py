@@ -243,40 +243,45 @@ async def resolve_keyword_filter(
             buckets = result.get("aggregations", {}).get("matched_values", {}).get("buckets", [])
 
             if hits > 0 and buckets:
-                matched_values = [b["key"] for b in buckets]
+                all_values = [b["key"] for b in buckets]
                 value_lower = value.lower()
 
-                # Determine best match type by comparing input to matched values
-                has_exact = any(v.lower() == value_lower for v in matched_values)
-                has_prefix = any(v.lower().startswith(value_lower) for v in matched_values)
+                # Filter to only values that actually contain the search term
+                # (array fields can surface co-occurring values that don't match)
+                matched_values = [v for v in all_values if value_lower in v.lower()]
 
-                if has_exact and len(matched_values) == 1:
-                    match_type = "exact"
-                    confidence = 100
-                elif has_exact:
-                    match_type = "exact"
-                    confidence = 100
-                elif has_prefix:
-                    match_type = "prefix"
-                    confidence = 95
-                else:
-                    match_type = "contains"
-                    confidence = 85
+                if matched_values:
+                    # Determine best match type by comparing input to matched values
+                    has_exact = any(v.lower() == value_lower for v in matched_values)
+                    has_prefix = any(v.lower().startswith(value_lower) for v in matched_values)
 
-                if len(matched_values) == 1:
-                    filter_clause = {"term": {field: matched_values[0]}}
-                else:
-                    filter_clause = {"terms": {field: matched_values}}
+                    if has_exact and len(matched_values) == 1:
+                        match_type = "exact"
+                        confidence = 100
+                    elif has_exact:
+                        match_type = "exact"
+                        confidence = 100
+                    elif has_prefix:
+                        match_type = "prefix"
+                        confidence = 95
+                    else:
+                        match_type = "contains"
+                        confidence = 85
 
-                return {
-                    "match_type": match_type,
-                    "query_value": value,
-                    "matched_values": matched_values,
-                    "filter_clause": filter_clause,
-                    "confidence": confidence,
-                    "hit_count": hits,
-                    "warning": f"{match_type} match: '{value}' matched to {matched_values}" if match_type != "exact" else None
-                }
+                    if len(matched_values) == 1:
+                        filter_clause = {"term": {field: matched_values[0]}}
+                    else:
+                        filter_clause = {"terms": {field: matched_values}}
+
+                    return {
+                        "match_type": match_type,
+                        "query_value": value,
+                        "matched_values": matched_values,
+                        "filter_clause": filter_clause,
+                        "confidence": confidence,
+                        "hit_count": hits,
+                        "warning": f"{match_type} match: '{value}' matched to {matched_values}" if match_type != "exact" else None
+                    }
         except Exception as e:
             logger.warning(f"Wildcard match query failed: {e}")
 
