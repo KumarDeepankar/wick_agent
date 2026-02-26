@@ -1,90 +1,78 @@
 package backend
 
 import (
+	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 )
 
-// BaseSandbox provides file operations by generating shell commands
-// and routing them through Execute(). Backends embed this and provide
-// their own Execute() implementation.
-//
-// This matches the Python deepagents BaseSandbox pattern:
-// all file ops (ls, read, write, edit, grep, glob) are implemented
-// as shell commands run through the backend's Execute().
-
-// SandboxFileOps generates shell commands for file operations.
-// These functions return commands that should be passed to backend.Execute().
-
-// LsCommand returns a shell command to list a directory.
-func LsCommand(path string) string {
-	safePath := shellQuote(path)
-	return fmt.Sprintf(
-		`d=%s; ls -1A "$d" 2>/dev/null | while IFS= read -r name; do stat --printf="%%n\t%%F\t%%s\n" "$d/$name"; done`,
-		safePath,
-	)
-}
-
-// ReadFileCommand returns a shell command to read a file.
-func ReadFileCommand(path string) string {
-	return fmt.Sprintf("cat %s", shellQuote(path))
-}
-
-// WriteFileCommand returns a shell command to write content to a file.
-func WriteFileCommand(path, content string) string {
-	dir := filepath.Dir(path)
-	safePath := shellQuote(path)
-	// Use heredoc to handle special characters in content
-	escapedContent := strings.ReplaceAll(content, "'", "'\\''")
-	return fmt.Sprintf("mkdir -p %s && printf '%%s' '%s' > %s && chmod 666 %s",
-		shellQuote(dir), escapedContent, safePath, safePath)
-}
-
-// EditFileCommand returns a shell command to perform a search-and-replace edit.
-func EditFileCommand(path, oldText, newText string) string {
-	// Escape for Python string literal (not shell-quoted — this goes inside python3 -c "...")
-	pyPath := strings.ReplaceAll(path, `\`, `\\`)
-	pyPath = strings.ReplaceAll(pyPath, `'`, `\'`)
-	// Use Python for reliable string replacement (handles multi-line, special chars)
-	escapedOld := strings.ReplaceAll(oldText, "'", "'\\''")
-	escapedNew := strings.ReplaceAll(newText, "'", "'\\''")
-	return fmt.Sprintf(
-		`python3 -c "
-import os, sys
-path = '%s'
-with open(path, 'r') as f: content = f.read()
-old = '''%s'''
-new = '''%s'''
-if old not in content:
-    print('Error: old_text not found in file', file=sys.stderr)
-    sys.exit(1)
-content = content.replace(old, new, 1)
-with open(path, 'w') as f: f.write(content)
-os.chmod(path, 0o666)
-print('OK')
-" 2>&1`, pyPath, escapedOld, escapedNew)
-}
-
-// GrepCommand returns a shell command to search file contents.
-func GrepCommand(pattern, path string) string {
-	return fmt.Sprintf("grep -rn %s %s 2>/dev/null || true",
-		shellQuote(pattern), shellQuote(path))
-}
-
-// GlobCommand returns a shell command to find files by pattern.
-func GlobCommand(pattern, path string) string {
-	return fmt.Sprintf("find %s -name %s -type f 2>/dev/null | head -100",
-		shellQuote(path), shellQuote(pattern))
-}
-
-// ExecuteCommand returns the command string unchanged (passthrough).
-func ExecuteCommand(command string) string {
-	return command
-}
+// wickfs command generators — build command strings for the wickfs binary
+// running inside Docker sandbox containers.
 
 // shellQuote safely quotes a string for shell use.
 func shellQuote(s string) string {
-	// Simple quoting: wrap in single quotes, escape embedded single quotes
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// LsCommand returns a wickfs ls command string.
+func LsCommand(path string) string {
+	return "wickfs ls " + shellQuote(path)
+}
+
+// ReadFileCommand returns a wickfs read command string.
+func ReadFileCommand(path string) string {
+	return "wickfs read " + shellQuote(path)
+}
+
+// WriteFileCommand returns a wickfs write command string.
+// Content must be passed via stdin using ExecuteWithStdin.
+func WriteFileCommand(path string) string {
+	return "wickfs write " + shellQuote(path)
+}
+
+// EditFileCommand returns a wickfs edit command string.
+// A JSON {old_text, new_text} object must be passed via stdin using ExecuteWithStdin.
+func EditFileCommand(path string) string {
+	return "wickfs edit " + shellQuote(path)
+}
+
+// GrepCommand returns a wickfs grep command string.
+func GrepCommand(pattern, path string) string {
+	return "wickfs grep " + shellQuote(pattern) + " " + shellQuote(path)
+}
+
+// GlobCommand returns a wickfs glob command string.
+func GlobCommand(pattern, path string) string {
+	return "wickfs glob " + shellQuote(pattern) + " " + shellQuote(path)
+}
+
+// ExecCommand returns a wickfs exec command string.
+func ExecCommand(command string) string {
+	return "wickfs exec " + shellQuote(command)
+}
+
+// ── wickfs response parsing ──────────────────────────────────────────────────
+
+// WickfsResponse is the JSON envelope returned by wickfs commands.
+type WickfsResponse struct {
+	OK    bool            `json:"ok"`
+	Data  json.RawMessage `json:"data"`
+	Error string          `json:"error"`
+}
+
+// ParseWickfsResponse parses the JSON output of a wickfs command.
+func ParseWickfsResponse(output string) (WickfsResponse, error) {
+	output = strings.TrimSpace(output)
+	var resp WickfsResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		return resp, fmt.Errorf("failed to parse wickfs response: %w (raw: %s)", err, truncate(output, 200))
+	}
+	return resp, nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

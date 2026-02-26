@@ -3,7 +3,7 @@ package backend
 import (
 	"context"
 	"fmt"
-	"log"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,16 +12,30 @@ import (
 )
 
 // LocalBackend executes commands directly on the host machine via sh -c.
-// Per-user workdir isolation: /workspace/{username}
+// Requires wickfs to be installed on the host for filesystem tool operations.
+// Useful for local development without Docker.
 type LocalBackend struct {
 	workdir        string
 	timeout        time.Duration
 	maxOutputBytes int
-	username       string
+	wickfsBinDir   string // directory containing wickfs binary, prepended to PATH
 }
 
-// NewLocalBackend creates a local backend with per-user workdir scoping.
-func NewLocalBackend(workdir string, timeout float64, maxOutputBytes int, username string) *LocalBackend {
+// NewLocalBackend creates a local backend that operates on the host filesystem.
+func NewLocalBackend(workdir string, timeout float64, maxOutputBytes int) *LocalBackend {
+	if workdir == "" {
+		workdir, _ = os.Getwd()
+		if workdir == "" {
+			workdir = "/tmp/wick-workspace"
+		}
+	}
+	// Ensure workdir is absolute
+	if !filepath.IsAbs(workdir) {
+		abs, err := filepath.Abs(workdir)
+		if err == nil {
+			workdir = abs
+		}
+	}
 	if timeout == 0 {
 		timeout = 120
 	}
@@ -29,38 +43,80 @@ func NewLocalBackend(workdir string, timeout float64, maxOutputBytes int, userna
 		maxOutputBytes = 100_000
 	}
 
-	// Scope workdir per user — create full path including parents
-	scopedWorkdir := filepath.Join(workdir, username)
-	if err := os.MkdirAll(scopedWorkdir, 0755); err != nil {
-		log.Printf("Warning: could not create workdir %s: %v", scopedWorkdir, err)
-		// Fall back to OS temp dir so commands don't fail with chdir errors
-		scopedWorkdir = os.TempDir()
+	// Ensure workdir exists
+	os.MkdirAll(workdir, 0755)
+
+	// Find wickfs binary directory so we can add it to PATH
+	wickfsBinDir := ""
+	if bin := findHostWickfs(); bin != "" {
+		wickfsBinDir = filepath.Dir(bin)
 	}
 
-	log.Printf("Local sandbox backend ready (workdir=%s, user=%s)", scopedWorkdir, username)
-
 	return &LocalBackend{
-		workdir:        scopedWorkdir,
+		workdir:        workdir,
 		timeout:        time.Duration(timeout) * time.Second,
 		maxOutputBytes: maxOutputBytes,
-		username:       username,
+		wickfsBinDir:   wickfsBinDir,
 	}
 }
 
-func (b *LocalBackend) ID() string             { return "local" }
-func (b *LocalBackend) ContainerStatus() string { return "launched" } // always ready
-func (b *LocalBackend) ContainerError() string  { return "" }
-func (b *LocalBackend) Workdir() string         { return b.workdir }
+// findHostWickfs locates the wickfs binary on the host.
+// Search order: WICKFS_BIN env → next to executable → ./bin/wickfs → PATH lookup.
+func findHostWickfs() string {
+	if v := os.Getenv("WICKFS_BIN"); v != "" {
+		if _, err := os.Stat(v); err == nil {
+			return v
+		}
+	}
+
+	// Next to the server executable
+	if ex, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(ex), "wickfs")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+
+	// ./bin/wickfs (relative to CWD)
+	if _, err := os.Stat("bin/wickfs"); err == nil {
+		abs, _ := filepath.Abs("bin/wickfs")
+		return abs
+	}
+
+	// Try PATH
+	if p, err := exec.LookPath("wickfs"); err == nil {
+		return p
+	}
+
+	return ""
+}
+
+func (b *LocalBackend) ID() string      { return "local" }
+func (b *LocalBackend) Workdir() string { return b.workdir }
 
 func (b *LocalBackend) ResolvePath(path string) (string, error) {
 	return resolvePath(b.workdir, path)
 }
 
 func (b *LocalBackend) TerminalCmd() []string {
-	return []string{"sh", "-c", fmt.Sprintf("cd %s && exec /bin/sh", shellQuote(b.workdir))}
+	return []string{"sh"}
 }
 
-// Execute runs a command via sh -c in the workdir.
+// ContainerStatus always returns "launched" — no container to manage.
+func (b *LocalBackend) ContainerStatus() string { return "launched" }
+
+// ContainerError always returns "" — no container to fail.
+func (b *LocalBackend) ContainerError() string { return "" }
+
+// setupCmd configures a command with workdir and PATH including wickfs.
+func (b *LocalBackend) setupCmd(cmd *exec.Cmd) {
+	cmd.Dir = b.workdir
+	if b.wickfsBinDir != "" {
+		cmd.Env = append(os.Environ(), "PATH="+b.wickfsBinDir+":"+os.Getenv("PATH"))
+	}
+}
+
+// Execute runs a command on the host via sh -c.
 func (b *LocalBackend) Execute(command string) ExecuteResponse {
 	if command == "" {
 		return ExecuteResponse{
@@ -73,7 +129,7 @@ func (b *LocalBackend) Execute(command string) ExecuteResponse {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	cmd.Dir = b.workdir
+	b.setupCmd(cmd)
 
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
@@ -81,13 +137,42 @@ func (b *LocalBackend) Execute(command string) ExecuteResponse {
 
 	err := cmd.Run()
 
-	// Build output (same pattern as Python)
-	var parts []string
-	if stdout.Len() > 0 {
-		parts = append(parts, stdout.String())
+	return b.buildResponse(stdout.String(), stderr.String(), err, ctx)
+}
+
+// ExecuteWithStdin runs a command on the host with stdin piped in.
+func (b *LocalBackend) ExecuteWithStdin(command string, stdin io.Reader) ExecuteResponse {
+	if command == "" {
+		return ExecuteResponse{
+			Output:   "Error: Command must be a non-empty string.",
+			ExitCode: 1,
+		}
 	}
-	if stderr.Len() > 0 {
-		for _, line := range strings.Split(strings.TrimSpace(stderr.String()), "\n") {
+
+	ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	b.setupCmd(cmd)
+	cmd.Stdin = stdin
+
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	return b.buildResponse(stdout.String(), stderr.String(), err, ctx)
+}
+
+// buildResponse constructs an ExecuteResponse from command output.
+func (b *LocalBackend) buildResponse(stdoutStr, stderrStr string, err error, ctx context.Context) ExecuteResponse {
+	var parts []string
+	if stdoutStr != "" {
+		parts = append(parts, stdoutStr)
+	}
+	if stderrStr != "" {
+		for _, line := range strings.Split(strings.TrimSpace(stderrStr), "\n") {
 			parts = append(parts, "[stderr] "+line)
 		}
 	}
@@ -97,7 +182,6 @@ func (b *LocalBackend) Execute(command string) ExecuteResponse {
 		output = strings.Join(parts, "\n")
 	}
 
-	// Truncate if needed
 	truncated := false
 	if len(output) > b.maxOutputBytes {
 		output = output[:b.maxOutputBytes]
@@ -136,45 +220,48 @@ func (b *LocalBackend) Execute(command string) ExecuteResponse {
 // UploadFiles writes files directly to the host filesystem.
 func (b *LocalBackend) UploadFiles(files []FileUpload) []FileUploadResponse {
 	responses := make([]FileUploadResponse, len(files))
+
 	for i, f := range files {
 		resolved, err := b.ResolvePath(f.Path)
 		if err != nil {
 			responses[i] = FileUploadResponse{Path: f.Path, Error: err.Error()}
 			continue
 		}
-		dir := filepath.Dir(resolved)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			responses[i] = FileUploadResponse{Path: f.Path, Error: "permission_denied"}
+
+		// Ensure parent directory
+		if err := os.MkdirAll(filepath.Dir(resolved), 0755); err != nil {
+			responses[i] = FileUploadResponse{Path: resolved, Error: err.Error()}
 			continue
 		}
+
 		if err := os.WriteFile(resolved, f.Content, 0666); err != nil {
-			responses[i] = FileUploadResponse{Path: f.Path, Error: "permission_denied"}
+			responses[i] = FileUploadResponse{Path: resolved, Error: "permission_denied"}
 			continue
 		}
 		responses[i] = FileUploadResponse{Path: resolved}
 	}
+
 	return responses
 }
 
 // DownloadFiles reads files directly from the host filesystem.
 func (b *LocalBackend) DownloadFiles(paths []string) []FileDownloadResponse {
 	responses := make([]FileDownloadResponse, len(paths))
+
 	for i, path := range paths {
 		resolved, err := b.ResolvePath(path)
 		if err != nil {
 			responses[i] = FileDownloadResponse{Path: path, Error: err.Error()}
 			continue
 		}
-		data, err := os.ReadFile(resolved)
+
+		content, err := os.ReadFile(resolved)
 		if err != nil {
-			if os.IsNotExist(err) {
-				responses[i] = FileDownloadResponse{Path: resolved, Error: "file_not_found"}
-			} else {
-				responses[i] = FileDownloadResponse{Path: resolved, Error: "permission_denied"}
-			}
+			responses[i] = FileDownloadResponse{Path: resolved, Error: "file_not_found"}
 			continue
 		}
-		responses[i] = FileDownloadResponse{Path: resolved, Content: data}
+		responses[i] = FileDownloadResponse{Path: resolved, Content: content}
 	}
+
 	return responses
 }

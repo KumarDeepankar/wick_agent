@@ -11,6 +11,7 @@ type AppConfig struct {
 	Host           string
 	Port           int
 	WickGatewayURL string
+	ConfigFile     string
 }
 
 // LoadAppConfig reads configuration from CLI flags and environment variables.
@@ -19,6 +20,7 @@ func LoadAppConfig() *AppConfig {
 	host := flag.String("host", "", "Listen host (env: HOST, default: 0.0.0.0)")
 	port := flag.Int("port", 0, "Listen port (env: PORT, default: 8000)")
 	gateway := flag.String("gateway", "", "Gateway URL for auth & RBAC (env: WICK_GATEWAY_URL)")
+	configFile := flag.String("config", "", "Path to agents.yaml config file")
 	flag.Parse()
 
 	cfg := &AppConfig{
@@ -36,6 +38,9 @@ func LoadAppConfig() *AppConfig {
 	}
 	if *gateway != "" {
 		cfg.WickGatewayURL = *gateway
+	}
+	if *configFile != "" {
+		cfg.ConfigFile = *configFile
 	}
 
 	return cfg

@@ -19,17 +19,26 @@ import (
 func main() {
 	appCfg := LoadAppConfig()
 
-	// Server starts with zero agents — all config comes via API
 	registry := agent.NewRegistry()
 
 	// Create handler context with shared dependencies
 	deps := &handlers.Deps{
 		Registry:      registry,
 		AppConfig:     &handlers.Config{WickGatewayURL: appCfg.WickGatewayURL},
+		EventBus:      handlers.NewEventBus(),
+		Backends:      handlers.NewBackendStore(),
 		ResolveUser:   ResolveUser,
 		ResolveRole:   ResolveRole,
 		TraceStore:    tracing.NewStore(1000),
 		ExternalTools: handlers.NewToolStore(),
+	}
+
+	// Load agents from config file if provided
+	if appCfg.ConfigFile != "" {
+		log.Printf("Loading config from %s", appCfg.ConfigFile)
+		if err := loadConfigFile(appCfg.ConfigFile, deps); err != nil {
+			log.Fatalf("Failed to load config: %v", err)
+		}
 	}
 
 	// Build route mux
