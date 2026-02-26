@@ -297,29 +297,19 @@ func (h *agentHandler) createAgent(w http.ResponseWriter, r *http.Request) {
 
 	// Eagerly initialize backend so container_status is available immediately
 	if cfg.Backend != nil && h.deps.Backends.Get(req.AgentID, username) == nil {
-		var b backend.Backend
-		switch cfg.Backend.Type {
-		case "local":
-			workdir := cfg.Backend.Workdir
-			if workdir == "" {
-				workdir = "/workspace"
-			}
-			b = backend.NewLocalBackend(workdir, cfg.Backend.Timeout, cfg.Backend.MaxOutputBytes, username)
-		case "docker":
-			containerName := cfg.Backend.ContainerName
-			if containerName == "" {
-				containerName = fmt.Sprintf("wick-sandbox-%s", username)
-			}
-			db := backend.NewDockerBackend(
-				containerName, cfg.Backend.Workdir,
-				cfg.Backend.Timeout, cfg.Backend.MaxOutputBytes,
-				cfg.Backend.DockerHost, cfg.Backend.Image, username,
-			)
-			db.LaunchContainerAsync(func(event, user string) {
-				h.deps.EventBus.Broadcast(event + ":" + user)
-			})
-			b = db
+		containerName := cfg.Backend.ContainerName
+		if containerName == "" {
+			containerName = fmt.Sprintf("wick-sandbox-%s", username)
 		}
+		db := backend.NewDockerBackend(
+			containerName, cfg.Backend.Workdir,
+			cfg.Backend.Timeout, cfg.Backend.MaxOutputBytes,
+			cfg.Backend.DockerHost, cfg.Backend.Image, username,
+		)
+		db.LaunchContainerAsync(func(event, user string) {
+			h.deps.EventBus.Broadcast(event + ":" + user)
+		})
+		var b backend.Backend = db
 		if b != nil {
 			h.deps.Backends.Set(req.AgentID, username, b)
 		}
@@ -924,7 +914,7 @@ func (h *agentHandler) patchBackend(w http.ResponseWriter, r *http.Request, agen
 	defaultWorkdir := "/workspace"
 	defaultTimeout := 120.0
 	defaultMaxOutput := 100_000
-	defaultImage := "python:3.11-slim"
+	defaultImage := ""
 	defaultContainerName := fmt.Sprintf("wick-sandbox-%s", username)
 	if cfgBackend != nil {
 		if cfgBackend.Workdir != "" {
@@ -946,9 +936,10 @@ func (h *agentHandler) patchBackend(w http.ResponseWriter, r *http.Request, agen
 
 	switch body.Mode {
 	case "local":
-		b = backend.NewLocalBackend(defaultWorkdir, defaultTimeout, defaultMaxOutput, username)
-		inst.Config.Backend = &agent.BackendCfg{Type: "local", Workdir: defaultWorkdir}
-		containerStatus = "launched"
+		lb := backend.NewLocalBackend(defaultWorkdir, defaultTimeout, defaultMaxOutput)
+		b = lb
+		inst.Config.Backend = &agent.BackendCfg{Type: "local", Workdir: lb.Workdir()}
+		containerStatus = "launched" // always ready
 
 	case "remote":
 		dockerHost := ""
@@ -1097,31 +1088,20 @@ func (h *agentHandler) listFiles(w http.ResponseWriter, r *http.Request, agentID
 	cmd := backend.LsCommand(resolved)
 	result := b.Execute(cmd)
 
-	var entries []map[string]any
-	if result.ExitCode == 0 && strings.TrimSpace(result.Output) != "" {
-		for _, line := range strings.Split(strings.TrimSpace(result.Output), "\n") {
-			parts := strings.SplitN(line, "\t", 3)
-			if len(parts) == 3 {
-				name := parts[0]
-				if idx := strings.LastIndex(name, "/"); idx >= 0 {
-					name = name[idx+1:]
-				}
-				ftype := "file"
-				if strings.Contains(strings.ToLower(parts[1]), "directory") {
-					ftype = "dir"
-				}
-				size := 0
-				fmt.Sscanf(parts[2], "%d", &size)
-				entries = append(entries, map[string]any{
-					"name": name,
-					"path": parts[0],
-					"type": ftype,
-					"size": size,
-				})
-			}
+	resp, parseErr := backend.ParseWickfsResponse(result.Output)
+	if parseErr != nil || !resp.OK {
+		errMsg := "failed to list files"
+		if parseErr != nil {
+			errMsg = parseErr.Error()
+		} else {
+			errMsg = resp.Error
 		}
+		writeJSONError(w, http.StatusInternalServerError, errMsg)
+		return
 	}
-	if entries == nil {
+
+	var entries []map[string]any
+	if err := json.Unmarshal(resp.Data, &entries); err != nil {
 		entries = []map[string]any{}
 	}
 
@@ -1144,13 +1124,18 @@ func (h *agentHandler) readFile(w http.ResponseWriter, r *http.Request, agentID 
 		return
 	}
 
-	result := b.Execute(fmt.Sprintf("cat '%s'", strings.ReplaceAll(resolved, "'", "'\\''")))
-	if result.ExitCode != 0 {
+	cmd := backend.ReadFileCommand(resolved)
+	result := b.Execute(cmd)
+
+	resp, parseErr := backend.ParseWickfsResponse(result.Output)
+	if parseErr != nil || !resp.OK {
 		writeJSONError(w, http.StatusNotFound, "file not found: "+resolved)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"path": resolved, "content": result.Output})
+	var content string
+	json.Unmarshal(resp.Data, &content)
+	writeJSON(w, http.StatusOK, map[string]any{"path": resolved, "content": content})
 }
 
 func (h *agentHandler) downloadFile(w http.ResponseWriter, r *http.Request) {
@@ -1639,24 +1624,15 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) (*agent
 	// Resolve backend
 	b := h.deps.Backends.Get(inst.AgentID, username)
 	if b == nil && cfg.Backend != nil {
-		switch cfg.Backend.Type {
-		case "local":
-			workdir := cfg.Backend.Workdir
-			if workdir == "" {
-				workdir = "/workspace"
-			}
-			b = backend.NewLocalBackend(workdir, cfg.Backend.Timeout, cfg.Backend.MaxOutputBytes, username)
-		case "docker":
-			containerName := cfg.Backend.ContainerName
-			if containerName == "" {
-				containerName = fmt.Sprintf("wick-sandbox-%s", username)
-			}
-			b = backend.NewDockerBackend(
-				containerName, cfg.Backend.Workdir,
-				cfg.Backend.Timeout, cfg.Backend.MaxOutputBytes,
-				cfg.Backend.DockerHost, cfg.Backend.Image, username,
-			)
+		containerName := cfg.Backend.ContainerName
+		if containerName == "" {
+			containerName = fmt.Sprintf("wick-sandbox-%s", username)
 		}
+		b = backend.NewDockerBackend(
+			containerName, cfg.Backend.Workdir,
+			cfg.Backend.Timeout, cfg.Backend.MaxOutputBytes,
+			cfg.Backend.DockerHost, cfg.Backend.Image, username,
+		)
 		if b != nil {
 			h.deps.Backends.Set(inst.AgentID, username, b)
 		}

@@ -2,7 +2,9 @@ package hooks
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"wick_go/agent"
 	"wick_go/backend"
@@ -10,7 +12,10 @@ import (
 )
 
 // FilesystemHook registers file-operation tools (ls, read_file, write_file, edit_file,
-// glob, grep, execute) that delegate to a backend.Execute() with generated shell commands.
+// glob, grep, execute) that delegate to wickfs commands inside Docker containers.
+//
+// All commands produce structured JSON output, use atomic writes, and require
+// no Python or complex shell escaping.
 //
 // Also implements large result eviction: if a tool result exceeds 80,000 chars (~20k tokens),
 // the output is truncated with a head+tail reference.
@@ -52,7 +57,7 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			}
 			cmd := backend.LsCommand(resolved)
 			result := b.Execute(cmd)
-			return result.Output, nil
+			return wickfsDataOrError(result.Output)
 		},
 	})
 
@@ -78,7 +83,7 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			}
 			cmd := backend.ReadFileCommand(resolved)
 			result := b.Execute(cmd)
-			return result.Output, nil
+			return wickfsDataOrError(result.Output)
 		},
 	})
 
@@ -104,12 +109,15 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			if err != nil {
 				return "Error: " + err.Error(), nil
 			}
-			cmd := backend.WriteFileCommand(resolved, content)
-			result := b.Execute(cmd)
-			if result.ExitCode != 0 {
-				return "Error: " + result.Output, nil
+			cmd := backend.WriteFileCommand(resolved)
+			result := b.ExecuteWithStdin(cmd, strings.NewReader(content))
+			resp, parseErr := backend.ParseWickfsResponse(result.Output)
+			if parseErr != nil {
+				return "Error: " + parseErr.Error(), nil
 			}
-			// Track written files
+			if !resp.OK {
+				return "Error: " + resp.Error, nil
+			}
 			if state.Files == nil {
 				state.Files = make(map[string]string)
 			}
@@ -142,20 +150,30 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			if err != nil {
 				return "Error: " + err.Error(), nil
 			}
-			cmd := backend.EditFileCommand(resolved, oldText, newText)
-			result := b.Execute(cmd)
-			if result.ExitCode != 0 {
-				return result.Output, nil
+			editJSON, _ := json.Marshal(map[string]string{
+				"old_text": oldText,
+				"new_text": newText,
+			})
+			cmd := backend.EditFileCommand(resolved)
+			result := b.ExecuteWithStdin(cmd, strings.NewReader(string(editJSON)))
+			resp, parseErr := backend.ParseWickfsResponse(result.Output)
+			if parseErr != nil {
+				return "Error: " + parseErr.Error(), nil
 			}
-			// Read back edited file and update state tracker
-			readResult := b.Execute(backend.ReadFileCommand(resolved))
-			if readResult.ExitCode == 0 {
+			if !resp.OK {
+				return "Error: " + resp.Error, nil
+			}
+			// Read back edited file to update state tracker
+			readCmd := backend.ReadFileCommand(resolved)
+			readResult := b.Execute(readCmd)
+			content, _ := wickfsDataOrError(readResult.Output)
+			if content != "" && !strings.HasPrefix(content, "Error:") {
 				if state.Files == nil {
 					state.Files = make(map[string]string)
 				}
-				state.Files[resolved] = readResult.Output
+				state.Files[resolved] = content
 			}
-			return result.Output, nil
+			return "OK", nil
 		},
 	})
 
@@ -180,7 +198,7 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			}
 			cmd := backend.GlobCommand(pattern, resolved)
 			result := b.Execute(cmd)
-			return result.Output, nil
+			return wickfsDataOrError(result.Output)
 		},
 	})
 
@@ -205,7 +223,7 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			}
 			cmd := backend.GrepCommand(pattern, resolved)
 			result := b.Execute(cmd)
-			return result.Output, nil
+			return wickfsDataOrError(result.Output)
 		},
 	})
 
@@ -225,12 +243,26 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			if command == "" {
 				return "Error: command is required", nil
 			}
-			result := b.Execute(command)
-			return result.Output, nil
+			cmd := backend.ExecCommand(command)
+			result := b.Execute(cmd)
+			return wickfsDataOrError(result.Output)
 		},
 	})
 
 	return nil
+}
+
+// wickfsDataOrError parses a wickfs JSON response and returns the data as a
+// formatted string, or an error message.
+func wickfsDataOrError(output string) (string, error) {
+	resp, err := backend.ParseWickfsResponse(output)
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	if !resp.OK {
+		return "Error: " + resp.Error, nil
+	}
+	return string(resp.Data), nil
 }
 
 // WrapToolCall implements large result eviction.
@@ -249,7 +281,6 @@ func (h *FilesystemHook) WrapToolCall(ctx context.Context, call agent.ToolCall, 
 	}
 
 	if len(result.Output) > maxChars && !excluded[call.Name] {
-		// Truncate: show first 2000 chars + last 2000 chars
 		head := result.Output[:2000]
 		tail := result.Output[len(result.Output)-2000:]
 		result.Output = fmt.Sprintf(
@@ -270,4 +301,3 @@ func (h *FilesystemHook) ModifyRequest(ctx context.Context, msgs []agent.Message
 func (h *FilesystemHook) WrapModelCall(ctx context.Context, msgs []agent.Message, next agent.ModelCallWrapFunc) (*llm.Response, error) {
 	return next(ctx, msgs)
 }
-

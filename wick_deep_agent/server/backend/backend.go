@@ -2,6 +2,7 @@ package backend
 
 import (
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 )
@@ -13,6 +14,9 @@ type Backend interface {
 
 	// Execute runs a shell command and returns the output.
 	Execute(command string) ExecuteResponse
+
+	// ExecuteWithStdin runs a shell command with data piped to stdin.
+	ExecuteWithStdin(command string, stdin io.Reader) ExecuteResponse
 
 	// UploadFiles writes files to the backend.
 	UploadFiles(files []FileUpload) []FileUploadResponse

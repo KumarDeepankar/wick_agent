@@ -1,0 +1,25 @@
+# agents.local.yaml — Local development config (no Docker required)
+# Usage: ./wick_go -config agents.local.yaml
+
+defaults:
+  backend:
+    type: local
+    workdir: ./workspace
+    timeout: 120
+  debug: true
+
+agents:
+  default:
+    name: "Ollama Local"
+    model: "ollama:llama3.1:8b"
+    system_prompt: |
+      You are a helpful AI assistant with access to tools for file operations,
+      web search, and code execution. Use the available tools to help the user
+      accomplish their tasks.
+    tools:
+      - internet_search
+      - calculate
+      - current_datetime
+    skills:
+      paths:
+        - ../../wick_go/skills

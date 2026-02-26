@@ -95,6 +95,35 @@ def go_build(target: dict[str, str]) -> Path:
     return out_path
 
 
+def go_build_wickfs(target: dict[str, str]) -> Path | None:
+    """Cross-compile the wickfs binary for Linux targets only (Docker sandbox use)."""
+    # wickfs only runs inside Docker containers (always Linux)
+    if target["goos"] != "linux":
+        return None
+
+    bin_name = f"wickfs_linux_{target['goarch']}"
+    out_path = BIN_DIR / bin_name
+
+    env = os.environ.copy()
+    env["CGO_ENABLED"] = "0"
+    env["GOOS"] = "linux"
+    env["GOARCH"] = target["goarch"]
+
+    cmd = [
+        "go", "build",
+        "-ldflags=-s -w",
+        "-o", str(out_path),
+        "./cmd/wickfs/",
+    ]
+    print(f"  go build wickfs → linux/{target['goarch']}")
+    result = subprocess.run(cmd, cwd=str(SERVER_DIR), env=env, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"wickfs build failed for linux/{target['goarch']}:\n{result.stderr}")
+
+    out_path.chmod(out_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return out_path
+
+
 def build_wheel(plat_tag: str) -> Path:
     """Build a wheel tagged for the given platform."""
     # Clean previous builds
@@ -166,6 +195,10 @@ def main() -> None:
         clean_bin()
         binary = go_build(target)
         print(f"  binary: {binary} ({binary.stat().st_size / 1024 / 1024:.1f} MB)")
+
+        wickfs = go_build_wickfs(target)
+        if wickfs:
+            print(f"  wickfs: {wickfs} ({wickfs.stat().st_size / 1024 / 1024:.1f} MB)")
 
         whl = build_wheel(tag)
         print(f"  wheel:  {whl.name}")
