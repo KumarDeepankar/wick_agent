@@ -1,90 +1,37 @@
 # hooks — Agent Middleware System
 
-## Overview
-
-`hooks` is the middleware layer for the agent loop. Each hook implements one or more phases to inject tools, modify prompts, wrap LLM calls, or wrap tool executions. Hooks compose in an onion-ring pattern — the first hook registered is the outermost wrapper.
-
-```
-Agent loop
-  │
-  ├── BeforeAgent          (one-time setup, sequential)
-  │     FilesystemHook     → registers 7 file tools on state
-  │     TodoListHook       → registers write_todos tool
-  │     SkillsHook         → discovers SKILL.md files
-  │     MemoryHook         → loads AGENTS.md files
-  │
-  ├── ModifyRequest        (before each LLM call, sequential)
-  │     SkillsHook         → injects skill catalog into system message
-  │     MemoryHook         → injects <agent_memory> into system message
-  │
-  ├── WrapModelCall        (onion ring around LLM call)
-  │     TracingHook        → outermost: records timing spans
-  │     SummarizationHook  → innermost: compresses old messages
-  │     actual LLM call    → center
-  │
-  └── WrapToolCall         (onion ring around tool execution)
-        TracingHook        → outermost: records timing spans
-        FilesystemHook     → evicts results >80k chars
-        actual tool exec   → center
-```
+> **Reading order:** This document is structured bottom-up. It starts with the data types you'll see everywhere, then builds up to the interfaces that use them, the hook implementations, and finally how everything connects in the agent loop. Read it top to bottom and you'll never hit an undefined term.
 
 ---
 
-## Hook Interface (`agent/hook.go`)
+## 1. Foundational Types
 
-```go
-type Hook interface {
-    Name() string
-    Phases() []string
-    BeforeAgent(ctx context.Context, state *AgentState) error
-    WrapModelCall(ctx context.Context, msgs []Message, next ModelCallWrapFunc) (*llm.Response, error)
-    WrapToolCall(ctx context.Context, call ToolCall, next ToolCallFunc) (*ToolResult, error)
-    ModifyRequest(ctx context.Context, msgs []Message) ([]Message, error)
-}
-```
+These types appear in every hook signature. Learn them first.
 
-**Four phases:**
+### 1.1 Message (`agent/types.go`)
 
-| Phase | When | Pattern |
-|-------|------|---------|
-| `before_agent` | Once, before agent loop starts | Sequential — each hook runs in order |
-| `modify_request` | Before each LLM call | Sequential — each hook transforms the message list |
-| `wrap_model_call` | Around each LLM call | Onion ring — hooks wrap inner function |
-| `wrap_tool_call` | Around each tool execution | Onion ring — hooks wrap inner function |
-
-**BaseHook** provides no-op defaults for all methods. Implementations embed it and override only the phases they need.
-
-### Function Signatures
-
-```go
-// The "next" function a model-call wrapper receives. Call it to pass through.
-type ModelCallWrapFunc func(ctx context.Context, msgs []Message) (*llm.Response, error)
-
-// The "next" function a tool-call wrapper receives. Call it to execute the tool.
-type ToolCallFunc func(ctx context.Context, call ToolCall) (*ToolResult, error)
-```
-
----
-
-## Core Data Structures
-
-These are the types that flow through hooks. Understanding them is essential.
-
-### Message (`agent/types.go`)
-
-Every message in the conversation — system prompts, user inputs, assistant replies, and tool results.
+A single entry in the conversation. Every chat turn — system prompt, user input, LLM reply, tool output — is a `Message`.
 
 ```go
 type Message struct {
-    Role       string     `json:"role"`                  // "system", "user", "assistant", "tool"
+    Role       string     `json:"role"`                  // one of: "system", "user", "assistant", "tool"
     Content    string     `json:"content"`
-    ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // set when Role == "assistant" and LLM wants to call tools
-    ToolCallID string     `json:"tool_call_id,omitempty"` // set when Role == "tool" (matches ToolCall.ID)
-    Name       string     `json:"name,omitempty"`         // tool name when Role == "tool"
+    ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // only set when Role == "assistant" (see §1.2)
+    ToolCallID string     `json:"tool_call_id,omitempty"` // only set when Role == "tool" (links back to ToolCall.ID)
+    Name       string     `json:"name,omitempty"`         // only set when Role == "tool" (which tool produced this)
 }
 ```
 
-**Sample — a 4-message conversation:**
+**The four roles** (enforced — see §1.5):
+
+| Role | Who creates it | Content | Extra fields |
+|------|---------------|---------|-------------|
+| `"system"` | Framework (hooks inject into this) | System prompt text | — |
+| `"user"` | End user via API | User's question | — |
+| `"assistant"` | LLM response | LLM's text reply | `ToolCalls` if LLM wants to call tools |
+| `"tool"` | Framework after executing a tool | Tool's output string | `ToolCallID` + `Name` |
+
+**Sample — a 4-message conversation in JSON:**
 
 ```json
 [
@@ -116,7 +63,82 @@ type Message struct {
 ]
 ```
 
-**Role constants and validation (`agent/messages.go`):**
+### 1.2 ToolCall (`agent/types.go`)
+
+When the LLM wants to use a tool, it returns one or more `ToolCall` values inside an assistant message's `ToolCalls` field (see §1.1 above).
+
+```go
+type ToolCall struct {
+    ID      string         `json:"id"`       // unique ID (e.g. "call_abc123"), assigned by the LLM
+    Name    string         `json:"name"`     // which tool to invoke (e.g. "read_file")
+    Args    map[string]any `json:"args"`     // arguments the LLM passed (e.g. {"path": "/workspace/main.py"})
+    RawArgs string         `json:"-"`        // raw JSON from LLM — not serialized, used for token estimation
+}
+```
+
+**Sample — LLM asks to edit a file:**
+
+```json
+{
+  "id": "call_xyz789",
+  "name": "edit_file",
+  "args": {
+    "path": "/workspace/main.py",
+    "old_text": "return {'status': 'ok'}",
+    "new_text": "return {'status': 'ok', 'version': '1.0'}"
+  }
+}
+```
+
+### 1.3 ToolResult (`agent/types.go`)
+
+After a tool executes, the framework wraps its output in a `ToolResult`. This becomes a `"tool"` role message (see §1.1).
+
+```go
+type ToolResult struct {
+    ToolCallID string `json:"tool_call_id"` // matches the ToolCall.ID that triggered this
+    Name       string `json:"name"`         // tool name (e.g. "grep")
+    Output     string `json:"output"`       // tool's output text
+    Error      string `json:"error,omitempty"` // set only on failure — empty string on success
+}
+```
+
+**Sample — successful grep:**
+
+```json
+{
+  "tool_call_id": "call_grep01",
+  "name": "grep",
+  "output": "{\"matches\":[{\"file\":\"/workspace/main.py\",\"line\":4,\"text\":\"def root():\"}],\"truncated\":false}"
+}
+```
+
+**Sample — failed edit:**
+
+```json
+{
+  "tool_call_id": "call_edit01",
+  "name": "edit_file",
+  "output": "",
+  "error": "old_text not found in file"
+}
+```
+
+### 1.4 Todo (`agent/types.go`)
+
+A single task item. Managed by the TodoListHook (see §6.5).
+
+```go
+type Todo struct {
+    ID     string `json:"id"`
+    Title  string `json:"title"`
+    Status string `json:"status"` // "pending", "in_progress", or "done"
+}
+```
+
+### 1.5 Role Constants and Validation (`agent/messages.go`)
+
+The four role strings from §1.1 are defined as constants. The framework **enforces** them — unknown roles are rejected.
 
 ```go
 const (
@@ -127,7 +149,7 @@ const (
 )
 
 // ValidRole returns true if r is one of the four known roles.
-// Used by Validate() — unknown roles are rejected.
+// Used by Messages.Validate() — unknown roles cause an error.
 func ValidRole(r string) bool {
     switch r {
     case RoleSystem, RoleUser, RoleAssistant, RoleTool:
@@ -143,20 +165,20 @@ func UserInputRole(r string) bool {
 }
 ```
 
-**Builder helpers** — used in hooks and tests to construct messages:
+### 1.6 Messages Chain (`agent/messages.go`)
+
+`Messages` is a `[]Message` with builder, filtering, validation, and token estimation methods. Used throughout hooks and the agent loop. All the types it uses (`Message`, `ToolCall`) are defined above in §1.1–§1.2.
+
+**Builder helpers** — standalone constructors for single messages:
 
 ```go
-agent.System("You are a coding assistant.")
-agent.Human("Read the main.py file")
-agent.AI("", agent.ToolCall{ID: "call_abc123", Name: "read_file", Args: map[string]any{"path": "/workspace/main.py"}})
-agent.ToolMsg("call_abc123", "read_file", "file content here...")
+agent.System("You are a coding assistant.")                    // → Message{Role: "system", Content: "..."}
+agent.Human("Read the main.py file")                           // → Message{Role: "user", Content: "..."}
+agent.AI("Sure!", tc1, tc2)                                    // → Message{Role: "assistant", Content: "...", ToolCalls: [...]}
+agent.ToolMsg("call_abc123", "read_file", "file content...")   // → Message{Role: "tool", Content: "...", ToolCallID: "...", Name: "..."}
 ```
 
-### Messages Chain (`agent/messages.go`)
-
-`Messages` is an ordered `[]Message` with builder, filtering, validation, and token estimation methods. Used throughout hooks and the agent loop.
-
-**Chain builder** — fluent API for constructing conversations:
+**Chain builder** — fluent API for constructing multi-message conversations:
 
 ```go
 chain := agent.NewMessages().
@@ -177,14 +199,14 @@ chain.UserMessages()      // only role == "user"
 chain.AssistantMessages() // only role == "assistant"
 chain.ToolMessages()      // only role == "tool"
 chain.SystemMessages()    // only role == "system"
-chain.ByRole("user")      // generic filter
+chain.ByRole("user")      // generic filter by any role string
 ```
 
 **Accessors:**
 
 ```go
-chain.Last()        // last Message (zero value if empty)
-chain.LastContent() // last message's Content string
+chain.Last()        // last Message (zero-value Message{} if empty)
+chain.LastContent() // Content of the last message
 chain.Len()         // number of messages
 chain.Slice()       // underlying []Message
 ```
@@ -193,21 +215,21 @@ chain.Slice()       // underlying []Message
 
 ```go
 // Validate() checks the full message chain:
-//   - Unknown roles → error (only system/user/assistant/tool allowed)
+//   - Unknown roles → error (only the four roles from §1.5 allowed)
 //   - "tool" messages must have ToolCallID and Name
 //   - "assistant" messages must have Content or ToolCalls (not both empty)
 //   - "assistant" ToolCalls must each have ID and Name
 //   - "user"/"system" messages must have non-empty Content
 err := chain.Validate()
 
-// ValidateUserInput() — stricter check for external/user-submitted messages:
-//   - Only "user" and "system" roles allowed
+// ValidateUserInput() — stricter, for external/user-submitted messages:
+//   - Only "user" and "system" roles allowed (see UserInputRole in §1.5)
 //   - Must be non-empty
 //   - Content must be non-empty
 err := chain.ValidateUserInput()
 ```
 
-**Token estimation** — used by SummarizationHook to decide when to compress:
+**Token estimation** — used by SummarizationHook (§6.4) to decide when to compress:
 
 ```go
 tokens := chain.EstimateTokens() // heuristic: len(content)/4 + len(rawArgs)/4
@@ -234,82 +256,105 @@ fmt.Print(chain.PrettyPrint())
 // 2+2 = 4
 ```
 
-### ToolCall (`agent/types.go`)
+---
 
-The LLM's request to invoke a tool. Attached to assistant messages.
+## 2. Tool System
 
-```go
-type ToolCall struct {
-    ID      string         `json:"id"`
-    Name    string         `json:"name"`
-    Args    map[string]any `json:"args"`
-    RawArgs string         `json:"-"` // raw JSON string from LLM, not serialized
-}
-```
+Tools are Go functions the LLM can call. Hooks register tools at runtime (see §6). Here are the types that make that possible.
 
-**Sample — LLM asks to edit a file:**
+### 2.1 Tool Interface (`agent/tool.go`)
 
-```json
-{
-  "id": "call_xyz789",
-  "name": "edit_file",
-  "args": {
-    "path": "/workspace/main.py",
-    "old_text": "return {'status': 'ok'}",
-    "new_text": "return {'status': 'ok', 'version': '1.0'}"
-  }
-}
-```
-
-### ToolResult (`agent/types.go`)
-
-The output of executing a tool. Becomes a `"tool"` role message.
+Every tool — filesystem operations, todos, HTTP callbacks, your custom tools — implements this interface.
 
 ```go
-type ToolResult struct {
-    ToolCallID string `json:"tool_call_id"`
-    Name       string `json:"name"`
-    Output     string `json:"output"`
-    Error      string `json:"error,omitempty"` // set only on failure
+type Tool interface {
+    Name() string                                                    // unique name (e.g. "read_file")
+    Description() string                                             // shown to LLM so it knows when to use it
+    Parameters() map[string]any                                      // JSON Schema object describing expected args
+    Execute(ctx context.Context, args map[string]any) (string, error) // runs the tool, returns output string
 }
 ```
 
-**Sample — successful grep:**
+### 2.2 FuncTool (`agent/tool.go`)
 
-```json
-{
-  "tool_call_id": "call_grep01",
-  "name": "grep",
-  "output": "{\"matches\":[{\"file\":\"/workspace/main.py\",\"line\":4,\"text\":\"def root():\"}],\"truncated\":false}"
+The most common way to create a tool — wraps a plain Go function. Used by hooks (§6) to register tools.
+
+```go
+type FuncTool struct {
+    ToolName   string                                                     // implements Tool.Name()
+    ToolDesc   string                                                     // implements Tool.Description()
+    ToolParams map[string]any                                             // implements Tool.Parameters()
+    Fn         func(ctx context.Context, args map[string]any) (string, error) // implements Tool.Execute()
 }
 ```
 
-**Sample — failed edit:**
+**Sample — a complete tool definition (this is how FilesystemHook registers `ls` in §6.1):**
 
-```json
-{
-  "tool_call_id": "call_edit01",
-  "name": "edit_file",
-  "output": "",
-  "error": "old_text not found in file"
+```go
+&agent.FuncTool{
+    ToolName: "ls",
+    ToolDesc: "List files and directories at the given path",
+    ToolParams: map[string]any{
+        "type": "object",
+        "properties": map[string]any{
+            "path": map[string]any{
+                "type":        "string",
+                "description": "Directory path to list",
+            },
+        },
+        "required": []string{"path"},
+    },
+    Fn: func(ctx context.Context, args map[string]any) (string, error) {
+        path := args["path"].(string)
+        entries, err := fs.Ls(ctx, path)
+        // ... marshal to JSON and return
+    },
 }
 ```
 
-### AgentState (`agent/types.go`)
+### 2.3 RegisterToolOnState (`agent/tool.go`)
 
-The full conversation state for a thread. Persisted to thread store between requests.
+Hooks call this function during `BeforeAgent` (§4) to add tools to the current session. These tools live in `AgentState.toolRegistry` (§3.1) and are rebuilt every run.
+
+```go
+func RegisterToolOnState(state *AgentState, tool Tool)
+```
+
+### 2.4 HTTPTool (`agent/http_tool.go`)
+
+An alternative to `FuncTool` — forwards tool calls to a remote HTTP endpoint instead of running a Go function. Used for external tool integrations registered via the API.
+
+```go
+type HTTPTool struct {
+    ToolName    string
+    ToolDesc    string
+    ToolParams  map[string]any
+    CallbackURL string         // e.g. "http://127.0.0.1:9100"
+    Client      *http.Client
+}
+```
+
+---
+
+## 3. Agent State and Storage
+
+Now that you know Message (§1.1), Todo (§1.4), and Tool (§2.1), here's how they're stored together.
+
+### 3.1 AgentState (`agent/types.go`)
+
+The full conversation state for a single thread. This is what hooks read from and write to.
 
 ```go
 type AgentState struct {
     ThreadID     string            `json:"thread_id"`
-    Messages     []Message         `json:"messages"`
-    Todos        []Todo            `json:"todos,omitempty"`
-    Files        map[string]string `json:"files,omitempty"` // path → content of files written by agent
-    toolRegistry map[string]Tool   `json:"-"`               // not serialized — rebuilt each run by BeforeAgent hooks
+    Messages     []Message         `json:"messages"`               // full conversation history (§1.1)
+    Todos        []Todo            `json:"todos,omitempty"`         // task list managed by TodoListHook (§6.5)
+    Files        map[string]string `json:"files,omitempty"`         // path → content of files written by agent
+    toolRegistry map[string]Tool   `json:"-"`                       // NOT serialized — rebuilt each run by BeforeAgent hooks (§4)
 }
 ```
 
-**Sample — mid-conversation state:**
+**Sample — mid-conversation state as JSON:**
 
 ```json
 {
@@ -334,73 +379,418 @@ type AgentState struct {
 ```
 
 **Key points:**
-- `toolRegistry` is `json:"-"` — rebuilt from scratch each run by `BeforeAgent` hooks (FilesystemHook adds 7 tools, TodoListHook adds 1)
-- `Files` tracks every file the agent wrote or edited — hooks update this in `WrapToolCall`
-- `Todos` is the full todo list, replaced wholesale by the `write_todos` tool
+- `toolRegistry` is `json:"-"` — never saved. Rebuilt from scratch each run by `BeforeAgent` hooks: FilesystemHook (§6.1) adds 7 tools, TodoListHook (§6.5) adds 1
+- `Files` tracks every file the agent wrote or edited — FilesystemHook updates this in its `WrapToolCall` (§6.1)
+- `Todos` is the full todo list, replaced wholesale by the `write_todos` tool (§6.5)
 
-### Todo (`agent/types.go`)
+### 3.2 ThreadStore (`agent/thread.go`)
 
-A single task item managed by the TodoListHook.
+In-memory store that persists `AgentState` (§3.1) across HTTP requests. A user can send multiple messages in the same thread — the store keeps the conversation alive between requests.
 
 ```go
-type Todo struct {
-    ID     string `json:"id"`
-    Title  string `json:"title"`
-    Status string `json:"status"` // "pending", "in_progress", "done"
+type ThreadStore struct {
+    mu      sync.RWMutex
+    threads map[string]*threadEntry   // key = thread ID
+    ttl     time.Duration             // default: 1 hour
+    stop    chan struct{}
+}
+
+type threadEntry struct {
+    state      *AgentState    // the conversation state (§3.1)
+    lastAccess time.Time      // when this thread was last read or written
+}
+
+var GlobalThreadStore = NewThreadStore() // shared singleton
+```
+
+**Key methods:**
+
+```go
+ts.LoadOrCreate("th_8f3a2b") // returns existing AgentState or creates a new empty one
+ts.Save("th_8f3a2b", state)  // persists state, refreshes lastAccess timestamp
+ts.Get("th_8f3a2b")          // returns AgentState or nil if not found
+ts.Delete("th_8f3a2b")       // removes thread permanently
+```
+
+**Eviction:** A background goroutine runs every 5 minutes and removes threads not accessed within the TTL (1 hour). This prevents unbounded memory growth.
+
+---
+
+## 4. The Hook Interface
+
+Now that you know all the types hooks work with — Message (§1.1), ToolCall (§1.2), ToolResult (§1.3), AgentState (§3.1), and Tool (§2.1) — here's the interface every hook must implement.
+
+### 4.1 Hook (`agent/hook.go`)
+
+```go
+type Hook interface {
+    Name() string        // unique identifier (e.g. "filesystem", "memory")
+    Phases() []string    // which phases this hook participates in (see table below)
+
+    // Phase 1: One-time setup. Register tools on state, load files, etc.
+    BeforeAgent(ctx context.Context, state *AgentState) error
+
+    // Phase 2: Transform the message list before each LLM call.
+    ModifyRequest(ctx context.Context, msgs []Message) ([]Message, error)
+
+    // Phase 3: Wrap the LLM call. Call `next` to pass through to inner hooks / actual LLM.
+    WrapModelCall(ctx context.Context, msgs []Message, next ModelCallWrapFunc) (*llm.Response, error)
+
+    // Phase 4: Wrap a tool execution. Call `next` to pass through to inner hooks / actual tool.
+    WrapToolCall(ctx context.Context, call ToolCall, next ToolCallFunc) (*ToolResult, error)
 }
 ```
 
-### Tool Interface (`agent/tool.go`)
+**The four phases:**
 
-Every tool (filesystem, todos, HTTP callbacks, custom) implements this interface.
+| Phase | When it runs | Pattern | Example use |
+|-------|-------------|---------|-------------|
+| `before_agent` | Once, before the loop starts | Sequential — each hook runs in order | Register tools, discover skills |
+| `modify_request` | Before **each** LLM call | Sequential — each hook transforms msgs | Inject memory into system prompt |
+| `wrap_model_call` | Around **each** LLM call | Onion ring (§5) | Compress context, record timing |
+| `wrap_tool_call` | Around **each** tool execution | Onion ring (§5) | Truncate large outputs, record timing |
+
+### 4.2 Function Signatures for Wrapping
+
+These are the `next` function types. A hook calls `next(...)` to pass control to the next hook (or the actual LLM/tool at the center).
 
 ```go
-type Tool interface {
-    Name() string
-    Description() string
-    Parameters() map[string]any // JSON Schema object
-    Execute(ctx context.Context, args map[string]any) (string, error)
+// The "next" function a model-call wrapper receives.
+// Call it to pass through to the next hook or the actual LLM.
+type ModelCallWrapFunc func(ctx context.Context, msgs []Message) (*llm.Response, error)
+
+// The "next" function a tool-call wrapper receives.
+// Call it to pass through to the next hook or the actual tool execution.
+type ToolCallFunc func(ctx context.Context, call ToolCall) (*ToolResult, error)
+```
+
+### 4.3 BaseHook (`agent/hook.go`)
+
+A convenience struct with **no-op defaults** for all four methods. Embed it in your hook so you only override the phases you need.
+
+```go
+type BaseHook struct{}
+
+func (BaseHook) Name() string                          { return "base" }
+func (BaseHook) Phases() []string                      { return []string{"before_agent", "modify_request", "wrap_model_call", "wrap_tool_call"} }
+func (BaseHook) BeforeAgent(_ context.Context, _ *AgentState) error { return nil }
+func (BaseHook) ModifyRequest(_ context.Context, msgs []Message) ([]Message, error) { return msgs, nil }
+func (BaseHook) WrapModelCall(_ context.Context, msgs []Message, next ModelCallWrapFunc) (*llm.Response, error) { return next(ctx, msgs) }
+func (BaseHook) WrapToolCall(_ context.Context, call ToolCall, next ToolCallFunc) (*ToolResult, error) { return next(ctx, call) }
+```
+
+**Every hook in §6 embeds `BaseHook`** and overrides only what it needs. For example, `TodoListHook` only overrides `BeforeAgent` — all other methods pass through via `BaseHook`.
+
+---
+
+## 5. Onion Ring Composition
+
+Now you know the Hook interface (§4). Here's how multiple hooks are composed into a chain.
+
+### 5.1 How It Works (`agent/loop.go`)
+
+Hooks are iterated in **reverse** to build the chain. The first hook in the array becomes the **outermost** wrapper:
+
+```go
+fn := baseLLMCall  // the actual LLM call function
+for i := len(hooks) - 1; i >= 0; i-- {
+    hook := hooks[i]
+    prev := fn
+    fn = func(ctx context.Context, msgs []Message) (*llm.Response, error) {
+        return hook.WrapModelCall(ctx, msgs, prev)  // each hook wraps the previous
+    }
+}
+// Result: hook[0] wraps hook[1] wraps ... wraps hook[n] wraps baseLLMCall
+```
+
+Same pattern applies to `WrapToolCall`.
+
+**Visual — what happens when the LLM is called:**
+
+```
+TracingHook.WrapModelCall(msgs, next=↓)     ← outermost (runs first, finishes last)
+  SummarizationHook.WrapModelCall(msgs, next=↓)
+    actual LLM call                          ← center
+  SummarizationHook returns
+TracingHook returns                          ← outermost finishes (records total time)
+```
+
+### 5.2 Registration Order (`handlers/handlers.go`)
+
+Hooks are appended in this order. Position matters — it determines the onion ring layering:
+
+```go
+agentHooks := []agent.Hook{
+    tracing.NewTracingHook(),                         // 1. outermost wrapper (times everything)
+    hooks.NewTodoListHook(),                          // 2. always active
+    hooks.NewFilesystemHook(backend),                 // 3. only when backend is configured
+    hooks.NewSkillsHook(backend, cfg.Skills.Paths),   // 4. only when skills.paths is set
+    hooks.NewMemoryHook(backend, cfg.Memory.Paths),   // 5. only when memory.paths is set
+    hooks.NewSummarizationHook(llmClient, ctxWindow), // 6. innermost wrapper (closest to LLM)
 }
 ```
 
-**FuncTool** — wraps a plain Go function as a Tool (used by hooks):
+---
+
+## 6. Hook Implementations
+
+Each section below describes one hook. They all embed `BaseHook` (§4.3) and override only the phases they need.
+
+### 6.1 FilesystemHook (`hooks/filesystem.go`)
+
+Registers file-operation tools and evicts oversized tool results.
+
+**Phases:** `before_agent`, `wrap_tool_call`
+
+**Struct:**
 
 ```go
-type FuncTool struct {
-    ToolName   string
-    ToolDesc   string
-    ToolParams map[string]any
-    Fn         func(ctx context.Context, args map[string]any) (string, error)
+type FilesystemHook struct {
+    agent.BaseHook              // no-op defaults for unused phases (§4.3)
+    fs          wickfs.FileSystem
+    workdir     string
+    resolvePath func(string) (string, error)
+}
+
+func NewFilesystemHook(b backend.Backend) *FilesystemHook
+```
+
+**BeforeAgent — registers 7 tools** on `AgentState` (§3.1) via `RegisterToolOnState()` (§2.3):
+
+| Tool | Description | Key behavior |
+|------|-------------|-------------|
+| `ls` | List directory entries | Returns JSON array of `{name, type, size}` |
+| `read_file` | Read file contents | Delegates to `backend.FS().ReadFile()` |
+| `write_file` | Write file | Creates parent dirs automatically |
+| `edit_file` | Replace text in file | Exact match of `old_text`, replaces first occurrence |
+| `glob` | Find files by pattern | Filename matching via `filepath.Match` |
+| `grep` | Search file contents | Regex pattern matching |
+| `execute` | Run shell command | Delegates to `backend.FS().Exec()` |
+
+All tools delegate to `backend.FS()` which returns either `LocalFS` (direct stdlib) or `RemoteFS` (via `wickfs` CLI in container). See [WICKFS.md](WICKFS.md) for details.
+
+Files written or edited are tracked in `state.Files[path] = content` for state persistence.
+
+**WrapToolCall — large result eviction.** Truncates tool results exceeding 80,000 characters (~20k tokens):
+
+```
+[first 2000 chars]
+
+... (truncated X characters) ...
+
+[last 2000 chars]
+```
+
+**Excluded tools** (never evicted): `ls`, `glob`, `grep`, `read_file`, `edit_file`, `write_file`
+
+Only `execute` and any custom tools are subject to eviction.
+
+### 6.2 SkillsHook (`hooks/skills.go`)
+
+Discovers skill definitions and injects a catalog into the system prompt for progressive loading.
+
+**Phases:** `before_agent`, `modify_request`
+
+**Struct:**
+
+```go
+type SkillsHook struct {
+    agent.BaseHook              // §4.3
+    backend backend.Backend
+    paths   []string            // configured skill directory paths
+    skills  []SkillEntry        // populated during BeforeAgent
+}
+
+type SkillEntry struct {
+    Name        string // from YAML frontmatter "name" field
+    Description string // from YAML frontmatter "description" field
+    Path        string // full path to SKILL.md file
+}
+
+func NewSkillsHook(b backend.Backend, paths []string) *SkillsHook
+```
+
+**BeforeAgent — skill discovery:**
+
+1. Runs `find` on each configured skill directory path
+2. Locates `SKILL.md` files in subdirectories
+3. Parses YAML frontmatter (`---\nname: ...\ndescription: ...\n---`)
+4. Stores `SkillEntry{Name, Description, Path}` for each skill
+
+**Sample — after BeforeAgent scans `/workspace/skills/`:**
+
+```go
+[]SkillEntry{
+    {Name: "csv-analyzer", Description: "Analyze CSV files and generate charts", Path: "/workspace/skills/csv-analyzer/SKILL.md"},
+    {Name: "code-review",  Description: "Review code for bugs and style issues",  Path: "/workspace/skills/code-review/SKILL.md"},
 }
 ```
 
-**Sample — how FilesystemHook registers the `ls` tool internally:**
+**ModifyRequest — catalog injection.** Appends a catalog to the system message (§1.1, role `"system"`):
 
-```go
-agent.RegisterToolOnState(state, &agent.FuncTool{
-    ToolName: "ls",
-    ToolDesc: "List files and directories at the given path",
-    ToolParams: map[string]any{
-        "type": "object",
-        "properties": map[string]any{
-            "path": map[string]any{
-                "type":        "string",
-                "description": "Directory path to list",
-            },
-        },
-        "required": []string{"path"},
-    },
-    Fn: func(ctx context.Context, args map[string]any) (string, error) {
-        path := args["path"].(string)
-        entries, err := fs.Ls(ctx, path)
-        // ... marshal to JSON and return
-    },
-})
+```
+[skill-name] description → Read /path/to/SKILL.md for full instructions
 ```
 
-### LLM Types (`llm/client.go`)
+**Progressive loading:** Only metadata appears in the prompt. The agent calls `read_file` on the SKILL.md path when it needs the full skill instructions. This saves tokens by avoiding upfront inclusion of all skill content.
 
-The LLM client interface and request/response types that hooks interact with.
+### 6.3 MemoryHook (`hooks/memory.go`)
+
+Loads persistent agent memory from AGENTS.md files and injects it into the system prompt.
+
+**Phases:** `before_agent`, `modify_request`
+
+**Struct:**
+
+```go
+type MemoryHook struct {
+    agent.BaseHook              // §4.3
+    backend       backend.Backend
+    paths         []string      // configured AGENTS.md file paths
+    memoryContent string        // loaded content, populated during BeforeAgent
+}
+
+func NewMemoryHook(b backend.Backend, paths []string) *MemoryHook
+```
+
+**BeforeAgent — load memory:**
+
+- Reads AGENTS.md files from configured paths via `cat` command
+- Concatenates multiple files with `\n\n---\n\n` separator
+- Missing files are silently skipped
+
+**ModifyRequest — memory injection.** Wraps loaded content in XML tags and appends to the system message (§1.1, role `"system"`):
+
+```
+<agent_memory>
+[AGENTS.md content]
+</agent_memory>
+
+Guidelines for agent memory:
+- This memory persists across conversations
+- You can update it by using edit_file on the AGENTS.md file
+- Use it to track important context, decisions, and patterns
+- Keep entries concise and organized
+```
+
+The agent can update its own memory by editing the AGENTS.md file during execution.
+
+### 6.4 SummarizationHook (`hooks/summarization.go`)
+
+Compresses conversation history when approaching the context window limit.
+
+**Phases:** `wrap_model_call`
+
+**Struct:**
+
+```go
+type SummarizationHook struct {
+    agent.BaseHook              // §4.3
+    llmClient     llm.Client   // used to call the LLM for summarization (§7.1)
+    contextWindow int          // total context window in tokens (default: 128,000)
+}
+
+func NewSummarizationHook(client llm.Client, contextWindow int) *SummarizationHook
+```
+
+**WrapModelCall — context compression.**
+
+**Trigger:** Total estimated tokens > 85% of context window. Token estimation uses the `len(content) / 4` heuristic (same as `Messages.EstimateTokens()` in §1.6).
+
+**When triggered:**
+1. Splits messages into old (to summarize) and recent (to keep)
+2. Recent = last 10% of messages (minimum 2)
+3. Truncates `write_file`/`edit_file` content in old messages to 2,000 chars
+4. Calls LLM with summarization prompt requesting <2,000 word summary
+5. Replaces old messages with a single summary message
+6. Passes summarized + recent messages to `next` (the inner hook or actual LLM)
+
+**Graceful degradation:** If the summarization LLM call fails, messages pass through unchanged to `next`.
+
+### 6.5 TodoListHook (`hooks/todolist.go`)
+
+Provides task tracking via a `write_todos` tool.
+
+**Phases:** `before_agent`
+
+**Struct:**
+
+```go
+type TodoListHook struct {
+    agent.BaseHook    // §4.3 — only BeforeAgent is overridden
+}
+
+func NewTodoListHook() *TodoListHook
+```
+
+**BeforeAgent — tool registration.** Registers the `write_todos` tool on `AgentState` (§3.1) via `RegisterToolOnState()` (§2.3). Initializes `state.Todos` as an empty slice.
+
+**The `write_todos` tool.** Takes a complete todo list and replaces `state.Todos` (§1.4):
+
+```json
+{
+  "todos": [
+    {"id": "1", "title": "Parse config file", "status": "done"},
+    {"id": "2", "title": "Implement handler",  "status": "in_progress"},
+    {"id": "3", "title": "Write tests",        "status": "pending"}
+  ]
+}
+```
+
+**Statuses:** `pending`, `in_progress`, `done`
+
+Todos are persisted in `AgentState.Todos` and saved to the thread store (§3.2).
+
+### 6.6 TracingHook (`tracing/hook.go`)
+
+Records timing and debug information for observability. Uses the tracing interfaces defined in §7.2.
+
+**Phases:** `wrap_model_call`, `wrap_tool_call`
+
+**Struct:**
+
+```go
+type TracingHook struct {
+    agent.BaseHook    // §4.3 — only WrapModelCall and WrapToolCall are overridden
+}
+
+func NewTracingHook() *TracingHook
+```
+
+**WrapModelCall** — creates span `"llm.call"` and records:
+- `message_count`, `content_length`, `tool_calls_count`
+- First 500 chars of content and tool call names
+- Errors if present
+
+**WrapToolCall** — creates span `"tool.call"` and records:
+- `tool_name`, `tool_call_id`, `tool_args`
+- `output_length`, first 500 chars of output
+- Errors if present
+
+**No-op** when trace recorder is nil (reads from context — see §7.2).
+
+**Sample — what TracingHook records for a tool call:**
+
+```go
+span := trace.StartSpan("tool.call")
+span.Set("tool_name", "read_file")
+span.Set("tool_call_id", "call_abc123")
+span.Set("tool_args", `{"path":"/workspace/main.py"}`)
+// ... calls next(ctx, call) to execute the tool ...
+span.Set("output_length", 342)
+span.Set("output_preview", "from fastapi import FastAPI\napp = FastAPI()...")  // first 500 chars
+span.End()
+```
+
+---
+
+## 7. Supporting Types
+
+Types referenced by hooks but not part of the core hook flow.
+
+### 7.1 LLM Client (`llm/client.go`)
+
+The LLM client interface used by SummarizationHook (§6.4) and the agent loop (§8).
 
 ```go
 type Client interface {
@@ -435,11 +825,31 @@ type ToolCallResult struct {
 }
 ```
 
-**Note:** `llm.ToolCallResult.Args` uses the JSON key `"arguments"` (OpenAI convention), while `agent.ToolCall.Args` uses `"args"` (internal convention). The agent loop maps between them.
+**Note:** `llm.ToolCallResult.Args` uses the JSON key `"arguments"` (OpenAI convention), while `agent.ToolCall.Args` (§1.2) uses `"args"` (internal convention). The agent loop maps between them.
 
-### StreamEvent (`agent/types.go`)
+### 7.2 Tracing Interfaces (`agent/trace_iface.go`)
 
-Events emitted from the agent loop to the SSE handler during streaming.
+Used by TracingHook (§6.6). Pulled from context — if no recorder is set, tracing is a no-op.
+
+```go
+type TraceRecorder interface {
+    StartSpan(name string) SpanHandle
+    RecordEvent(name string, metadata map[string]any)
+}
+
+type SpanHandle interface {
+    Set(key string, value any) SpanHandle  // chainable
+    End()                                   // marks span as complete, records duration
+}
+
+// Context helpers
+func WithTraceRecorder(ctx context.Context, tr TraceRecorder) context.Context
+func TraceFromContext(ctx context.Context) TraceRecorder  // returns nil if not set
+```
+
+### 7.3 StreamEvent (`agent/types.go`)
+
+Events emitted from the agent loop (§8) to the SSE handler during streaming. Not directly used by hooks, but useful to understand the full picture.
 
 ```go
 type StreamEvent struct {
@@ -462,59 +872,9 @@ type StreamEvent struct {
 {"event": "done", "thread_id": "th_8f3a2b"}
 ```
 
-### SkillEntry (`hooks/skills.go`)
+### 7.4 Agent Configuration (`agent/types.go`)
 
-A discovered skill from SKILL.md frontmatter.
-
-```go
-type SkillEntry struct {
-    Name        string // from YAML frontmatter "name" field
-    Description string // from YAML frontmatter "description" field
-    Path        string // full path to SKILL.md file
-}
-```
-
-**Sample — after BeforeAgent scans `/workspace/skills/`:**
-
-```go
-[]SkillEntry{
-    {Name: "csv-analyzer", Description: "Analyze CSV files and generate charts", Path: "/workspace/skills/csv-analyzer/SKILL.md"},
-    {Name: "code-review",  Description: "Review code for bugs and style issues",  Path: "/workspace/skills/code-review/SKILL.md"},
-}
-```
-
-### Tracing Types (`agent/trace_iface.go`)
-
-The tracing interface that TracingHook uses. Pulled from context.
-
-```go
-type TraceRecorder interface {
-    StartSpan(name string) SpanHandle
-    RecordEvent(name string, metadata map[string]any)
-}
-
-type SpanHandle interface {
-    Set(key string, value any) SpanHandle
-    End()
-}
-```
-
-**Sample — what TracingHook records for a tool call:**
-
-```go
-span := trace.StartSpan("tool.call")
-span.Set("tool_name", "read_file")
-span.Set("tool_call_id", "call_abc123")
-span.Set("tool_args", `{"path":"/workspace/main.py"}`)
-// ... execute tool ...
-span.Set("output_length", 342)
-span.Set("output_preview", "from fastapi import FastAPI\napp = FastAPI()...")  // first 500 chars
-span.End()
-```
-
-### Agent Configuration (`agent/types.go`)
-
-The YAML/JSON config that controls which hooks are activated.
+The YAML/JSON config that controls which hooks are activated. This is what `handlers.go` reads to decide which hooks to create (§5.2).
 
 ```go
 type AgentConfig struct {
@@ -544,347 +904,153 @@ type MemoryCfg struct {
 name: code-assistant
 model: claude-sonnet-4-20250514
 system_prompt: "You are a coding assistant."
-context_window: 128000          # → SummarizationHook uses this
+context_window: 128000          # → SummarizationHook (§6.4) uses this
 backend:
-  type: docker                  # → FilesystemHook activated (needs a backend)
+  type: docker                  # → FilesystemHook (§6.1) activated (needs a backend)
   image: python:3.12-slim
   workdir: /workspace
 skills:
-  paths:                        # → SkillsHook activated
+  paths:                        # → SkillsHook (§6.2) activated
     - /workspace/skills
 memory:
-  paths:                        # → MemoryHook activated
+  paths:                        # → MemoryHook (§6.3) activated
     - /workspace/AGENTS.md
 ```
 
 **Hook activation rules:**
-- `TracingHook` — always active
-- `TodoListHook` — always active
-- `FilesystemHook` — only when `backend` is configured (non-nil)
-- `SkillsHook` — only when `skills.paths` has entries and backend exists
-- `MemoryHook` — only when `memory.paths` has entries and backend exists
-- `SummarizationHook` — always active
 
-### Thread Store (`agent/thread.go`)
-
-In-memory store for persisting `AgentState` across requests. TTL-based eviction.
-
-```go
-type ThreadStore struct {
-    mu      sync.RWMutex
-    threads map[string]*threadEntry
-    ttl     time.Duration            // default: 1 hour
-    stop    chan struct{}
-}
-
-type threadEntry struct {
-    state      *AgentState
-    lastAccess time.Time
-}
-
-var GlobalThreadStore = NewThreadStore()
-```
-
-**Key methods:**
-
-```go
-ts.LoadOrCreate("th_8f3a2b") // returns existing state or creates empty one
-ts.Save("th_8f3a2b", state)  // persists state, updates lastAccess
-ts.Get("th_8f3a2b")          // returns state or nil
-ts.Delete("th_8f3a2b")       // removes thread
-```
-
-Eviction runs every 5 minutes — removes threads not accessed within the TTL (1 hour).
+| Hook | When it's created |
+|------|------------------|
+| TracingHook (§6.6) | Always |
+| TodoListHook (§6.5) | Always |
+| FilesystemHook (§6.1) | Only when `backend` is configured (non-nil) |
+| SkillsHook (§6.2) | Only when `skills.paths` has entries **and** backend exists |
+| MemoryHook (§6.3) | Only when `memory.paths` has entries **and** backend exists |
+| SummarizationHook (§6.4) | Always |
 
 ---
 
-## Onion Ring Composition (`agent/loop.go`)
+## 8. Agent Loop Integration (`agent/loop.go`)
 
-Hooks are iterated in reverse to build the chain. The first hook in the array becomes the outermost wrapper:
+This is where everything comes together. The loop uses all the types and hooks described above.
 
-```go
-fn := baseLLMCall
-for i := len(hooks) - 1; i >= 0; i-- {
-    hook := hooks[i]
-    prev := fn
-    fn = func(ctx, msgs, eventCh) {
-        return hook.WrapModelCall(ctx, msgs, prev)
-    }
-}
-// fn is now: hook[0] → hook[1] → ... → hook[n] → baseLLMCall
 ```
+1. Load or create AgentState (§3.1) from ThreadStore (§3.2)
 
-Same pattern applies to `WrapToolCall`.
+2. Run BeforeAgent (§4.1 phase 1) — once, sequential, all hooks:
+   - FilesystemHook (§6.1) registers 7 tools via RegisterToolOnState (§2.3)
+   - TodoListHook (§6.5) registers write_todos tool
+   - SkillsHook (§6.2) discovers SKILL.md files
+   - MemoryHook (§6.3) loads AGENTS.md files
 
----
+3. Build tool map from pre-registered tools + state.toolRegistry (§3.1)
 
-## Hook Registration Order (`handlers/handlers.go`)
+4. LLM-tool loop (up to 25 iterations):
 
-Hooks are built and appended during agent creation:
+   a. ModifyRequest (§4.1 phase 2) — each hook transforms Messages (§1.6) sequentially:
+      - SkillsHook (§6.2) injects skill catalog into system message
+      - MemoryHook (§6.3) injects <agent_memory> into system message
 
-```go
-agentHooks := []agent.Hook{
-    tracing.NewTracingHook(),                         // 1. outermost wrapper
-    hooks.NewTodoListHook(),                          // 2. always active
-    hooks.NewFilesystemHook(backend),                 // 3. when backend available
-    hooks.NewSkillsHook(backend, cfg.Skills.Paths),   // 4. when configured
-    hooks.NewMemoryHook(backend, cfg.Memory.Paths),   // 5. when configured
-    hooks.NewSummarizationHook(llmClient, ctxWindow), // 6. innermost wrapper
-}
+   b. WrapModelCall (§4.1 phase 3) — onion ring (§5) around the LLM call:
+      - TracingHook (§6.6) starts timing span
+      - SummarizationHook (§6.4) compresses old messages if needed
+      - Actual LLM call via llm.Client (§7.1)
+      - Returns llm.Response with Content and/or ToolCalls
+
+   c. If no ToolCalls in response → break (conversation turn is done)
+
+   d. Execute ToolCalls (§1.2) in parallel goroutines, each wrapped by WrapToolCall onion ring (§5):
+      - TracingHook (§6.6) records timing
+      - FilesystemHook (§6.1) truncates large results
+      - Tool.Execute() (§2.1) runs the actual function
+      - Returns ToolResult (§1.3)
+
+   e. Append ToolResults as "tool" role Messages (§1.1) to conversation
+
+5. Save final AgentState (§3.1) to ThreadStore (§3.2)
 ```
 
 ---
 
-## FilesystemHook (`hooks/filesystem.go`)
+## 9. Overview Diagram
 
-Registers file-operation tools and evicts oversized tool results.
-
-**Phases:** `before_agent`, `wrap_tool_call`
-
-### BeforeAgent — Tool Registration
-
-Registers 7 tools on `AgentState` via `RegisterToolOnState()`:
-
-| Tool | Description | Key behavior |
-|------|-------------|-------------|
-| `ls` | List directory entries | Returns JSON array of `{name, type, size}` |
-| `read_file` | Read file contents | Delegates to `backend.FS().ReadFile()` |
-| `write_file` | Write file | Creates parent dirs automatically |
-| `edit_file` | Replace text in file | Exact match of `old_text`, replaces first occurrence |
-| `glob` | Find files by pattern | Filename matching via `filepath.Match` |
-| `grep` | Search file contents | Regex pattern matching |
-| `execute` | Run shell command | Delegates to `backend.FS().Exec()` |
-
-All tools delegate to `backend.FS()` which returns either `LocalFS` (direct stdlib) or `RemoteFS` (via `wickfs` CLI in container). See [WICKFS.md](WICKFS.md) for details.
-
-Files written or edited are tracked in `state.Files[path] = content` for state persistence.
-
-### WrapToolCall — Large Result Eviction
-
-Truncates tool results exceeding 80,000 characters (~20k tokens):
+Now that you know all the pieces, here's how they fit together:
 
 ```
-[first 2000 chars]
-
-... (truncated X characters) ...
-
-[last 2000 chars]
+Agent loop (§8)
+  │
+  ├── BeforeAgent          (one-time setup, sequential)
+  │     FilesystemHook     → registers 7 file tools on state (§6.1)
+  │     TodoListHook       → registers write_todos tool (§6.5)
+  │     SkillsHook         → discovers SKILL.md files (§6.2)
+  │     MemoryHook         → loads AGENTS.md files (§6.3)
+  │
+  ├── ModifyRequest        (before each LLM call, sequential)
+  │     SkillsHook         → injects skill catalog into system message (§6.2)
+  │     MemoryHook         → injects <agent_memory> into system message (§6.3)
+  │
+  ├── WrapModelCall        (onion ring around LLM call — §5)
+  │     TracingHook        → outermost: records timing spans (§6.6)
+  │     SummarizationHook  → innermost: compresses old messages (§6.4)
+  │     actual LLM call    → center
+  │
+  └── WrapToolCall         (onion ring around tool execution — §5)
+        TracingHook        → outermost: records timing spans (§6.6)
+        FilesystemHook     → evicts results >80k chars (§6.1)
+        actual tool exec   → center
 ```
-
-**Excluded tools** (never evicted): `ls`, `glob`, `grep`, `read_file`, `edit_file`, `write_file`
-
-Only `execute` and any custom tools are subject to eviction.
 
 ---
 
-## SkillsHook (`hooks/skills.go`)
-
-Discovers skill definitions and injects a catalog into the system prompt for progressive loading.
-
-**Phases:** `before_agent`, `modify_request`
-
-### BeforeAgent — Skill Discovery
-
-1. Runs `find` on each configured skill directory path
-2. Locates `SKILL.md` files in subdirectories
-3. Parses YAML frontmatter (`---\nname: ...\ndescription: ...\n---`)
-4. Stores `SkillEntry{Name, Description, Path}` for each skill
-
-### ModifyRequest — Catalog Injection
-
-Appends a catalog to the system message listing each skill:
-
-```
-[skill-name] description → Read /path/to/SKILL.md for full instructions
-```
-
-**Progressive loading:** Only metadata appears in the prompt. The agent calls `read_file` on the SKILL.md path when it needs the full skill instructions. This saves tokens by avoiding upfront inclusion of all skill content.
-
----
-
-## MemoryHook (`hooks/memory.go`)
-
-Loads persistent agent memory from AGENTS.md files and injects it into the system prompt.
-
-**Phases:** `before_agent`, `modify_request`
-
-### BeforeAgent — Load Memory
-
-- Reads AGENTS.md files from configured paths via `cat` command
-- Concatenates multiple files with `\n\n---\n\n` separator
-- Missing files are silently skipped
-
-### ModifyRequest — Memory Injection
-
-Wraps loaded content in XML tags and appends to the system message:
-
-```
-<agent_memory>
-[AGENTS.md content]
-</agent_memory>
-
-Guidelines for agent memory:
-- This memory persists across conversations
-- You can update it by using edit_file on the AGENTS.md file
-- Use it to track important context, decisions, and patterns
-- Keep entries concise and organized
-```
-
-The agent can update its own memory by editing the AGENTS.md file during execution.
-
----
-
-## SummarizationHook (`hooks/summarization.go`)
-
-Compresses conversation history when approaching the context window limit.
-
-**Phases:** `wrap_model_call`
-
-### WrapModelCall — Context Compression
-
-**Trigger:** Total estimated tokens > 85% of context window
-
-**Token estimation:** `len(content) / 4` (rough heuristic)
-
-**When triggered:**
-1. Splits messages into old (to summarize) and recent (to keep)
-2. Recent = last 10% of messages (minimum 2)
-3. Truncates `write_file`/`edit_file` content in old messages to 2,000 chars
-4. Calls LLM with summarization prompt requesting <2,000 word summary
-5. Replaces old messages with a single summary message
-6. Passes summarized + recent messages to the next function in the chain
-
-**Graceful degradation:** If the summarization LLM call fails, messages pass through unchanged.
-
-### Configuration
-
-```go
-hooks.NewSummarizationHook(llmClient, contextWindow)
-```
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `contextWindow` | 128,000 | Total context window in tokens |
-
----
-
-## TodoListHook (`hooks/todolist.go`)
-
-Provides task tracking via a `write_todos` tool.
-
-**Phases:** `before_agent`
-
-### BeforeAgent — Tool Registration
-
-Registers `write_todos` tool on state. Initializes `state.Todos` as empty slice.
-
-### write_todos Tool
-
-Takes a complete todo list and replaces `state.Todos`:
-
-```json
-{
-  "todos": [
-    {"id": "1", "title": "Parse config file", "status": "done"},
-    {"id": "2", "title": "Implement handler",  "status": "in_progress"},
-    {"id": "3", "title": "Write tests",        "status": "pending"}
-  ]
-}
-```
-
-**Statuses:** `pending`, `in_progress`, `done`
-
-Todos are persisted in `AgentState.Todos` and saved to the thread store.
-
----
-
-## TracingHook (`tracing/hook.go`)
-
-Records timing and debug information for observability.
-
-**Phases:** `wrap_model_call`, `wrap_tool_call`
-
-### WrapModelCall
-
-Creates span `"llm.call"` and records:
-- `message_count`, `content_length`, `tool_calls_count`
-- First 500 chars of content and tool call names
-- Errors if present
-
-### WrapToolCall
-
-Creates span `"tool.call"` and records:
-- `tool_name`, `tool_call_id`, `tool_args`
-- `output_length`, first 500 chars of output
-- Errors if present
-
-**No-op** when trace recorder is nil (reads from `agent.TraceFromContext(ctx)`).
-
----
-
-## Agent Loop Integration (`agent/loop.go`)
-
-The agent loop runs hooks in this order each iteration:
-
-1. **Load/create thread state** from thread store
-2. **BeforeAgent** — run once (sequential, all hooks)
-3. **Build tool map** — pre-registered + state-registered tools
-4. **LLM-tool loop** (up to 25 iterations):
-   - a. **ModifyRequest** — each hook transforms messages sequentially
-   - b. **WrapModelCall** — onion ring around LLM call
-   - c. **Execute tool calls** — parallel goroutines, each wrapped by onion ring
-   - d. **Append results** to conversation
-5. **Save final state** to thread store
-
----
-
-## File Structure
+## 10. File Structure
 
 ```
 wick_deep_agent/server/
 ├── agent/
-│   ├── hook.go              # Hook interface + BaseHook
-│   ├── types.go             # Message, ToolCall, ToolResult, AgentState, Todo, StreamEvent, AgentConfig
-│   ├── messages.go          # Messages chain, role constants, validation, builders, token estimation
-│   ├── tool.go              # Tool interface, FuncTool, ToolRegistry, RegisterToolOnState()
-│   ├── http_tool.go         # HTTPTool — forwards tool calls to remote HTTP callback
-│   ├── loop.go              # Agent struct, Run/RunStream, onion ring build, LLM-tool loop (max 25 iter)
+│   ├── types.go             # Message (§1.1), ToolCall (§1.2), ToolResult (§1.3), AgentState (§3.1), Todo (§1.4), StreamEvent (§7.3), AgentConfig (§7.4)
+│   ├── messages.go          # Messages chain (§1.6), role constants (§1.5), validation, builders, token estimation
+│   ├── hook.go              # Hook interface (§4.1), BaseHook (§4.3), ModelCallWrapFunc, ToolCallFunc (§4.2)
+│   ├── tool.go              # Tool interface (§2.1), FuncTool (§2.2), ToolRegistry, RegisterToolOnState (§2.3)
+│   ├── http_tool.go         # HTTPTool (§2.4) — forwards tool calls to remote HTTP callback
+│   ├── loop.go              # Agent struct, Run/RunStream, onion ring build (§5.1), LLM-tool loop (§8)
 │   ├── registry.go          # Registry (templates + per-user instances), Template, Instance, HookOverrides
-│   ├── thread.go            # ThreadStore (in-memory, 1h TTL, 5min eviction), GlobalThreadStore
-│   └── trace_iface.go       # TraceRecorder / SpanHandle interfaces, context helpers
+│   ├── thread.go            # ThreadStore (§3.2) — in-memory, 1h TTL, 5min eviction, GlobalThreadStore
+│   └── trace_iface.go       # TraceRecorder / SpanHandle interfaces (§7.2), context helpers
 │
 ├── hooks/
-│   ├── filesystem.go        # FilesystemHook — 7 file tools + large result eviction
-│   ├── skills.go            # SkillsHook — SKILL.md discovery + catalog injection
-│   ├── memory.go            # MemoryHook — AGENTS.md loading + prompt injection
-│   ├── summarization.go     # SummarizationHook — context compression
-│   └── todolist.go          # TodoListHook — write_todos tool
+│   ├── filesystem.go        # FilesystemHook (§6.1) — 7 file tools + large result eviction
+│   ├── skills.go            # SkillsHook (§6.2) — SKILL.md discovery + catalog injection
+│   ├── memory.go            # MemoryHook (§6.3) — AGENTS.md loading + prompt injection
+│   ├── summarization.go     # SummarizationHook (§6.4) — context compression
+│   └── todolist.go          # TodoListHook (§6.5) — write_todos tool
 │
 ├── tracing/
-│   ├── hook.go              # TracingHook — timing spans for LLM and tool calls
-│   └── trace.go             # TraceRecorder / SpanHandle concrete implementation
+│   ├── hook.go              # TracingHook (§6.6) — timing spans for LLM and tool calls
+│   └── trace.go             # Concrete TraceRecorder / SpanHandle implementation
 │
 └── handlers/
-    ├── handlers.go          # HTTP routes, hook registration and composition, agent creation
+    ├── handlers.go          # HTTP routes, hook registration and composition (§5.2), agent creation
     ├── events.go            # EventBus — SSE event fan-out to connected clients
     ├── backends.go          # BackendStore — per-user backend lifecycle (create/get/stop/restart)
     ├── builtin_tools.go     # NewBuiltinTools() — built-in tools registered outside hooks
-    └── tool_store.go        # ToolStore — unified store for HTTPTool + native agent.Tool
+    └── tool_store.go        # ToolStore — unified store for HTTPTool (§2.4) + native agent.Tool (§2.1)
 ```
 
 ---
 
-## Constants
+## 11. Constants Reference
 
-| Constant | Value | Hook | Description |
-|----------|-------|------|-------------|
-| Max result chars | 80,000 | Filesystem | Truncation threshold for tool results |
-| Eviction head/tail | 2,000 chars each | Filesystem | Preserved content when truncating |
-| Context threshold | 85% of window | Summarization | Triggers compression |
-| Default context window | 128,000 tokens | Summarization | Used when not configured |
-| Token heuristic | `len / 4` | Summarization | Chars-to-tokens estimate |
-| Summary max words | 2,000 | Summarization | Limit for summary output |
-| Keep ratio | 10% (min 2) | Summarization | Recent messages preserved |
-| Old message truncation | 2,000 chars | Summarization | write_file/edit_file content in old messages |
-| Max loop iterations | 25 | Agent loop | Prevents runaway agent loops |
-| Todo statuses | pending, in_progress, done | TodoList | Allowed status values |
+| Constant | Value | Where | Description |
+|----------|-------|-------|-------------|
+| Max result chars | 80,000 | FilesystemHook (§6.1) | Truncation threshold for tool results |
+| Eviction head/tail | 2,000 chars each | FilesystemHook (§6.1) | Preserved content when truncating |
+| Context threshold | 85% of window | SummarizationHook (§6.4) | Triggers compression |
+| Default context window | 128,000 tokens | SummarizationHook (§6.4) | Used when `context_window` not set in config |
+| Token heuristic | `len / 4` | SummarizationHook (§6.4) | Chars-to-tokens estimate |
+| Summary max words | 2,000 | SummarizationHook (§6.4) | Limit for summary output |
+| Keep ratio | 10% (min 2) | SummarizationHook (§6.4) | Recent messages preserved during compression |
+| Old message truncation | 2,000 chars | SummarizationHook (§6.4) | write_file/edit_file content in old messages |
+| Max loop iterations | 25 | Agent loop (§8) | Prevents runaway agent loops |
+| Thread TTL | 1 hour | ThreadStore (§3.2) | Idle threads evicted after this duration |
+| Eviction interval | 5 minutes | ThreadStore (§3.2) | How often the eviction goroutine runs |
+| Todo statuses | pending, in_progress, done | TodoListHook (§6.5) | Allowed status values |
