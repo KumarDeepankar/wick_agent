@@ -116,7 +116,7 @@ type Message struct {
 ]
 ```
 
-**Role constants:**
+**Role constants and validation (`agent/messages.go`):**
 
 ```go
 const (
@@ -125,6 +125,22 @@ const (
     RoleAssistant = "assistant"
     RoleTool      = "tool"
 )
+
+// ValidRole returns true if r is one of the four known roles.
+// Used by Validate() — unknown roles are rejected.
+func ValidRole(r string) bool {
+    switch r {
+    case RoleSystem, RoleUser, RoleAssistant, RoleTool:
+        return true
+    }
+    return false
+}
+
+// UserInputRole returns true if the role is allowed in user-submitted messages.
+// Only "user" and "system" — blocks "assistant" and "tool" from external input.
+func UserInputRole(r string) bool {
+    return r == RoleUser || r == RoleSystem
+}
 ```
 
 **Builder helpers** — used in hooks and tests to construct messages:
@@ -134,6 +150,88 @@ agent.System("You are a coding assistant.")
 agent.Human("Read the main.py file")
 agent.AI("", agent.ToolCall{ID: "call_abc123", Name: "read_file", Args: map[string]any{"path": "/workspace/main.py"}})
 agent.ToolMsg("call_abc123", "read_file", "file content here...")
+```
+
+### Messages Chain (`agent/messages.go`)
+
+`Messages` is an ordered `[]Message` with builder, filtering, validation, and token estimation methods. Used throughout hooks and the agent loop.
+
+**Chain builder** — fluent API for constructing conversations:
+
+```go
+chain := agent.NewMessages().
+    System("You are helpful.").
+    Human("What is 2+2?")
+
+// After LLM responds with a tool call:
+chain = chain.
+    AI("", agent.ToolCall{ID: "call_1", Name: "calculate", Args: map[string]any{"expr": "2+2"}}).
+    Tool("call_1", "calculate", "4").
+    AI("2+2 = 4")
+```
+
+**Filtering:**
+
+```go
+chain.UserMessages()      // only role == "user"
+chain.AssistantMessages() // only role == "assistant"
+chain.ToolMessages()      // only role == "tool"
+chain.SystemMessages()    // only role == "system"
+chain.ByRole("user")      // generic filter
+```
+
+**Accessors:**
+
+```go
+chain.Last()        // last Message (zero value if empty)
+chain.LastContent() // last message's Content string
+chain.Len()         // number of messages
+chain.Slice()       // underlying []Message
+```
+
+**Validation** — enforced by the framework, not just conventions:
+
+```go
+// Validate() checks the full message chain:
+//   - Unknown roles → error (only system/user/assistant/tool allowed)
+//   - "tool" messages must have ToolCallID and Name
+//   - "assistant" messages must have Content or ToolCalls (not both empty)
+//   - "assistant" ToolCalls must each have ID and Name
+//   - "user"/"system" messages must have non-empty Content
+err := chain.Validate()
+
+// ValidateUserInput() — stricter check for external/user-submitted messages:
+//   - Only "user" and "system" roles allowed
+//   - Must be non-empty
+//   - Content must be non-empty
+err := chain.ValidateUserInput()
+```
+
+**Token estimation** — used by SummarizationHook to decide when to compress:
+
+```go
+tokens := chain.EstimateTokens() // heuristic: len(content)/4 + len(rawArgs)/4
+```
+
+**Pretty printing:**
+
+```go
+fmt.Print(chain.PrettyPrint())
+// Output:
+// [System]
+// You are helpful.
+//
+// [Human]
+// What is 2+2?
+//
+// [AI]
+//   → tool_call: calculate(id=call_1, args=map[expr:2+2])
+//
+// [Tool: calculate (call_id=call_1)]
+// 4
+//
+// [AI]
+// 2+2 = 4
 ```
 
 ### ToolCall (`agent/types.go`)
@@ -745,7 +843,9 @@ The agent loop runs hooks in this order each iteration:
 ```
 wick_deep_agent/server/
 ├── agent/
-│   └── hook.go              # Hook interface + BaseHook
+│   ├── hook.go              # Hook interface + BaseHook
+│   ├── types.go             # Message, ToolCall, ToolResult, AgentState, Todo, StreamEvent
+│   └── messages.go          # Messages chain, role constants, validation, builders, token estimation
 │
 ├── hooks/
 │   ├── filesystem.go        # FilesystemHook — 7 file tools + large result eviction
