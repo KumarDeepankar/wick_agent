@@ -32,15 +32,13 @@ Wick Agent is an AI agent framework built as a **Go library** (`wick_server`) wi
 └─────────────────────────────────────────────────────────┘
 ```
 
-A **Python SDK** (`wick_deep_agent/wick_deep_agent/`) is still available for backward compatibility — it can start the standalone binary and push config via REST. But the recommended path is pure Go via `wick_go/main.go`.
-
 ---
 
 ## Repository Layout
 
 ```
 wick_agent/
-├── wick_deep_agent/                # Go library + Python SDK
+├── wick_deep_agent/                # Go library
 │   ├── server/                     # Go library (package wickserver)
 │   │   ├── app.go                  # Server struct, New(), RegisterAgent/Tool, Start/Shutdown
 │   │   ├── server.go               # HTTP helpers (writeJSON, CORS middleware)
@@ -86,12 +84,7 @@ wick_agent/
 │   │       ├── wick_server/main.go # Standalone binary entry point
 │   │       ├── wickfs/             # Filesystem CLI (for Docker injection)
 │   │       └── wickdaemon/main.go  # In-container daemon (TCP :9090 + Unix socket)
-│   │
-│   ├── wick_deep_agent/            # Python SDK (backward compat)
-│   │   ├── __init__.py             # WickClient, WickServer, tool, model
-│   │   ├── launcher.py             # Binary lifecycle manager
-│   │   └── client.py               # REST client
-│   └── pyproject.toml
+│   └── LICENSE
 │
 ├── wick_go/                        # Application layer (pure Go)
 │   ├── main.go                     # Agent definitions, tools, startup
@@ -160,7 +153,7 @@ s.Start()
 
 ### Standalone Binary Mode
 
-The library can also run as a standalone binary (backward compat with Python SDK):
+The library can also run as a standalone binary for `agents.yaml`-based deployments:
 
 ```bash
 cd wick_deep_agent/server
@@ -329,7 +322,7 @@ Agent loop starts:
     │   ├── Built-in (calculate, search) → direct Go code
     │   ├── Filesystem (read/write/...) → wickfs.FileSystem
     │   ├── Native tools (FuncTool) → in-process Go function call
-    │   └── External (HTTP callback) → HTTP POST (legacy)
+    │   └── External (HTTP callback) → HTTP POST
     └── Loop continues until no more tool_calls or max iterations
     ↓
 done event → React → artifact detection → Canvas panel
@@ -373,7 +366,7 @@ The wick-daemon reduces per-command overhead from ~60ms (docker exec) to ~2ms (T
 
 1. **Go library, not subprocess** — `wick_server` is `package wickserver`, imported directly by `wick_go/main.go`. One binary, one process. No IPC, no HTTP callbacks for tools.
 
-2. **Native tools** — Custom tools are `agent.FuncTool` instances — Go functions called in-process. Zero serialization overhead vs the old Python HTTP callback approach.
+2. **Native tools** — Custom tools are `agent.FuncTool` instances — Go functions called in-process. Zero serialization overhead.
 
 3. **wickfs abstraction** — `LocalFS` uses direct stdlib calls (zero process spawning). `RemoteFS` delegates to the `wickfs` CLI via wick-daemon (fast path) or Docker exec (fallback). Same interface for both.
 
@@ -385,7 +378,7 @@ The wick-daemon reduces per-command overhead from ~60ms (docker exec) to ~2ms (T
 
 7. **TTL-based eviction** — Thread store evicts idle conversations after 1 hour, preventing unbounded memory growth.
 
-8. **Backward compat** — The standalone binary (`cmd/wick_server/`) and Python SDK still work for `agents.yaml`-based deployments.
+8. **Standalone binary** — `cmd/wick_server/` provides a standalone binary for `agents.yaml`-based deployments without writing Go code.
 
 9. **In-container daemon** — `wick-daemon` runs inside Docker containers, accepting commands via NDJSON over TCP. Eliminates `docker exec` spawning overhead (~60ms → ~2ms). Falls back transparently if daemon is unavailable.
 

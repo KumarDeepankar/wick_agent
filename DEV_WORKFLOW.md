@@ -61,7 +61,7 @@ No rebuild needed. Skills are loaded at runtime from the filesystem.
 
 ## Building the standalone server binary
 
-The `wick_deep_agent/server` can also be built as a standalone binary (backward compat):
+The `wick_deep_agent/server` can also be built as a standalone binary for `agents.yaml`-based deployments:
 
 ```bash
 cd wick_deep_agent/server
