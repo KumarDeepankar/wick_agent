@@ -240,13 +240,25 @@ Skills are discovered at runtime. The UI shows them as clickable cards.
 
 | Variable | Description |
 |----------|-------------|
-| `OPENAI_API_KEY` | OpenAI API key |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `TAVILY_API_KEY` | Web search (injected into `BuiltinConfig`) |
-| `OLLAMA_BASE_URL` | Ollama server URL (default: `http://localhost:11434`) |
-| `WICK_GATEWAY_URL` | Auth gateway for multi-user mode |
 | `PORT` | Server port (default: `8000`) |
 | `HOST` | Server bind address (default: `0.0.0.0`) |
+| `WICK_GATEWAY_URL` | Auth gateway for multi-user mode |
+
+API keys are **not** read from environment variables. They are configured directly in agent config:
+
+```go
+// LLM API keys — set in the Model spec
+Model: map[string]any{
+    "provider": "anthropic",
+    "model":    "claude-sonnet-4-20250514",
+    "api_key":  "sk-...",  // or omit to use provider's default env var client-side
+},
+
+// Web search key — set in BuiltinConfig
+BuiltinConfig: map[string]string{
+    "tavily_api_key": "tvly-...",
+},
+```
 
 ## Project Structure
 

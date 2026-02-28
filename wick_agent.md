@@ -193,12 +193,12 @@ Four middleware phases, executed in onion-ring order:
 
 | Hook | Phase(s) | What it does |
 |------|----------|--------------|
-| `FilesystemHook` | before_agent, wrap_tool_call | Registers 7 file tools, evicts large results |
-| `MemoryHook` | modify_request | Injects AGENTS.md contents into system prompt |
+| `FilesystemHook` | before_agent, wrap_tool_call | Registers 7 file tools, truncates large outputs (except file tools) |
+| `MemoryHook` | before_agent, modify_request | Reads AGENTS.md files, injects into system prompt |
 | `SkillsHook` | before_agent, modify_request | Loads SKILL.md files, adds skill catalog |
-| `TodolistHook` | before_agent, modify_request | Task tracking tools + state |
+| `TodolistHook` | before_agent | Registers `write_todos` tool for task tracking |
 | `SummarizationHook` | wrap_model_call | Token budget, summarizes old messages |
-| `TracingHook` | all 4 phases | Request tracing spans |
+| `TracingHook` | wrap_model_call, wrap_tool_call | Timed spans for LLM and tool calls |
 
 ---
 
@@ -288,9 +288,15 @@ Both "Local Docker" and "Remote Docker" create Docker containers — the differe
 | `/agents/{id}/container` | POST | Stop or restart Docker container |
 | `/agents/{id}/hooks` | PATCH | Toggle hooks |
 | `/agents/{id}/terminal` | WS | WebSocket interactive shell |
-| `/agents/{id}/files/*` | GET/PUT | File operations |
-| `/agents/tools/*` | GET/POST/DELETE | External tool registration |
+| `/agents/{id}/files/list` | GET | List directory contents (`?path=`) |
+| `/agents/{id}/files/read` | GET | Read file contents (`?path=`) |
+| `/agents/files/download` | GET | Download file (`?path=&agent_id=`) |
+| `/agents/files/upload` | PUT | Upload file (JSON body with `path`, `content`, `agent_id`) |
+| `/agents/tools/available` | GET | List registered tools |
+| `/agents/tools/register` | POST | Register external HTTP tool |
+| `/agents/tools/deregister/{name}` | DELETE | Remove external tool |
 | `/agents/skills/available` | GET | List available skills |
+| `/agents/hooks/available` | GET | List available hooks with phases |
 | `/agents/events` | GET (SSE) | Real-time config change events |
 
 ---

@@ -649,6 +649,7 @@ Converts tools into JSON Schema format. The LLM needs to know what tools are ava
 ```go
 type Hook interface {
     Name() string
+    Phases() []string   // which phases this hook participates in
     BeforeAgent(ctx context.Context, state *AgentState) error
     ModifyRequest(ctx context.Context, msgs []Message) ([]Message, error)
     WrapModelCall(ctx context.Context, msgs []Message, next ModelCallWrapFunc) (*llm.Response, error)
@@ -656,7 +657,7 @@ type Hook interface {
 }
 ```
 
-Four phases, each with a different purpose:
+`Phases()` returns which phases the hook is active in — the agent loop checks this before calling each method. Four phases, each with a different purpose:
 
 | Phase | When | Purpose |
 |-------|------|---------|
@@ -669,6 +670,13 @@ Four phases, each with a different purpose:
 
 ```go
 type BaseHook struct{}
+
+func (BaseHook) Name() string { return "base" }   // default name, overridden by each hook
+
+func (BaseHook) Phases() []string {
+    return []string{"before_agent", "modify_request", "wrap_model_call", "wrap_tool_call"}
+    // default: all phases active. Each hook overrides to list only its active phases.
+}
 
 func (BaseHook) BeforeAgent(ctx context.Context, state *AgentState) error {
     return nil                          // does nothing
@@ -739,14 +747,20 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 
 The tool code doesn't know or care which one — same interface.
 
-**WrapToolCall** — Truncates huge tool outputs:
+**WrapToolCall** — Truncates huge tool outputs (but excludes file tools whose output is already controlled):
 
 ```go
 func (h *FilesystemHook) WrapToolCall(ctx context.Context, call agent.ToolCall, next agent.ToolCallFunc) (*agent.ToolResult, error) {
     result, err := next(ctx, call)     // execute the tool FIRST (call next in chain)
 
+    // File tools are excluded — their output is already bounded
+    excluded := map[string]bool{
+        "ls": true, "glob": true, "grep": true,
+        "read_file": true, "edit_file": true, "write_file": true,
+    }
+
     const maxChars = 80_000    // ~20k tokens
-    if len(result.Output) > maxChars {
+    if len(result.Output) > maxChars && !excluded[call.Name] {
         head := result.Output[:2000]
         tail := result.Output[len(result.Output)-2000:]
         result.Output = head + "\n\n... [truncated] ...\n\n" + tail
@@ -755,7 +769,7 @@ func (h *FilesystemHook) WrapToolCall(ctx context.Context, call agent.ToolCall, 
 }
 ```
 
-Notice: `next(ctx, call)` runs the tool first, THEN the hook processes the result. Hooks can act BEFORE (modify input) or AFTER (modify output).
+Notice: `next(ctx, call)` runs the tool first, THEN the hook processes the result. Hooks can act BEFORE (modify input) or AFTER (modify output). The `excluded` map prevents double-truncation on file tools — only tools like `execute` get truncated.
 
 ### MemoryHook (`hooks/memory.go`)
 
@@ -787,7 +801,9 @@ func (h *MemoryHook) ModifyRequest(ctx context.Context, msgs []agent.Message) ([
 </agent_memory>
 Guidelines for agent memory:
 - This memory persists across conversations
-- You can update it by using edit_file on the AGENTS.md file`, h.memoryContent)
+- You can update it by using edit_file on the AGENTS.md file
+- Use it to track important context, decisions, and patterns
+- Keep entries concise and organized`, h.memoryContent)
 
     // Append to existing system message
     if len(msgs) > 0 && msgs[0].Role == "system" {
@@ -816,17 +832,32 @@ func (h *SkillsHook) BeforeAgent(ctx context.Context, state *agent.AgentState) e
         for _, mdPath := range strings.Split(result.Output, "\n") {
             readResult := h.backend.Execute(fmt.Sprintf("cat %s", mdPath))
 
-            // Parse YAML frontmatter:
+            entry := SkillEntry{Path: mdPath}
+
+            // Fallback: use parent directory name (e.g. "slides" from "skills/slides/SKILL.md")
+            parts := strings.Split(mdPath, "/")
+            if len(parts) >= 2 {
+                entry.Name = parts[len(parts)-2]
+            }
+
+            // Parse YAML frontmatter — overrides directory name if present:
             // ---
             // name: Slide Deck Creator
             // description: Create presentations
             // ---
             match := frontmatterRE.FindStringSubmatch(readResult.Output)
-            yaml.Unmarshal(match[1], &front)
+            if match != nil {
+                var front map[string]any
+                yaml.Unmarshal([]byte(match[1]), &front)
+                if name, ok := front["name"].(string); ok {
+                    entry.Name = name    // override fallback with explicit name
+                }
+                if desc, ok := front["description"].(string); ok {
+                    entry.Description = strings.TrimSpace(desc)
+                }
+            }
 
-            h.skills = append(h.skills, SkillEntry{
-                Name: front["name"], Description: front["description"], Path: mdPath,
-            })
+            h.skills = append(h.skills, entry)
         }
     }
 }
