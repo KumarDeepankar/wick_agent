@@ -1,4 +1,4 @@
-"""WickServer — lifecycle manager for the wick_go agent server.
+"""WickServer — lifecycle manager for the wick_server agent server.
 
     from wick_deep_agent import WickServer
 
@@ -40,16 +40,18 @@ from .model import ModelDef
 
 
 STATE_DIR = Path.home() / ".wick_deep_agent"
-DEFAULT_PID_FILE = STATE_DIR / "wick_go.pid"
-DEFAULT_LOG_FILE = STATE_DIR / "wick_go.log"
+DEFAULT_PID_FILE = STATE_DIR / "wick_server.pid"
+DEFAULT_LOG_FILE = STATE_DIR / "wick_server.log"
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
-_BIN_NAME = "wick_go.exe" if sys.platform == "win32" else "wick_go"
+_BIN_NAME = "wick_server.exe" if sys.platform == "win32" else "wick_server"
+_WICKFS_NAME = "wickfs.exe" if sys.platform == "win32" else "wickfs"
 _BUNDLED_BINARY = _PACKAGE_DIR / "bin" / _BIN_NAME
+_BUNDLED_WICKFS = _PACKAGE_DIR / "bin" / _WICKFS_NAME
 
 
 class WickServer:
-    """Manages the wick_go server process.
+    """Manages the wick_server process.
 
     The Go binary starts with zero agents. All agent configuration is
     registered via the REST API after startup (``register_agents()``).
@@ -85,20 +87,47 @@ class WickServer:
     def _resolve_binary(explicit: str | None) -> str:
         if explicit:
             return explicit
-        from_env = os.environ.get("WICK_GO_BINARY")
+        from_env = os.environ.get("WICK_SERVER_BINARY")
         if from_env:
             return from_env
-        # Bundled binary (pip install)
-        if _BUNDLED_BINARY.exists() and os.access(str(_BUNDLED_BINARY), os.X_OK):
-            return str(_BUNDLED_BINARY)
-        # Dev mode — adjacent server/ dir
+        # Dev mode — adjacent server/ dir (checked FIRST so `go build`
+        # in server/ is all you need during development — no copy step).
         dev_binary = _PACKAGE_DIR.parent / "server" / _BIN_NAME
         if dev_binary.exists():
             return str(dev_binary)
+        # Bundled binary (pip install / wheel)
+        if _BUNDLED_BINARY.exists() and os.access(str(_BUNDLED_BINARY), os.X_OK):
+            return str(_BUNDLED_BINARY)
         raise FileNotFoundError(
-            "wick_go binary not found. Install a platform wheel, "
-            "set WICK_GO_BINARY, or pass binary= explicitly."
+            "wick_server binary not found. Install a platform wheel, "
+            "set WICK_SERVER_BINARY, or pass binary= explicitly."
         )
+
+    @staticmethod
+    def _resolve_wickfs() -> str | None:
+        """Find the wickfs binary for Docker container injection.
+
+        Note: In local mode, wickfs binary is NOT needed — the Go server
+        uses wickfs.LocalFS (direct stdlib calls). This is only needed
+        for remote/Docker mode to inject into containers.
+        """
+        from_env = os.environ.get("WICKFS_BIN")
+        if from_env and Path(from_env).exists():
+            return from_env
+        # Dev mode — adjacent server/bin/ or server/ dir (checked first)
+        for suffix in ("bin" + os.sep + _WICKFS_NAME, _WICKFS_NAME):
+            dev = _PACKAGE_DIR.parent / "server" / suffix
+            if dev.exists():
+                return str(dev)
+        # Bundled (pip install)
+        if _BUNDLED_WICKFS.exists() and os.access(str(_BUNDLED_WICKFS), os.X_OK):
+            return str(_BUNDLED_WICKFS)
+        # Next to the bundled wick_server binary
+        if _BUNDLED_BINARY.exists():
+            candidate = _BUNDLED_BINARY.parent / _WICKFS_NAME
+            if candidate.exists():
+                return str(candidate)
+        return None
 
     @staticmethod
     def _resolve_model_spec(model: Any) -> Any:
@@ -215,6 +244,10 @@ class WickServer:
         env = os.environ.copy()
         env["PORT"] = str(self.port)
         env["HOST"] = self.host
+        # Pass wickfs location so Go server can find it in local mode
+        wickfs_bin = self._resolve_wickfs()
+        if wickfs_bin:
+            env["WICKFS_BIN"] = wickfs_bin
         env.update(self.extra_env)
 
         self._log_fh = open(self.log_path, "a")  # noqa: SIM115

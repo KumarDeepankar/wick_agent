@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"wick_go/agent"
-	"wick_go/llm"
+	"wick_server/agent"
+	"wick_server/llm"
 )
 
 // SummarizationHook compresses conversation context when it exceeds 85% of

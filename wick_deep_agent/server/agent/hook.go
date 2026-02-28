@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 
-	"wick_go/llm"
+	"wick_server/llm"
 )
 
 // ModelCallWrapFunc is the signature for the "next" function in the model call chain.

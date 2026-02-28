@@ -1,4 +1,4 @@
-module wick_go
+module wick_server
 
 go 1.24.0
 

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"wick_go/llm"
+	"wick_server/llm"
 )
 
 // MaxIterations is the maximum number of LLM-tool loop iterations.

@@ -18,7 +18,7 @@ from .launcher import DEFAULT_LOG_FILE, DEFAULT_PID_FILE, WickServer
 
 
 def cmd_build(args: argparse.Namespace) -> None:
-    print("Building wick_go...")
+    print("Building wick_server...")
     WickServer.build(source_dir=args.source)
     print("  build OK")
 
@@ -29,7 +29,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     if not srv.wait_ready():
         print(f"WARN: server started (pid={pid}) but /health not responding", file=sys.stderr)
         sys.exit(1)
-    print(f"wick_go running (pid={pid}, port={args.port})")
+    print(f"wick_server running (pid={pid}, port={args.port})")
 
 
 def cmd_stop(_args: argparse.Namespace) -> None:
@@ -93,7 +93,7 @@ def cmd_logs(args: argparse.Namespace) -> None:
 
 
 def cmd_systemd(args: argparse.Namespace) -> None:
-    binary = args.binary or "wick_go"
+    binary = args.binary or "wick_server"
     config = args.config or "/etc/wick/agents.yaml"
     port = args.port
 
@@ -118,7 +118,7 @@ WantedBy=multi-user.target
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="wick-agent",
-        description="Manage the wick_go agent server",
+        description="Manage the wick_server agent server",
     )
     sub = parser.add_subparsers(dest="command")
 

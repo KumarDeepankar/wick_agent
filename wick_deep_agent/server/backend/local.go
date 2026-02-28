@@ -9,16 +9,17 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"wick_server/wickfs"
 )
 
 // LocalBackend executes commands directly on the host machine via sh -c.
-// Requires wickfs to be installed on the host for filesystem tool operations.
-// Useful for local development without Docker.
+// Filesystem tool operations use wickfs.LocalFS (direct Go stdlib calls).
 type LocalBackend struct {
 	workdir        string
 	timeout        time.Duration
 	maxOutputBytes int
-	wickfsBinDir   string // directory containing wickfs binary, prepended to PATH
+	fs             *wickfs.LocalFS
 }
 
 // NewLocalBackend creates a local backend that operates on the host filesystem.
@@ -46,49 +47,12 @@ func NewLocalBackend(workdir string, timeout float64, maxOutputBytes int) *Local
 	// Ensure workdir exists
 	os.MkdirAll(workdir, 0755)
 
-	// Find wickfs binary directory so we can add it to PATH
-	wickfsBinDir := ""
-	if bin := findHostWickfs(); bin != "" {
-		wickfsBinDir = filepath.Dir(bin)
-	}
-
 	return &LocalBackend{
 		workdir:        workdir,
 		timeout:        time.Duration(timeout) * time.Second,
 		maxOutputBytes: maxOutputBytes,
-		wickfsBinDir:   wickfsBinDir,
+		fs:             wickfs.NewLocalFS(),
 	}
-}
-
-// findHostWickfs locates the wickfs binary on the host.
-// Search order: WICKFS_BIN env → next to executable → ./bin/wickfs → PATH lookup.
-func findHostWickfs() string {
-	if v := os.Getenv("WICKFS_BIN"); v != "" {
-		if _, err := os.Stat(v); err == nil {
-			return v
-		}
-	}
-
-	// Next to the server executable
-	if ex, err := os.Executable(); err == nil {
-		candidate := filepath.Join(filepath.Dir(ex), "wickfs")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-	}
-
-	// ./bin/wickfs (relative to CWD)
-	if _, err := os.Stat("bin/wickfs"); err == nil {
-		abs, _ := filepath.Abs("bin/wickfs")
-		return abs
-	}
-
-	// Try PATH
-	if p, err := exec.LookPath("wickfs"); err == nil {
-		return p
-	}
-
-	return ""
 }
 
 func (b *LocalBackend) ID() string      { return "local" }
@@ -102,19 +66,14 @@ func (b *LocalBackend) TerminalCmd() []string {
 	return []string{"sh"}
 }
 
-// ContainerStatus always returns "launched" — no container to manage.
-func (b *LocalBackend) ContainerStatus() string { return "launched" }
+// ContainerStatus returns "" — local backend has no container.
+func (b *LocalBackend) ContainerStatus() string { return "" }
 
 // ContainerError always returns "" — no container to fail.
 func (b *LocalBackend) ContainerError() string { return "" }
 
-// setupCmd configures a command with workdir and PATH including wickfs.
-func (b *LocalBackend) setupCmd(cmd *exec.Cmd) {
-	cmd.Dir = b.workdir
-	if b.wickfsBinDir != "" {
-		cmd.Env = append(os.Environ(), "PATH="+b.wickfsBinDir+":"+os.Getenv("PATH"))
-	}
-}
+// FS returns the local wickfs FileSystem (direct stdlib calls, zero overhead).
+func (b *LocalBackend) FS() wickfs.FileSystem { return b.fs }
 
 // Execute runs a command on the host via sh -c.
 func (b *LocalBackend) Execute(command string) ExecuteResponse {
@@ -129,7 +88,7 @@ func (b *LocalBackend) Execute(command string) ExecuteResponse {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	b.setupCmd(cmd)
+	cmd.Dir = b.workdir
 
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
@@ -153,7 +112,7 @@ func (b *LocalBackend) ExecuteWithStdin(command string, stdin io.Reader) Execute
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	b.setupCmd(cmd)
+	cmd.Dir = b.workdir
 	cmd.Stdin = stdin
 
 	var stdout, stderr strings.Builder

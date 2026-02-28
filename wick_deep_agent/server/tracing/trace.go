@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"wick_go/agent"
+	"wick_server/agent"
 )
 
 // Span represents a single timed operation within a trace.

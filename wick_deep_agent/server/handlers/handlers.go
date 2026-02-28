@@ -14,12 +14,12 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"wick_go/agent"
-	"wick_go/backend"
-	"wick_go/hooks"
-	"wick_go/llm"
-	"wick_go/sse"
-	"wick_go/tracing"
+	"wick_server/agent"
+	"wick_server/backend"
+	"wick_server/hooks"
+	"wick_server/llm"
+	"wick_server/sse"
+	"wick_server/tracing"
 )
 
 // Config holds handler-level configuration.
@@ -168,6 +168,8 @@ func RegisterRoutes(mux *http.ServeMux, deps *Deps) {
 			h.patchHooks(w, r, agentID)
 		case "backend":
 			h.patchBackend(w, r, agentID)
+		case "container":
+			h.containerControl(w, r, agentID)
 		case "terminal":
 			h.terminal(w, r, agentID)
 		case "files/list":
@@ -297,19 +299,7 @@ func (h *agentHandler) createAgent(w http.ResponseWriter, r *http.Request) {
 
 	// Eagerly initialize backend so container_status is available immediately
 	if cfg.Backend != nil && h.deps.Backends.Get(req.AgentID, username) == nil {
-		containerName := cfg.Backend.ContainerName
-		if containerName == "" {
-			containerName = fmt.Sprintf("wick-sandbox-%s", username)
-		}
-		db := backend.NewDockerBackend(
-			containerName, cfg.Backend.Workdir,
-			cfg.Backend.Timeout, cfg.Backend.MaxOutputBytes,
-			cfg.Backend.DockerHost, cfg.Backend.Image, username,
-		)
-		db.LaunchContainerAsync(func(event, user string) {
-			h.deps.EventBus.Broadcast(event + ":" + user)
-		})
-		var b backend.Backend = db
+		b := h.createBackend(cfg.Backend, username)
 		if b != nil {
 			h.deps.Backends.Set(req.AgentID, username, b)
 		}
@@ -903,7 +893,13 @@ func (h *agentHandler) patchBackend(w http.ResponseWriter, r *http.Request, agen
 		return
 	}
 
-	// Clean up old backend
+	// Clean up old backend — stop container if it was a Docker backend.
+	if oldB := h.deps.Backends.Get(agentID, username); oldB != nil {
+		if cm, ok := oldB.(backend.ContainerManager); ok {
+			cm.CancelLaunch()
+			cm.StopContainer()
+		}
+	}
 	h.deps.Backends.Remove(agentID, username)
 
 	var b backend.Backend
@@ -936,12 +932,13 @@ func (h *agentHandler) patchBackend(w http.ResponseWriter, r *http.Request, agen
 
 	switch body.Mode {
 	case "local":
-		lb := backend.NewLocalBackend(defaultWorkdir, defaultTimeout, defaultMaxOutput)
-		b = lb
-		inst.Config.Backend = &agent.BackendCfg{Type: "local", Workdir: lb.Workdir()}
-		containerStatus = "launched" // always ready
+		// True local mode — no Docker at all, direct Go stdlib calls.
+		b = backend.NewLocalBackend(defaultWorkdir, defaultTimeout, defaultMaxOutput)
+		inst.Config.Backend = &agent.BackendCfg{Type: "local", Workdir: defaultWorkdir}
+		// No container status — local backend runs on the host directly.
 
 	case "remote":
+		// Remote mode — Docker container (local or remote daemon).
 		dockerHost := ""
 		if body.SandboxURL != nil {
 			dockerHost = *body.SandboxURL
@@ -979,6 +976,73 @@ func (h *agentHandler) patchBackend(w http.ResponseWriter, r *http.Request, agen
 	writeJSON(w, http.StatusOK, result)
 }
 
+// --- Container Control (stop / restart) ---
+
+func (h *agentHandler) containerControl(w http.ResponseWriter, r *http.Request, agentID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		Action string `json:"action"` // "stop" or "restart"
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	username := h.resolveUsername(r)
+	b := h.deps.Backends.Get(agentID, username)
+	if b == nil {
+		writeJSONError(w, http.StatusNotFound, "no backend for this agent")
+		return
+	}
+
+	db, ok := b.(*backend.DockerBackend)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "container control only available for Docker backends")
+		return
+	}
+
+	switch body.Action {
+	case "stop":
+		db.CancelLaunch()
+		db.StopContainer()
+
+		status := db.ContainerStatus()
+		result := map[string]any{
+			"agent_id":         agentID,
+			"action":           "stop",
+			"container_status": nilIfEmpty(status),
+		}
+		writeJSON(w, http.StatusOK, result)
+
+		// Notify UI
+		h.deps.EventBus.Broadcast("container_status:" + username)
+
+	case "restart":
+		// Stop first
+		db.CancelLaunch()
+		db.StopContainer()
+
+		// Re-launch
+		db.LaunchContainerAsync(func(event, user string) {
+			h.deps.EventBus.Broadcast(event + ":" + user)
+		})
+
+		result := map[string]any{
+			"agent_id":         agentID,
+			"action":           "restart",
+			"container_status": "launching",
+		}
+		writeJSON(w, http.StatusOK, result)
+
+	default:
+		writeJSONError(w, http.StatusBadRequest, "action must be 'stop' or 'restart'")
+	}
+}
+
 // --- Terminal WebSocket ---
 
 var wsUpgrader = websocket.Upgrader{
@@ -993,8 +1057,10 @@ func (h *agentHandler) terminal(w http.ResponseWriter, r *http.Request, agentID 
 		return
 	}
 
-	if b.ContainerStatus() != "launched" {
-		http.Error(w, "container not launched", http.StatusBadRequest)
+	// For Docker backends, ensure the container is running.
+	// Local backends don't have containers but still support terminal.
+	if s := b.ContainerStatus(); s != "" && s != "launched" {
+		http.Error(w, "container not launched (status: "+s+")", http.StatusBadRequest)
 		return
 	}
 
@@ -1085,24 +1151,10 @@ func (h *agentHandler) listFiles(w http.ResponseWriter, r *http.Request, agentID
 		return
 	}
 
-	cmd := backend.LsCommand(resolved)
-	result := b.Execute(cmd)
-
-	resp, parseErr := backend.ParseWickfsResponse(result.Output)
-	if parseErr != nil || !resp.OK {
-		errMsg := "failed to list files"
-		if parseErr != nil {
-			errMsg = parseErr.Error()
-		} else {
-			errMsg = resp.Error
-		}
-		writeJSONError(w, http.StatusInternalServerError, errMsg)
+	entries, fsErr := b.FS().Ls(r.Context(), resolved)
+	if fsErr != nil {
+		writeJSONError(w, http.StatusInternalServerError, fsErr.Error())
 		return
-	}
-
-	var entries []map[string]any
-	if err := json.Unmarshal(resp.Data, &entries); err != nil {
-		entries = []map[string]any{}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"path": resolved, "entries": entries})
@@ -1124,17 +1176,12 @@ func (h *agentHandler) readFile(w http.ResponseWriter, r *http.Request, agentID 
 		return
 	}
 
-	cmd := backend.ReadFileCommand(resolved)
-	result := b.Execute(cmd)
-
-	resp, parseErr := backend.ParseWickfsResponse(result.Output)
-	if parseErr != nil || !resp.OK {
+	content, fsErr := b.FS().ReadFile(r.Context(), resolved)
+	if fsErr != nil {
 		writeJSONError(w, http.StatusNotFound, "file not found: "+resolved)
 		return
 	}
 
-	var content string
-	json.Unmarshal(resp.Data, &content)
 	writeJSON(w, http.StatusOK, map[string]any{"path": resolved, "content": content})
 }
 
@@ -1608,6 +1655,28 @@ func getConfigPaths(hookConfig map[string]any, name string) []string {
 
 // --- Agent builder ---
 
+// createBackend creates the appropriate backend (local or docker) based on config.
+func (h *agentHandler) createBackend(cfg *agent.BackendCfg, username string) backend.Backend {
+	if cfg.Type == "local" {
+		return backend.NewLocalBackend(cfg.Workdir, cfg.Timeout, cfg.MaxOutputBytes)
+	}
+
+	// Default: Docker backend
+	containerName := cfg.ContainerName
+	if containerName == "" {
+		containerName = fmt.Sprintf("wick-sandbox-%s", username)
+	}
+	db := backend.NewDockerBackend(
+		containerName, cfg.Workdir,
+		cfg.Timeout, cfg.MaxOutputBytes,
+		cfg.DockerHost, cfg.Image, username,
+	)
+	db.LaunchContainerAsync(func(event, user string) {
+		h.deps.EventBus.Broadcast(event + ":" + user)
+	})
+	return db
+}
+
 func (h *agentHandler) buildAgent(inst *agent.Instance, username string) (*agent.Agent, error) {
 	if inst.Agent != nil {
 		return inst.Agent, nil
@@ -1624,15 +1693,7 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) (*agent
 	// Resolve backend
 	b := h.deps.Backends.Get(inst.AgentID, username)
 	if b == nil && cfg.Backend != nil {
-		containerName := cfg.Backend.ContainerName
-		if containerName == "" {
-			containerName = fmt.Sprintf("wick-sandbox-%s", username)
-		}
-		b = backend.NewDockerBackend(
-			containerName, cfg.Backend.Workdir,
-			cfg.Backend.Timeout, cfg.Backend.MaxOutputBytes,
-			cfg.Backend.DockerHost, cfg.Backend.Image, username,
-		)
+		b = h.createBackend(cfg.Backend, username)
 		if b != nil {
 			h.deps.Backends.Set(inst.AgentID, username, b)
 		}
@@ -1676,7 +1737,7 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) (*agent
 
 	// Build tools (built-in tools from agent config)
 	var tools []agent.Tool
-	tools = append(tools, newBuiltinTools(cfg)...)
+	tools = append(tools, NewBuiltinTools(cfg)...)
 
 	// Append externally registered tools (HTTP callback tools)
 	if h.deps.ExternalTools != nil {

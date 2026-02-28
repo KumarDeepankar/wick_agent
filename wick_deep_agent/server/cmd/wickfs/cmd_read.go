@@ -1,9 +1,8 @@
 package main
 
 import (
-	"encoding/base64"
-	"os"
-	"unicode/utf8"
+	"context"
+	"wick_server/wickfs"
 )
 
 func cmdRead(args []string) {
@@ -12,16 +11,11 @@ func cmdRead(args []string) {
 		return
 	}
 
-	data, err := os.ReadFile(args[0])
+	fs := wickfs.NewLocalFS()
+	content, err := fs.ReadFile(context.Background(), args[0])
 	if err != nil {
 		writeError(err.Error())
 		return
 	}
-
-	// If valid UTF-8, return as string; otherwise base64-encode
-	if utf8.Valid(data) {
-		writeOK(string(data))
-	} else {
-		writeOK("base64:" + base64.StdEncoding.EncodeToString(data))
-	}
+	writeOK(content)
 }
