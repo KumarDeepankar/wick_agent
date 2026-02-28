@@ -114,6 +114,7 @@ wick_agent/
 ├── DEV_WORKFLOW.md
 ├── GO_BASICS.md                    # Go language fundamentals (pointers, slices, maps, goroutines)
 ├── GO_CODE_GUIDE.md                # Go beginner's guide to the codebase
+├── MESSAGES.md                     # Message data model (structs, chain builder, validation, agent loop flow)
 ├── WICKFS.md                       # wickfs filesystem abstraction (LocalFS, RemoteFS, CLI, backend integration)
 ├── HOOKS.md                        # Hooks middleware system (all 6 hooks, data structures, onion ring, agent loop)
 └── wick_agent.md                   # This file
