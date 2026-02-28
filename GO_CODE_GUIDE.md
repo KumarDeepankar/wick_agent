@@ -20,6 +20,25 @@ A beginner-friendly walkthrough of the wick_server codebase for developers new t
 
 **`*` and `&`** — Pointers. `&x` = "address of x", `*ptr` = "value at address". Used to avoid copying large structs and to allow mutations.
 
+**`ctx context.Context`** — A "bag of metadata" passed through every function call. It carries two things: **cancellation signals** (e.g. user closed browser → cancel all in-progress work) and **deadlines/timeouts**. Almost every function in the codebase takes `ctx` as its first parameter — this is a Go convention, not unique to this project.
+
+```go
+// How it's used in this codebase:
+func (f *FuncTool) Execute(ctx context.Context, args map[string]any) (string, error)
+func (h *MemoryHook) BeforeAgent(ctx context.Context, state *AgentState) error
+func (a *Agent) Run(ctx context.Context, messages []Message, threadID string) (*AgentState, error)
+
+// Checking if the request was cancelled:
+select {
+case <-ctx.Done():       // channel closes when cancelled
+    return ctx.Err()     // returns "context canceled" or "context deadline exceeded"
+default:
+    // not cancelled, keep going
+}
+```
+
+Python equivalent: imagine every function receives a `cancelled: threading.Event` parameter that gets set when the HTTP request disconnects. `ctx` is that, but standardized across the entire Go ecosystem.
+
 ### Quick Syntax Cheat Sheet
 
 | Go | Python equivalent |
