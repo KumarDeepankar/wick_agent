@@ -47,13 +47,15 @@ wick_agent/
 │   │   ├── auth.go                 # Bearer token auth middleware
 │   │   ├── go.mod                  # Module: wick_server (go 1.24)
 │   │   ├── agent/                  # Core runtime
-│   │   │   ├── types.go            # Message, ToolCall, AgentState, AgentConfig
-│   │   │   ├── hook.go             # Hook interface (4 phases)
-│   │   │   ├── tool.go             # Tool interface + FuncTool + registry
-│   │   │   ├── loop.go             # Agent loop (LLM ↔ tool iteration)
-│   │   │   ├── registry.go         # Template registry + per-user cloning
+│   │   │   ├── types.go            # Message, ToolCall, AgentState, AgentConfig, StreamEvent
+│   │   │   ├── messages.go         # Messages chain, role constants, ValidRole/Validate, builders, token estimation
+│   │   │   ├── hook.go             # Hook interface (4 phases) + BaseHook
+│   │   │   ├── tool.go             # Tool interface + FuncTool + ToolRegistry + RegisterToolOnState()
+│   │   │   ├── loop.go             # Agent loop (LLM ↔ tool iteration, max 25 turns)
+│   │   │   ├── registry.go         # Template registry + per-user cloning + HookOverrides
 │   │   │   ├── thread.go           # In-memory thread store with TTL eviction
-│   │   │   └── http_tool.go        # HTTP callback tool wrapper
+│   │   │   ├── http_tool.go        # HTTP callback tool wrapper
+│   │   │   └── trace_iface.go      # TraceRecorder / SpanHandle interfaces + context helpers
 │   │   ├── llm/                    # LLM clients
 │   │   │   ├── client.go           # Client interface (Call, Stream)
 │   │   │   ├── openai.go           # OpenAI / Ollama / vLLM
@@ -75,11 +77,15 @@ wick_agent/
 │   │   │   ├── todolist.go         # Task tracking
 │   │   │   └── summarization.go    # Context window management
 │   │   ├── handlers/               # HTTP endpoints
-│   │   │   ├── handlers.go         # All /agents/* routes
+│   │   │   ├── handlers.go         # All /agents/* routes, hook registration/composition
+│   │   │   ├── events.go           # EventBus — SSE event fan-out to connected clients
+│   │   │   ├── backends.go         # BackendStore — per-user backend lifecycle (create/get/stop/restart)
 │   │   │   ├── builtin_tools.go    # NewBuiltinTools (search, calc, datetime)
 │   │   │   └── tool_store.go       # ToolStore (HTTP + native tools)
 │   │   ├── sse/writer.go           # SSE event writer
 │   │   ├── tracing/                # Request tracing
+│   │   │   ├── hook.go             # TracingHook — timed spans for LLM and tool calls
+│   │   │   └── trace.go            # Concrete TraceRecorder / SpanHandle implementation
 │   │   └── cmd/
 │   │       ├── wick_server/main.go # Standalone binary entry point
 │   │       ├── wickfs/             # Filesystem CLI (for Docker injection)
@@ -108,6 +114,8 @@ wick_agent/
 ├── DEV_WORKFLOW.md
 ├── GO_BASICS.md                    # Go language fundamentals (pointers, slices, maps, goroutines)
 ├── GO_CODE_GUIDE.md                # Go beginner's guide to the codebase
+├── WICKFS.md                       # wickfs filesystem abstraction (LocalFS, RemoteFS, CLI, backend integration)
+├── HOOKS.md                        # Hooks middleware system (all 6 hooks, data structures, onion ring, agent loop)
 └── wick_agent.md                   # This file
 ```
 
