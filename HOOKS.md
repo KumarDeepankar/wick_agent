@@ -54,6 +54,450 @@ type Hook interface {
 
 **BaseHook** provides no-op defaults for all methods. Implementations embed it and override only the phases they need.
 
+### Function Signatures
+
+```go
+// The "next" function a model-call wrapper receives. Call it to pass through.
+type ModelCallWrapFunc func(ctx context.Context, msgs []Message) (*llm.Response, error)
+
+// The "next" function a tool-call wrapper receives. Call it to execute the tool.
+type ToolCallFunc func(ctx context.Context, call ToolCall) (*ToolResult, error)
+```
+
+---
+
+## Core Data Structures
+
+These are the types that flow through hooks. Understanding them is essential.
+
+### Message (`agent/types.go`)
+
+Every message in the conversation — system prompts, user inputs, assistant replies, and tool results.
+
+```go
+type Message struct {
+    Role       string     `json:"role"`                  // "system", "user", "assistant", "tool"
+    Content    string     `json:"content"`
+    ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // set when Role == "assistant" and LLM wants to call tools
+    ToolCallID string     `json:"tool_call_id,omitempty"` // set when Role == "tool" (matches ToolCall.ID)
+    Name       string     `json:"name,omitempty"`         // tool name when Role == "tool"
+}
+```
+
+**Sample — a 4-message conversation:**
+
+```json
+[
+  {
+    "role": "system",
+    "content": "You are a coding assistant.\n\n<agent_memory>\n# Project notes\n- Using FastAPI\n</agent_memory>"
+  },
+  {
+    "role": "user",
+    "content": "Read the main.py file"
+  },
+  {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+      {
+        "id": "call_abc123",
+        "name": "read_file",
+        "args": {"path": "/workspace/main.py"}
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "content": "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/')\ndef root():\n    return {'status': 'ok'}",
+    "tool_call_id": "call_abc123",
+    "name": "read_file"
+  }
+]
+```
+
+**Role constants:**
+
+```go
+const (
+    RoleSystem    = "system"
+    RoleUser      = "user"
+    RoleAssistant = "assistant"
+    RoleTool      = "tool"
+)
+```
+
+**Builder helpers** — used in hooks and tests to construct messages:
+
+```go
+agent.System("You are a coding assistant.")
+agent.Human("Read the main.py file")
+agent.AI("", agent.ToolCall{ID: "call_abc123", Name: "read_file", Args: map[string]any{"path": "/workspace/main.py"}})
+agent.ToolMsg("call_abc123", "read_file", "file content here...")
+```
+
+### ToolCall (`agent/types.go`)
+
+The LLM's request to invoke a tool. Attached to assistant messages.
+
+```go
+type ToolCall struct {
+    ID      string         `json:"id"`
+    Name    string         `json:"name"`
+    Args    map[string]any `json:"args"`
+    RawArgs string         `json:"-"` // raw JSON string from LLM, not serialized
+}
+```
+
+**Sample — LLM asks to edit a file:**
+
+```json
+{
+  "id": "call_xyz789",
+  "name": "edit_file",
+  "args": {
+    "path": "/workspace/main.py",
+    "old_text": "return {'status': 'ok'}",
+    "new_text": "return {'status': 'ok', 'version': '1.0'}"
+  }
+}
+```
+
+### ToolResult (`agent/types.go`)
+
+The output of executing a tool. Becomes a `"tool"` role message.
+
+```go
+type ToolResult struct {
+    ToolCallID string `json:"tool_call_id"`
+    Name       string `json:"name"`
+    Output     string `json:"output"`
+    Error      string `json:"error,omitempty"` // set only on failure
+}
+```
+
+**Sample — successful grep:**
+
+```json
+{
+  "tool_call_id": "call_grep01",
+  "name": "grep",
+  "output": "{\"matches\":[{\"file\":\"/workspace/main.py\",\"line\":4,\"text\":\"def root():\"}],\"truncated\":false}"
+}
+```
+
+**Sample — failed edit:**
+
+```json
+{
+  "tool_call_id": "call_edit01",
+  "name": "edit_file",
+  "output": "",
+  "error": "old_text not found in file"
+}
+```
+
+### AgentState (`agent/types.go`)
+
+The full conversation state for a thread. Persisted to thread store between requests.
+
+```go
+type AgentState struct {
+    ThreadID     string            `json:"thread_id"`
+    Messages     []Message         `json:"messages"`
+    Todos        []Todo            `json:"todos,omitempty"`
+    Files        map[string]string `json:"files,omitempty"` // path → content of files written by agent
+    toolRegistry map[string]Tool   `json:"-"`               // not serialized — rebuilt each run by BeforeAgent hooks
+}
+```
+
+**Sample — mid-conversation state:**
+
+```json
+{
+  "thread_id": "th_8f3a2b",
+  "messages": [
+    {"role": "system", "content": "You are a coding assistant."},
+    {"role": "user", "content": "Create a hello.py file"},
+    {"role": "assistant", "content": "", "tool_calls": [
+      {"id": "call_w01", "name": "write_file", "args": {"path": "/workspace/hello.py", "content": "print('hello')"}}
+    ]},
+    {"role": "tool", "content": "{\"path\":\"/workspace/hello.py\",\"bytes_written\":14}", "tool_call_id": "call_w01", "name": "write_file"},
+    {"role": "assistant", "content": "Created hello.py with a simple print statement."}
+  ],
+  "todos": [
+    {"id": "1", "title": "Create hello.py", "status": "done"},
+    {"id": "2", "title": "Add unit tests", "status": "pending"}
+  ],
+  "files": {
+    "/workspace/hello.py": "print('hello')"
+  }
+}
+```
+
+**Key points:**
+- `toolRegistry` is `json:"-"` — rebuilt from scratch each run by `BeforeAgent` hooks (FilesystemHook adds 7 tools, TodoListHook adds 1)
+- `Files` tracks every file the agent wrote or edited — hooks update this in `WrapToolCall`
+- `Todos` is the full todo list, replaced wholesale by the `write_todos` tool
+
+### Todo (`agent/types.go`)
+
+A single task item managed by the TodoListHook.
+
+```go
+type Todo struct {
+    ID     string `json:"id"`
+    Title  string `json:"title"`
+    Status string `json:"status"` // "pending", "in_progress", "done"
+}
+```
+
+### Tool Interface (`agent/tool.go`)
+
+Every tool (filesystem, todos, HTTP callbacks, custom) implements this interface.
+
+```go
+type Tool interface {
+    Name() string
+    Description() string
+    Parameters() map[string]any // JSON Schema object
+    Execute(ctx context.Context, args map[string]any) (string, error)
+}
+```
+
+**FuncTool** — wraps a plain Go function as a Tool (used by hooks):
+
+```go
+type FuncTool struct {
+    ToolName   string
+    ToolDesc   string
+    ToolParams map[string]any
+    Fn         func(ctx context.Context, args map[string]any) (string, error)
+}
+```
+
+**Sample — how FilesystemHook registers the `ls` tool internally:**
+
+```go
+agent.RegisterToolOnState(state, &agent.FuncTool{
+    ToolName: "ls",
+    ToolDesc: "List files and directories at the given path",
+    ToolParams: map[string]any{
+        "type": "object",
+        "properties": map[string]any{
+            "path": map[string]any{
+                "type":        "string",
+                "description": "Directory path to list",
+            },
+        },
+        "required": []string{"path"},
+    },
+    Fn: func(ctx context.Context, args map[string]any) (string, error) {
+        path := args["path"].(string)
+        entries, err := fs.Ls(ctx, path)
+        // ... marshal to JSON and return
+    },
+})
+```
+
+### LLM Types (`llm/client.go`)
+
+The LLM client interface and request/response types that hooks interact with.
+
+```go
+type Client interface {
+    Call(ctx context.Context, req Request) (*Response, error)
+    Stream(ctx context.Context, req Request, ch chan<- StreamChunk) error
+}
+
+type Request struct {
+    Model        string       `json:"model"`
+    Messages     []Message    `json:"messages"`
+    Tools        []ToolSchema `json:"tools,omitempty"`
+    SystemPrompt string       `json:"system_prompt,omitempty"`
+    MaxTokens    int          `json:"max_tokens,omitempty"`
+    Temperature  *float64     `json:"temperature,omitempty"`
+}
+
+type Response struct {
+    Content   string           `json:"content"`
+    ToolCalls []ToolCallResult `json:"tool_calls,omitempty"`
+}
+
+type ToolSchema struct {
+    Name        string         `json:"name"`
+    Description string         `json:"description"`
+    Parameters  map[string]any `json:"parameters"` // JSON Schema
+}
+
+type ToolCallResult struct {
+    ID   string         `json:"id"`
+    Name string         `json:"name"`
+    Args map[string]any `json:"arguments"` // note: "arguments" not "args"
+}
+```
+
+**Note:** `llm.ToolCallResult.Args` uses the JSON key `"arguments"` (OpenAI convention), while `agent.ToolCall.Args` uses `"args"` (internal convention). The agent loop maps between them.
+
+### StreamEvent (`agent/types.go`)
+
+Events emitted from the agent loop to the SSE handler during streaming.
+
+```go
+type StreamEvent struct {
+    Event    string `json:"event"`              // "on_chat_model_stream", "on_tool_start", "on_tool_end", "done", "error"
+    Name     string `json:"name,omitempty"`     // tool name or model name
+    RunID    string `json:"run_id,omitempty"`
+    Data     any    `json:"data,omitempty"`
+    ThreadID string `json:"thread_id,omitempty"` // set on "done" event
+}
+```
+
+**Sample — events emitted during one tool-call cycle:**
+
+```json
+{"event": "on_chat_model_stream", "data": {"delta": "Let me read"}}
+{"event": "on_chat_model_stream", "data": {"delta": " that file."}}
+{"event": "on_tool_start", "name": "read_file", "data": {"args": {"path": "/workspace/main.py"}}}
+{"event": "on_tool_end",   "name": "read_file", "data": {"output": "from fastapi import FastAPI\n..."}}
+{"event": "on_chat_model_stream", "data": {"delta": "The file contains a FastAPI app."}}
+{"event": "done", "thread_id": "th_8f3a2b"}
+```
+
+### SkillEntry (`hooks/skills.go`)
+
+A discovered skill from SKILL.md frontmatter.
+
+```go
+type SkillEntry struct {
+    Name        string // from YAML frontmatter "name" field
+    Description string // from YAML frontmatter "description" field
+    Path        string // full path to SKILL.md file
+}
+```
+
+**Sample — after BeforeAgent scans `/workspace/skills/`:**
+
+```go
+[]SkillEntry{
+    {Name: "csv-analyzer", Description: "Analyze CSV files and generate charts", Path: "/workspace/skills/csv-analyzer/SKILL.md"},
+    {Name: "code-review",  Description: "Review code for bugs and style issues",  Path: "/workspace/skills/code-review/SKILL.md"},
+}
+```
+
+### Tracing Types (`agent/trace_iface.go`)
+
+The tracing interface that TracingHook uses. Pulled from context.
+
+```go
+type TraceRecorder interface {
+    StartSpan(name string) SpanHandle
+    RecordEvent(name string, metadata map[string]any)
+}
+
+type SpanHandle interface {
+    Set(key string, value any) SpanHandle
+    End()
+}
+```
+
+**Sample — what TracingHook records for a tool call:**
+
+```go
+span := trace.StartSpan("tool.call")
+span.Set("tool_name", "read_file")
+span.Set("tool_call_id", "call_abc123")
+span.Set("tool_args", `{"path":"/workspace/main.py"}`)
+// ... execute tool ...
+span.Set("output_length", 342)
+span.Set("output_preview", "from fastapi import FastAPI\napp = FastAPI()...")  // first 500 chars
+span.End()
+```
+
+### Agent Configuration (`agent/types.go`)
+
+The YAML/JSON config that controls which hooks are activated.
+
+```go
+type AgentConfig struct {
+    Name          string         `yaml:"name" json:"name"`
+    Model         any            `yaml:"model" json:"model"`
+    SystemPrompt  string         `yaml:"system_prompt" json:"system_prompt"`
+    Tools         []string       `yaml:"tools" json:"tools"`
+    Backend       *BackendCfg    `yaml:"backend" json:"backend"`
+    Skills        *SkillsCfg     `yaml:"skills" json:"skills"`
+    Memory        *MemoryCfg     `yaml:"memory" json:"memory"`
+    ContextWindow int            `yaml:"context_window" json:"context_window"`
+    // ... other fields omitted for brevity
+}
+
+type SkillsCfg struct {
+    Paths []string `yaml:"paths" json:"paths"`
+}
+
+type MemoryCfg struct {
+    Paths []string `yaml:"paths" json:"paths"`
+}
+```
+
+**Sample `agents.yaml` — shows what triggers each hook:**
+
+```yaml
+name: code-assistant
+model: claude-sonnet-4-20250514
+system_prompt: "You are a coding assistant."
+context_window: 128000          # → SummarizationHook uses this
+backend:
+  type: docker                  # → FilesystemHook activated (needs a backend)
+  image: python:3.12-slim
+  workdir: /workspace
+skills:
+  paths:                        # → SkillsHook activated
+    - /workspace/skills
+memory:
+  paths:                        # → MemoryHook activated
+    - /workspace/AGENTS.md
+```
+
+**Hook activation rules:**
+- `TracingHook` — always active
+- `TodoListHook` — always active
+- `FilesystemHook` — only when `backend` is configured (non-nil)
+- `SkillsHook` — only when `skills.paths` has entries and backend exists
+- `MemoryHook` — only when `memory.paths` has entries and backend exists
+- `SummarizationHook` — always active
+
+### Thread Store (`agent/thread.go`)
+
+In-memory store for persisting `AgentState` across requests. TTL-based eviction.
+
+```go
+type ThreadStore struct {
+    mu      sync.RWMutex
+    threads map[string]*threadEntry
+    ttl     time.Duration            // default: 1 hour
+    stop    chan struct{}
+}
+
+type threadEntry struct {
+    state      *AgentState
+    lastAccess time.Time
+}
+
+var GlobalThreadStore = NewThreadStore()
+```
+
+**Key methods:**
+
+```go
+ts.LoadOrCreate("th_8f3a2b") // returns existing state or creates empty one
+ts.Save("th_8f3a2b", state)  // persists state, updates lastAccess
+ts.Get("th_8f3a2b")          // returns state or nil
+ts.Delete("th_8f3a2b")       // removes thread
+```
+
+Eviction runs every 5 minutes — removes threads not accessed within the TTL (1 hour).
+
 ---
 
 ## Onion Ring Composition (`agent/loop.go`)
