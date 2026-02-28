@@ -106,6 +106,7 @@ wick_agent/
 │       └── package.json
 │
 ├── DEV_WORKFLOW.md
+├── GO_BASICS.md                    # Go language fundamentals (pointers, slices, maps, goroutines)
 ├── GO_CODE_GUIDE.md                # Go beginner's guide to the codebase
 └── wick_agent.md                   # This file
 ```

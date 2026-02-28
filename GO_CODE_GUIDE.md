@@ -1,6 +1,6 @@
 # Go Code Guide — wick_server Internals
 
-A beginner-friendly walkthrough of the wick_server codebase for developers new to Go.
+A beginner-friendly walkthrough of the wick_server codebase for developers new to Go. For foundational Go language concepts (pointers, slices, maps, goroutines, error handling), see [GO_BASICS.md](GO_BASICS.md).
 
 ---
 
