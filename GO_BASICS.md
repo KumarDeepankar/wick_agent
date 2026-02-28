@@ -19,10 +19,12 @@ type Config struct {
 
 original := Config{Name: "agent", Tags: []string{"a", "b"}, Model: map[string]any{"k": "v"}}
 
-a := &original    // pointer — a points TO original
-b := original     // value copy — b is a separate copy of original
-c := *(&original) // dereference copy — same as b (copy the value a pointer points to)
+a := &original    // pointer — a points TO original (fully shared)
+b := original     // value copy — Name is independent, but Tags/Model still share data!
+c := *(&original) // dereference copy — same as b (copies struct, but slices/maps still shared)
 ```
+
+**Warning:** `b := original` copies the struct's fields, but slice/map fields are just headers containing pointers. The headers get copied, but they still point to the **same underlying data**. So `b.Name = "x"` is safe, but `b.Tags[0] = "x"` changes `original` too. See [Hidden Pointer Exception](#the-hidden-pointer-exception) below.
 
 ### Comparison Table
 
