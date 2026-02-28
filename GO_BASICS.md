@@ -110,6 +110,58 @@ a := &original        a := original           a := *ptr
                        ► = shared (hidden pointer)
 ```
 
+### Method & Function Parameters
+
+The same rules apply when passing values to functions — but now it matters because the function might **modify your data**:
+
+```go
+type Agent struct {
+    Name  string
+    Tools []string
+}
+
+func updateByPointer(a *Agent)  { a.Name = "changed" }   // receives address
+func updateByValue(a Agent)     { a.Name = "changed" }    // receives copy
+
+original := Agent{Name: "bot", Tools: []string{"ls", "grep"}}
+
+updateByValue(original)         // original.Name is still "bot" — function got a copy
+updateByPointer(&original)      // original.Name is now "changed" — function had the address
+```
+
+| | `fn(&Xyz)` or `fn(ptr)` | `fn(Xyz)` or `fn(*ptr)` |
+|---|---|---|
+| **What's passed** | Address (8 bytes) | Full copy of the data |
+| **Method header** | `func do(arg *MyType)` | `func do(arg MyType)` |
+| **Modification** | Affects original — method has the address | Safe/local — method has its own copy |
+| **Efficiency** | High — always 8 bytes regardless of struct size | Variable — copies entire struct, slow if large |
+| **Exception** | None. Always modifies original. | Slices/maps: modifying **elements** still affects original |
+
+**The hidden pointer exception in methods:**
+
+```go
+func addTool(a Agent) {         // receives by VALUE (copy)
+    a.Name = "new"              // safe — only changes the copy
+    a.Tools[0] = "REPLACED"     // DANGER — changes original's slice data!
+    a.Tools = append(a.Tools, "new_tool")  // safe — append may create new array
+}
+
+original := Agent{Name: "bot", Tools: []string{"ls", "grep"}}
+addTool(original)
+// original.Name is still "bot"       ← copy was independent
+// original.Tools[0] is "REPLACED"    ← slice header shared the underlying array
+```
+
+**Key rule:** Use `*T` (pointer receiver/parameter) when you need to modify the caller's data or the struct is large. Use `T` (value) when you want guaranteed isolation and the data is small.
+
+```go
+// This codebase uses pointer receivers everywhere:
+func (a *Agent) Run(ctx context.Context, ...) (*AgentState, error)
+func (h *FilesystemHook) BeforeAgent(ctx context.Context, ...) error
+func (f *FuncTool) Execute(ctx context.Context, ...) (string, error)
+//     ^^^^^^^^^ pointer receiver — can modify the struct, efficient for large structs
+```
+
 ---
 
 ## Value Types vs Reference Types
