@@ -6,27 +6,34 @@ import (
 	"fmt"
 	"strings"
 
-	"wick_go/agent"
-	"wick_go/backend"
-	"wick_go/llm"
+	"wick_server/agent"
+	"wick_server/backend"
+	"wick_server/llm"
+	"wick_server/wickfs"
 )
 
 // FilesystemHook registers file-operation tools (ls, read_file, write_file, edit_file,
-// glob, grep, execute) that delegate to wickfs commands inside Docker containers.
+// glob, grep, execute) that delegate to a wickfs.FileSystem.
 //
-// All commands produce structured JSON output, use atomic writes, and require
-// no Python or complex shell escaping.
+// For local mode: direct Go stdlib calls via wickfs.LocalFS (zero overhead).
+// For remote mode: wickfs CLI commands via wickfs.RemoteFS (docker exec).
 //
 // Also implements large result eviction: if a tool result exceeds 80,000 chars (~20k tokens),
 // the output is truncated with a head+tail reference.
 type FilesystemHook struct {
 	agent.BaseHook
-	backend backend.Backend
+	fs          wickfs.FileSystem
+	workdir     string
+	resolvePath func(string) (string, error)
 }
 
 // NewFilesystemHook creates a filesystem hook backed by the given backend.
 func NewFilesystemHook(b backend.Backend) *FilesystemHook {
-	return &FilesystemHook{backend: b}
+	return &FilesystemHook{
+		fs:          b.FS(),
+		workdir:     b.Workdir(),
+		resolvePath: b.ResolvePath,
+	}
 }
 
 func (h *FilesystemHook) Name() string { return "filesystem" }
@@ -37,7 +44,7 @@ func (h *FilesystemHook) Phases() []string {
 
 // BeforeAgent registers the 7 file-operation tools on the agent state.
 func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentState) error {
-	b := h.backend
+	workdir := h.workdir
 
 	// ls
 	agent.RegisterToolOnState(state, &agent.FuncTool{
@@ -46,18 +53,21 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 		ToolParams: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path": map[string]any{"type": "string", "description": fmt.Sprintf("Directory path to list (default: %s)", b.Workdir())},
+				"path": map[string]any{"type": "string", "description": fmt.Sprintf("Directory path to list (default: %s)", workdir)},
 			},
 		},
 		Fn: func(ctx context.Context, args map[string]any) (string, error) {
 			path, _ := args["path"].(string)
-			resolved, err := b.ResolvePath(path)
+			resolved, err := h.resolvePath(path)
 			if err != nil {
 				return "Error: " + err.Error(), nil
 			}
-			cmd := backend.LsCommand(resolved)
-			result := b.Execute(cmd)
-			return wickfsDataOrError(result.Output)
+			entries, err := h.fs.Ls(ctx, resolved)
+			if err != nil {
+				return "Error: " + err.Error(), nil
+			}
+			data, _ := json.Marshal(entries)
+			return string(data), nil
 		},
 	})
 
@@ -68,7 +78,7 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 		ToolParams: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string", "description": fmt.Sprintf("Path to the file to read (relative to %s, or absolute within it)", b.Workdir())},
+				"file_path": map[string]any{"type": "string", "description": fmt.Sprintf("Path to the file to read (relative to %s, or absolute within it)", workdir)},
 			},
 			"required": []string{"file_path"},
 		},
@@ -77,13 +87,15 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			if path == "" {
 				return "Error: file_path is required", nil
 			}
-			resolved, err := b.ResolvePath(path)
+			resolved, err := h.resolvePath(path)
 			if err != nil {
 				return "Error: " + err.Error(), nil
 			}
-			cmd := backend.ReadFileCommand(resolved)
-			result := b.Execute(cmd)
-			return wickfsDataOrError(result.Output)
+			content, err := h.fs.ReadFile(ctx, resolved)
+			if err != nil {
+				return "Error: " + err.Error(), nil
+			}
+			return content, nil
 		},
 	})
 
@@ -94,7 +106,7 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 		ToolParams: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string", "description": fmt.Sprintf("Path to write the file (relative to %s, or absolute within it)", b.Workdir())},
+				"file_path": map[string]any{"type": "string", "description": fmt.Sprintf("Path to write the file (relative to %s, or absolute within it)", workdir)},
 				"content":   map[string]any{"type": "string", "description": "Content to write"},
 			},
 			"required": []string{"file_path", "content"},
@@ -105,18 +117,13 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			if path == "" {
 				return "Error: file_path is required", nil
 			}
-			resolved, err := b.ResolvePath(path)
+			resolved, err := h.resolvePath(path)
 			if err != nil {
 				return "Error: " + err.Error(), nil
 			}
-			cmd := backend.WriteFileCommand(resolved)
-			result := b.ExecuteWithStdin(cmd, strings.NewReader(content))
-			resp, parseErr := backend.ParseWickfsResponse(result.Output)
-			if parseErr != nil {
-				return "Error: " + parseErr.Error(), nil
-			}
-			if !resp.OK {
-				return "Error: " + resp.Error, nil
+			_, err = h.fs.WriteFile(ctx, resolved, content)
+			if err != nil {
+				return "Error: " + err.Error(), nil
 			}
 			if state.Files == nil {
 				state.Files = make(map[string]string)
@@ -133,7 +140,7 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 		ToolParams: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string", "description": fmt.Sprintf("Path to the file to edit (relative to %s, or absolute within it)", b.Workdir())},
+				"file_path": map[string]any{"type": "string", "description": fmt.Sprintf("Path to the file to edit (relative to %s, or absolute within it)", workdir)},
 				"old_text":  map[string]any{"type": "string", "description": "Exact text to find and replace"},
 				"new_text":  map[string]any{"type": "string", "description": "Text to replace old_text with"},
 			},
@@ -146,28 +153,17 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			if path == "" {
 				return "Error: file_path is required", nil
 			}
-			resolved, err := b.ResolvePath(path)
+			resolved, err := h.resolvePath(path)
 			if err != nil {
 				return "Error: " + err.Error(), nil
 			}
-			editJSON, _ := json.Marshal(map[string]string{
-				"old_text": oldText,
-				"new_text": newText,
-			})
-			cmd := backend.EditFileCommand(resolved)
-			result := b.ExecuteWithStdin(cmd, strings.NewReader(string(editJSON)))
-			resp, parseErr := backend.ParseWickfsResponse(result.Output)
-			if parseErr != nil {
-				return "Error: " + parseErr.Error(), nil
-			}
-			if !resp.OK {
-				return "Error: " + resp.Error, nil
+			_, err = h.fs.EditFile(ctx, resolved, oldText, newText)
+			if err != nil {
+				return "Error: " + err.Error(), nil
 			}
 			// Read back edited file to update state tracker
-			readCmd := backend.ReadFileCommand(resolved)
-			readResult := b.Execute(readCmd)
-			content, _ := wickfsDataOrError(readResult.Output)
-			if content != "" && !strings.HasPrefix(content, "Error:") {
+			content, readErr := h.fs.ReadFile(ctx, resolved)
+			if readErr == nil && content != "" && !strings.HasPrefix(content, "Error:") {
 				if state.Files == nil {
 					state.Files = make(map[string]string)
 				}
@@ -185,20 +181,23 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			"type": "object",
 			"properties": map[string]any{
 				"pattern": map[string]any{"type": "string", "description": "Glob pattern (e.g., '*.py', '**/*.js')"},
-				"path":    map[string]any{"type": "string", "description": fmt.Sprintf("Directory to search in (default: %s)", b.Workdir())},
+				"path":    map[string]any{"type": "string", "description": fmt.Sprintf("Directory to search in (default: %s)", workdir)},
 			},
 			"required": []string{"pattern"},
 		},
 		Fn: func(ctx context.Context, args map[string]any) (string, error) {
 			pattern, _ := args["pattern"].(string)
 			path, _ := args["path"].(string)
-			resolved, err := b.ResolvePath(path)
+			resolved, err := h.resolvePath(path)
 			if err != nil {
 				return "Error: " + err.Error(), nil
 			}
-			cmd := backend.GlobCommand(pattern, resolved)
-			result := b.Execute(cmd)
-			return wickfsDataOrError(result.Output)
+			result, err := h.fs.Glob(ctx, pattern, resolved)
+			if err != nil {
+				return "Error: " + err.Error(), nil
+			}
+			data, _ := json.Marshal(result)
+			return string(data), nil
 		},
 	})
 
@@ -210,20 +209,23 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			"type": "object",
 			"properties": map[string]any{
 				"pattern": map[string]any{"type": "string", "description": "Search pattern (regex supported)"},
-				"path":    map[string]any{"type": "string", "description": fmt.Sprintf("File or directory to search in (default: %s)", b.Workdir())},
+				"path":    map[string]any{"type": "string", "description": fmt.Sprintf("File or directory to search in (default: %s)", workdir)},
 			},
 			"required": []string{"pattern"},
 		},
 		Fn: func(ctx context.Context, args map[string]any) (string, error) {
 			pattern, _ := args["pattern"].(string)
 			path, _ := args["path"].(string)
-			resolved, err := b.ResolvePath(path)
+			resolved, err := h.resolvePath(path)
 			if err != nil {
 				return "Error: " + err.Error(), nil
 			}
-			cmd := backend.GrepCommand(pattern, resolved)
-			result := b.Execute(cmd)
-			return wickfsDataOrError(result.Output)
+			result, err := h.fs.Grep(ctx, pattern, resolved)
+			if err != nil {
+				return "Error: " + err.Error(), nil
+			}
+			data, _ := json.Marshal(result)
+			return string(data), nil
 		},
 	})
 
@@ -243,26 +245,16 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			if command == "" {
 				return "Error: command is required", nil
 			}
-			cmd := backend.ExecCommand(command)
-			result := b.Execute(cmd)
-			return wickfsDataOrError(result.Output)
+			result, err := h.fs.Exec(ctx, command)
+			if err != nil {
+				return "Error: " + err.Error(), nil
+			}
+			data, _ := json.Marshal(result)
+			return string(data), nil
 		},
 	})
 
 	return nil
-}
-
-// wickfsDataOrError parses a wickfs JSON response and returns the data as a
-// formatted string, or an error message.
-func wickfsDataOrError(output string) (string, error) {
-	resp, err := backend.ParseWickfsResponse(output)
-	if err != nil {
-		return "Error: " + err.Error(), nil
-	}
-	if !resp.OK {
-		return "Error: " + resp.Error, nil
-	}
-	return string(resp.Data), nil
 }
 
 // WrapToolCall implements large result eviction.

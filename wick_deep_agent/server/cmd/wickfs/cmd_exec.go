@@ -1,15 +1,10 @@
 package main
 
 import (
-	"os/exec"
+	"context"
 	"strings"
+	"wick_server/wickfs"
 )
-
-type execResult struct {
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
-	ExitCode int    `json:"exit_code"`
-}
 
 func cmdExec(args []string) {
 	if len(args) < 1 {
@@ -19,26 +14,11 @@ func cmdExec(args []string) {
 
 	command := strings.Join(args, " ")
 
-	cmd := exec.Command("sh", "-c", command)
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-
-	exitCode := 0
+	fs := wickfs.NewLocalFS()
+	result, err := fs.Exec(context.Background(), command)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			writeError("failed to execute: " + err.Error())
-			return
-		}
+		writeError(err.Error())
+		return
 	}
-
-	writeOK(execResult{
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-		ExitCode: exitCode,
-	})
+	writeOK(result)
 }

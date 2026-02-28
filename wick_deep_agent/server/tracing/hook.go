@@ -3,8 +3,8 @@ package tracing
 import (
 	"context"
 
-	"wick_go/agent"
-	"wick_go/llm"
+	"wick_server/agent"
+	"wick_server/llm"
 )
 
 // TracingHook implements agent.Hook. It wraps LLM calls and tool calls

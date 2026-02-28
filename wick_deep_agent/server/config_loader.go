@@ -1,4 +1,4 @@
-package main
+package wickserver
 
 import (
 	"fmt"
@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
-	"wick_go/agent"
-	"wick_go/backend"
-	"wick_go/handlers"
+	"wick_server/agent"
+	"wick_server/backend"
+	"wick_server/handlers"
 )
 
 // configFile is the top-level structure of agents.yaml.
@@ -23,8 +23,8 @@ type configDefaults struct {
 	Debug   bool              `yaml:"debug"`
 }
 
-// loadConfigFile reads agents.yaml, registers agents and launches backends.
-func loadConfigFile(path string, deps *handlers.Deps) error {
+// LoadConfigFile reads agents.yaml, registers agents and launches backends.
+func LoadConfigFile(path string, deps *handlers.Deps) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("failed to read config: %w", err)

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import type { AgentInfo } from '../types';
-import { fetchAgents, fetchTools, updateAgentBackend, getToken, fetchHooks, updateAgentHooks } from '../api';
+import { fetchAgents, fetchTools, updateAgentBackend, controlContainer, getToken, fetchHooks, updateAgentHooks } from '../api';
 import type { HookInfo, ToolInfo } from '../api';
 
 type Theme = 'light' | 'dark';
@@ -184,8 +184,12 @@ export function SettingsPanel({
   );
 
   // ── Sandbox mode ────────────────────────────────────────────────────
+  // Both "Local Docker" and "Remote Docker" use Docker containers.
+  // The difference is WHERE Docker runs:
+  //   Local Docker  = mode:'remote', sandbox_url: null   → local Docker daemon
+  //   Remote Docker = mode:'remote', sandbox_url: 'tcp://...' → remote daemon
   const isSandboxAgent = currentAgent?.backend_type === 'docker' || currentAgent?.backend_type === 'local';
-  const sandboxMode: SandboxMode = currentAgent?.backend_type === 'local' ? 'local' : 'remote';
+  const sandboxMode: SandboxMode = currentAgent?.sandbox_url ? 'remote' : 'local';
 
   // Sync sandbox URL from server state
   useEffect(() => {
@@ -194,12 +198,22 @@ export function SettingsPanel({
 
   const handleModeSwitch = useCallback(async (mode: SandboxMode) => {
     if (!currentAgent || disabled || updating) return;
-    if (mode === sandboxMode) return;
+
+    // If already in this mode and container is running, do nothing.
+    // But if container is idle/stopped, re-send to trigger a fresh launch.
+    const containerUp = currentAgent.container_status === 'launched' || currentAgent.container_status === 'launching';
+    if (mode === sandboxMode && containerUp) return;
+
     setUpdating(true);
     try {
       if (mode === 'local') {
-        await updateAgentBackend(currentAgent.agent_id, { mode: 'local' });
+        // Local Docker: container on local Docker daemon (no sandbox_url)
+        await updateAgentBackend(currentAgent.agent_id, {
+          mode: 'remote',
+          sandbox_url: null,
+        });
       } else {
+        // Remote Docker: container on remote daemon (with sandbox_url)
         await updateAgentBackend(currentAgent.agent_id, {
           mode: 'remote',
           sandbox_url: sandboxUrl.trim() || null,
@@ -207,7 +221,6 @@ export function SettingsPanel({
       }
       loadData();
     } catch {
-      // revert — loadData will refresh
       loadData();
     } finally {
       setUpdating(false);
@@ -231,6 +244,19 @@ export function SettingsPanel({
       setUpdating(false);
     }
   }, [currentAgent, sandboxUrl, disabled, sandboxMode, loadData]);
+
+  const handleContainerAction = useCallback(async (action: 'stop' | 'restart') => {
+    if (!currentAgent || disabled || updating) return;
+    setUpdating(true);
+    try {
+      await controlContainer(currentAgent.agent_id, action);
+      loadData();
+    } catch {
+      loadData();
+    } finally {
+      setUpdating(false);
+    }
+  }, [currentAgent, disabled, updating, loadData]);
 
   if (!isOpen) return null;
 
@@ -270,10 +296,10 @@ export function SettingsPanel({
             )}
           </section>
 
-          {/* Sandbox Mode (local/docker agents only) */}
+          {/* Sandbox Mode (docker agents only) */}
           {isSandboxAgent && (
             <section className="settings-section">
-              <label className="settings-label">Execution Mode</label>
+              <label className="settings-label">Docker Host</label>
               <div className="settings-theme-toggle">
                 <button
                   className={`settings-theme-btn ${sandboxMode === 'local' ? 'active' : ''}`}
@@ -285,7 +311,7 @@ export function SettingsPanel({
                     <line x1="8" y1="21" x2="16" y2="21" />
                     <line x1="12" y1="17" x2="12" y2="21" />
                   </svg>
-                  Local
+                  Local Docker
                 </button>
                 <button
                   className={`settings-theme-btn ${sandboxMode === 'remote' ? 'active' : ''}`}
@@ -298,19 +324,19 @@ export function SettingsPanel({
                     <line x1="6" y1="6" x2="6.01" y2="6" />
                     <line x1="6" y1="18" x2="6.01" y2="18" />
                   </svg>
-                  Remote
+                  Remote Docker
                 </button>
               </div>
               <span className="settings-hint">
                 {sandboxMode === 'local'
-                  ? 'Commands run directly on the host machine.'
-                  : 'Commands run in a Docker container.'}
+                  ? 'Sandbox container runs on the local Docker daemon.'
+                  : 'Sandbox container runs on a remote Docker daemon.'}
               </span>
 
               {/* Remote Docker URL input */}
               {sandboxMode === 'remote' && (
                 <>
-                  <label className="settings-label" style={{ marginTop: '8px' }}>Docker Host</label>
+                  <label className="settings-label" style={{ marginTop: '8px' }}>Docker Host URL</label>
                   <input
                     className="settings-filter"
                     type="text"
@@ -323,35 +349,64 @@ export function SettingsPanel({
                     style={{ marginBottom: 0 }}
                   />
                   <span className="settings-hint">
-                    Optional. Remote Docker daemon URL (e.g. tcp://host:2375). Leave empty for local Docker.
+                    Remote Docker daemon URL (e.g. tcp://host:2375).
                   </span>
-
-                  {/* Container status indicator */}
-                  {currentAgent && currentAgent.backend_type === 'docker' && (
-                    <div className={`container-status container-status--${currentAgent.container_status ?? 'idle'}`}>
-                      <span className="container-status-dot" />
-                      <span className="container-status-text">
-                        {(!currentAgent.container_status || currentAgent.container_status === 'idle') && 'No container'}
-                        {currentAgent.container_status === 'launching' && 'Launching container...'}
-                        {currentAgent.container_status === 'launched' && 'Container running'}
-                        {currentAgent.container_status === 'error' && (currentAgent.container_error || 'Container error')}
-                      </span>
-                      {currentAgent.container_status === 'launched' && onOpenTerminal && (
-                        <button
-                          className="container-terminal-btn"
-                          onClick={onOpenTerminal}
-                          title="Open terminal"
-                        >
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="4 17 10 11 4 5" />
-                            <line x1="12" y1="19" x2="20" y2="19" />
-                          </svg>
-                          Terminal
-                        </button>
-                      )}
-                    </div>
-                  )}
                 </>
+              )}
+
+              {/* Container status indicator — visible for both local and remote Docker */}
+              {currentAgent && currentAgent.backend_type === 'docker' && (
+                <div className={`container-status container-status--${currentAgent.container_status ?? 'idle'}`}>
+                  <span className="container-status-dot" />
+                  <span className="container-status-text">
+                    {(!currentAgent.container_status || currentAgent.container_status === 'idle') && 'No container'}
+                    {currentAgent.container_status === 'launching' && 'Launching container...'}
+                    {currentAgent.container_status === 'launched' && 'Container running'}
+                    {currentAgent.container_status === 'error' && (currentAgent.container_error || 'Container error')}
+                  </span>
+                  <div className="container-actions">
+                    {currentAgent.container_status === 'launched' && onOpenTerminal && (
+                      <button
+                        className="container-terminal-btn"
+                        onClick={onOpenTerminal}
+                        title="Open terminal"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="4 17 10 11 4 5" />
+                          <line x1="12" y1="19" x2="20" y2="19" />
+                        </svg>
+                        Terminal
+                      </button>
+                    )}
+                    {currentAgent.container_status === 'launched' && (
+                      <button
+                        className="container-terminal-btn"
+                        onClick={() => handleContainerAction('restart')}
+                        disabled={updating}
+                        title="Restart container"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="23 4 23 10 17 10" />
+                          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                        </svg>
+                        Restart
+                      </button>
+                    )}
+                    {(currentAgent.container_status === 'launched' || currentAgent.container_status === 'launching') && (
+                      <button
+                        className="container-terminal-btn container-stop-btn"
+                        onClick={() => handleContainerAction('stop')}
+                        disabled={updating}
+                        title="Stop container"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                        </svg>
+                        Stop
+                      </button>
+                    )}
+                  </div>
+                </div>
               )}
             </section>
           )}

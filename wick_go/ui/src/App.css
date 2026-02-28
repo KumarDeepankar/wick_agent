@@ -613,6 +613,19 @@ body,
 .container-terminal-btn:hover {
   filter: brightness(1.1);
 }
+.container-terminal-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.container-stop-btn {
+  background: var(--accent-red);
+}
+.container-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
 
 /* ── Terminal Panel ── */
 .terminal-panel {

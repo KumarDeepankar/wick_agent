@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cross-compile wick_go and build platform-specific wheels.
+"""Cross-compile wick_server and build platform-specific wheels.
 
 Usage:
     python build_wheels.py            # build all 4 platform wheels
@@ -28,25 +28,25 @@ TARGETS = [
     {
         "goos": "linux",
         "goarch": "amd64",
-        "bin_name": "wick_go",
+        "bin_name": "wick_server",
         "plat_tag": "manylinux2014_x86_64",
     },
     {
         "goos": "linux",
         "goarch": "arm64",
-        "bin_name": "wick_go",
+        "bin_name": "wick_server",
         "plat_tag": "manylinux2014_aarch64",
     },
     {
         "goos": "darwin",
         "goarch": "arm64",
-        "bin_name": "wick_go",
+        "bin_name": "wick_server",
         "plat_tag": "macosx_11_0_arm64",
     },
     {
         "goos": "windows",
         "goarch": "amd64",
-        "bin_name": "wick_go.exe",
+        "bin_name": "wick_server.exe",
         "plat_tag": "win_amd64",
     },
 ]
@@ -95,33 +95,65 @@ def go_build(target: dict[str, str]) -> Path:
     return out_path
 
 
-def go_build_wickfs(target: dict[str, str]) -> Path | None:
-    """Cross-compile the wickfs binary for Linux targets only (Docker sandbox use)."""
-    # wickfs only runs inside Docker containers (always Linux)
-    if target["goos"] != "linux":
-        return None
+def go_build_wickfs(target: dict[str, str]) -> list[Path]:
+    """Build wickfs for both the target platform (local mode) and Linux (Docker injection).
 
-    bin_name = f"wickfs_linux_{target['goarch']}"
-    out_path = BIN_DIR / bin_name
+    Returns a list of built binaries (1 or 2 paths).
+    """
+    built: list[Path] = []
+
+    # 1. Host-platform wickfs (for local mode — runs on the same OS as wick_server)
+    ext = ".exe" if target["goos"] == "windows" else ""
+    host_name = f"wickfs{ext}"
+    host_path = BIN_DIR / host_name
 
     env = os.environ.copy()
     env["CGO_ENABLED"] = "0"
-    env["GOOS"] = "linux"
+    env["GOOS"] = target["goos"]
     env["GOARCH"] = target["goarch"]
 
     cmd = [
         "go", "build",
         "-ldflags=-s -w",
-        "-o", str(out_path),
+        "-o", str(host_path),
         "./cmd/wickfs/",
     ]
-    print(f"  go build wickfs → linux/{target['goarch']}")
+    print(f"  go build wickfs → {target['goos']}/{target['goarch']} (local mode)")
     result = subprocess.run(cmd, cwd=str(SERVER_DIR), env=env, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"wickfs build failed for linux/{target['goarch']}:\n{result.stderr}")
+        raise RuntimeError(f"wickfs build failed for {target['goos']}/{target['goarch']}:\n{result.stderr}")
 
-    out_path.chmod(out_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return out_path
+    if target["goos"] != "windows":
+        host_path.chmod(host_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    built.append(host_path)
+
+    # 2. Linux wickfs for Docker injection (only when host is NOT linux)
+    if target["goos"] != "linux":
+        for linux_arch in ("amd64", "arm64"):
+            linux_name = f"wickfs_linux_{linux_arch}"
+            linux_path = BIN_DIR / linux_name
+
+            env_linux = os.environ.copy()
+            env_linux["CGO_ENABLED"] = "0"
+            env_linux["GOOS"] = "linux"
+            env_linux["GOARCH"] = linux_arch
+
+            cmd_linux = [
+                "go", "build",
+                "-ldflags=-s -w",
+                "-o", str(linux_path),
+                "./cmd/wickfs/",
+            ]
+            print(f"  go build wickfs → linux/{linux_arch} (docker injection)")
+            result = subprocess.run(cmd_linux, cwd=str(SERVER_DIR), env=env_linux, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"  WARN: wickfs linux/{linux_arch} build failed: {result.stderr.strip()}")
+                continue
+
+            linux_path.chmod(linux_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            built.append(linux_path)
+
+    return built
 
 
 def build_wheel(plat_tag: str) -> Path:
@@ -196,9 +228,9 @@ def main() -> None:
         binary = go_build(target)
         print(f"  binary: {binary} ({binary.stat().st_size / 1024 / 1024:.1f} MB)")
 
-        wickfs = go_build_wickfs(target)
-        if wickfs:
-            print(f"  wickfs: {wickfs} ({wickfs.stat().st_size / 1024 / 1024:.1f} MB)")
+        wickfs_bins = go_build_wickfs(target)
+        for wf in wickfs_bins:
+            print(f"  wickfs: {wf.name} ({wf.stat().st_size / 1024 / 1024:.1f} MB)")
 
         whl = build_wheel(tag)
         print(f"  wheel:  {whl.name}")

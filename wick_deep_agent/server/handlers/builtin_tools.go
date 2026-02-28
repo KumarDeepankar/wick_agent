@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"wick_go/agent"
+	"wick_server/agent"
 )
 
-// newBuiltinTools returns the set of built-in tools (not backend-dependent).
+// NewBuiltinTools returns the set of built-in tools (not backend-dependent).
 // Tavily API key is read from the agent's BuiltinConfig map.
-func newBuiltinTools(cfg *agent.AgentConfig) []agent.Tool {
+func NewBuiltinTools(cfg *agent.AgentConfig) []agent.Tool {
 	var tools []agent.Tool
 
 	// internet_search — uses Tavily API from agent's builtin_config

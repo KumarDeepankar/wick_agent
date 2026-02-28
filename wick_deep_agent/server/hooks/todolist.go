@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"wick_go/agent"
-	"wick_go/llm"
+	"wick_server/agent"
+	"wick_server/llm"
 )
 
 // TodoListHook tracks task progress via a write_todos tool.

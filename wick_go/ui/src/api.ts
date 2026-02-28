@@ -142,6 +142,19 @@ export async function updateAgentBackend(
   return res.json();
 }
 
+export async function controlContainer(
+  agentId: string,
+  action: 'stop' | 'restart',
+): Promise<{ agent_id: string; action: string; container_status: string | null }> {
+  const res = await authFetch(`/agents/${agentId}/container`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  });
+  if (!res.ok) throw new Error(`Failed to ${action} container: ${res.status}`);
+  return res.json();
+}
+
 // ── Hooks API ───────────────────────────────────────────────────────────
 
 export interface HookInfo {

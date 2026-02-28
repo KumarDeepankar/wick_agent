@@ -5,6 +5,8 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+
+	"wick_server/wickfs"
 )
 
 // Backend is the interface for executing commands and transferring files.
@@ -41,6 +43,17 @@ type Backend interface {
 	// TerminalCmd returns the command and args to spawn an interactive shell
 	// for the WebSocket terminal. Returns nil if terminal is not supported.
 	TerminalCmd() []string
+
+	// FS returns the wickfs FileSystem for this backend.
+	// Local backends use direct stdlib calls; Docker backends use RemoteFS.
+	FS() wickfs.FileSystem
+}
+
+// ContainerManager is implemented by backends that manage containers (Docker).
+// Used for cleanup without type-asserting to *DockerBackend.
+type ContainerManager interface {
+	CancelLaunch()
+	StopContainer()
 }
 
 // resolvePath is a shared helper that resolves a path relative to a workdir

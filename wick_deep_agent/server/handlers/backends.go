@@ -3,7 +3,7 @@ package handlers
 import (
 	"sync"
 
-	"wick_go/backend"
+	"wick_server/backend"
 )
 
 // BackendStore maps "agentID:username" → backend.Backend.
@@ -43,10 +43,10 @@ func (bs *BackendStore) Remove(agentID, username string) {
 	defer bs.mu.Unlock()
 	key := backendKey(agentID, username)
 	if b, ok := bs.backends[key]; ok {
-		// Clean up Docker backends
-		if db, ok := b.(*backend.DockerBackend); ok {
-			db.CancelLaunch()
-			db.StopContainer()
+		// Clean up backends that manage containers
+		if cm, ok := b.(backend.ContainerManager); ok {
+			cm.CancelLaunch()
+			cm.StopContainer()
 		}
 		delete(bs.backends, key)
 	}
