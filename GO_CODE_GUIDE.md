@@ -205,12 +205,121 @@ type Agent struct {
 }
 ```
 
+### AgentState — the conversation session
+
+`AgentState` is defined in `agent/types.go`. It holds everything about one chat thread:
+
+```go
+type AgentState struct {
+    ThreadID string              // "thread-abc-123"
+    Messages []Message           // conversation history
+    Todos    []Todo              // task tracking list
+    Files    map[string]string   // files the agent wrote: path -> content
+
+    toolRegistry map[string]Tool // tools registered by hooks (lowercase = private)
+}
+```
+
+A populated `AgentState` looks like:
+
+```
+AgentState {
+    ThreadID: "thread-abc-123"
+    Messages: [
+        {role: "user",      content: "Add 2+3"},
+        {role: "assistant", content: "I'll use the add tool", tool_calls: [{name:"add"}]},
+        {role: "tool",      content: "5", name: "add"},
+        {role: "assistant", content: "The sum is 5"},
+    ]
+    Todos: [{id:"1", title:"Fix bug", status:"done"}]
+    Files: {"/workspace/hello.py": "print('hello')"}
+    toolRegistry: {ls: ..., read_file: ..., write_file: ...}
+}
+```
+
+### Pointers: `*AgentState` vs `AgentState`
+
+Throughout the code you'll see `*AgentState` (with a `*`). The `*` means **pointer** — the variable holds a **memory address** pointing to an `AgentState`, not the struct itself.
+
+Think of it like a house vs an address card:
+
+```
+AgentState   = the actual house (data in memory)
+*AgentState  = an address card pointing to that house
+```
+
+Why use a pointer? Two reasons:
+
+**1. It can be `nil` (empty/nothing)**
+
+```go
+var state *AgentState    // state = nil (points to nothing)
+                         // Python equivalent: state = None
+
+var state AgentState     // state = AgentState{ThreadID:"", Messages:[], ...}
+                         // always has a value, can never be nil
+```
+
+**2. Sharing — multiple variables see the same data**
+
+```go
+// WITHOUT pointer (copies):
+var a AgentState = AgentState{ThreadID: "abc"}
+var b AgentState = a         // b is a COPY of a
+b.ThreadID = "xyz"           // only changes b
+// a.ThreadID is still "abc" — they're separate copies
+
+// WITH pointer (shared):
+var a *AgentState = &AgentState{ThreadID: "abc"}
+var b *AgentState = a        // b points to SAME data as a
+b.ThreadID = "xyz"           // changes the shared data
+// a.ThreadID is now "xyz" too — both point to same house
+```
+
+This is critical in the agent loop because `runLoop` modifies `state` (adds messages, todos, files) and the caller needs to see those changes.
+
+**Why return `*AgentState` not `AgentState`?**
+
+```go
+// AgentState (no pointer) — returns a COPY every time
+// copies entire Messages slice, Files map, Todos = expensive
+func (a *Agent) Run(...) (AgentState, error)
+
+// *AgentState (pointer) — returns an address (8 bytes)
+// cheap, and caller sees same data
+func (a *Agent) Run(...) (*AgentState, error)
+```
+
+**Python comparison:**
+
+```python
+# Python — everything is a reference (pointer) by default
+state = None                    # like: var state *AgentState
+state = AgentState()            # like: state = &AgentState{}
+state.messages.append(msg)      # modifies the shared object
+
+# Go — you choose: value (copy) or pointer (reference)
+var state AgentState            # value: always has data, copies on assignment
+var state *AgentState           # pointer: can be nil, shares on assignment
+```
+
+**Quick pointer cheat sheet:**
+
+```go
+&  = "get the address of"      ->  p := &AgentState{}     // create + get pointer
+*  = "the type is a pointer"   ->  var p *AgentState       // p holds an address
+*  = "follow the pointer"      ->  value := *p             // get data at address
+.  = works on both             ->  p.ThreadID              // Go auto-dereferences
+```
+
+That last one is nice — `p.ThreadID` works whether `p` is a value or a pointer. Go automatically follows the pointer. In C you'd need `p->ThreadID`, but Go handles it for you.
+
 ### Run — synchronous mode
 
 ```go
 func (a *Agent) Run(ctx context.Context, messages []Message, threadID string) (*AgentState, error) {
     ch := make(chan StreamEvent, 64)    // create a buffered channel (queue of size 64)
-    var state *AgentState              // declare variable, initially nil
+    var state *AgentState              // declare variable, initially nil (see above)
     var runErr error
 
     go func() {                        // launch goroutine (lightweight thread)
