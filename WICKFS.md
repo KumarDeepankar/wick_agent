@@ -181,7 +181,7 @@ func (fs *LocalFS) Grep(_ context.Context, pattern, path string) (*GrepResult, e
 }
 ```
 
-**Skipped directories:** `.hidden`, `node_modules`, `__pycache__`, `vendor`
+**Skipped directories:** any directory starting with `.` (e.g. `.git`, `.venv`), `node_modules`, `__pycache__`, `vendor`
 
 **Skipped file extensions:** `.png`, `.jpg`, `.gif`, `.zip`, `.tar`, `.gz`, `.pdf`, `.doc`, `.so`, `.dll`, `.exe`, `.wasm`, `.pyc`, `.class`, `.mp3`, `.mp4`, etc.
 
@@ -568,7 +568,7 @@ wick_deep_agent/server/
 |-------|-------|-------------|
 | Grep max matches | 200 | No (const `maxGrepMatches`) |
 | Glob max files | 100 | No (const `maxGlobFiles`) |
-| Skipped dirs (grep/glob) | `.hidden`, `node_modules`, `__pycache__`, `vendor` | No |
+| Skipped dirs (grep/glob) | directories starting with `.`, `node_modules`, `__pycache__`, `vendor` | No |
 | Binary file extensions skipped | ~30 extensions (.png, .zip, .pdf, .so, etc.) | No |
 | Command timeout | Inherited from backend config (`BackendCfg.Timeout`) | Yes |
 | Max output bytes | Inherited from backend config (`BackendCfg.MaxOutputBytes`) | Yes |

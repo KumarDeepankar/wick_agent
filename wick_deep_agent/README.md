@@ -130,8 +130,8 @@ Host (DaemonClient) ──TCP:9090──► Container (wick-daemon) ──sh -c�
 ### Container Control
 
 ```bash
-curl -X POST /agents/{id}/container -d '{"action":"stop"}'
-curl -X POST /agents/{id}/container -d '{"action":"restart"}'
+curl -X POST /agents/{id}/container -H 'Content-Type: application/json' -d '{"action":"stop"}'
+curl -X POST /agents/{id}/container -H 'Content-Type: application/json' -d '{"action":"restart"}'
 ```
 
 ## HTTP Endpoints
@@ -147,9 +147,15 @@ curl -X POST /agents/{id}/container -d '{"action":"restart"}'
 | `/agents/{id}/container` | POST | Stop or restart Docker container |
 | `/agents/{id}/hooks` | PATCH | Toggle hooks |
 | `/agents/{id}/terminal` | WS | WebSocket interactive shell |
-| `/agents/{id}/files/*` | GET/PUT | File operations |
-| `/agents/tools/*` | GET/POST/DELETE | Tool registration |
+| `/agents/{id}/files/list` | GET | List directory contents (`?path=`) |
+| `/agents/{id}/files/read` | GET | Read file contents (`?path=`) |
+| `/agents/files/download` | GET | Download file (`?path=&agent_id=`) |
+| `/agents/files/upload` | PUT | Upload file (JSON body) |
+| `/agents/tools/available` | GET | List registered tools |
+| `/agents/tools/register` | POST | Register external HTTP tool |
+| `/agents/tools/deregister/{name}` | DELETE | Remove external tool |
 | `/agents/skills/available` | GET | List available skills |
+| `/agents/hooks/available` | GET | List available hooks with phases |
 
 ## Build Commands
 
