@@ -6,7 +6,7 @@ A quick reference for Go's core concepts, aimed at developers coming from Python
 
 ## Assignment & Pointers
 
-Go gives you **explicit control** over whether variables share data or get independent copies. This is the single biggest difference from Python (where everything is a reference).
+Go gives you **explicit control** over whether variables share data or get independent copies. This is the single biggest difference from Python (where mutable objects like lists and dicts are always shared references — immutable types like `int` and `str` behave like values, but Python doesn't let you choose).
 
 ### The Three Assignment Forms
 
@@ -35,11 +35,11 @@ c := *(&original) // dereference copy — same as b (copies struct, but slices/m
 | **Data shared?** | Always. They share everything. | Only if it contains "hidden pointers" | Only if the pointed-to value has "hidden pointers" |
 | **Modify simple fields** | Changes original | Does NOT change original | Does NOT change original |
 | **Modify slice/map contents** | Changes original | **ALSO changes original** (exception!) | **ALSO changes original** (exception!) |
-| **Exception case** | None. Always behaves as a reference. | Slices, maps, channels: modifying contents changes original | Slices, maps inside the value: modifying contents changes original |
+| **Exception case** | None. Always behaves as a reference. | Slices, maps, channels: modifying contents changes original | Slices, maps, channels inside the value: modifying contents changes original |
 
 ### The "Hidden Pointer" Exception
 
-In Go, **slices**, **maps**, and **channels** are internally small descriptors (called "headers") that hold a pointer to data stored elsewhere in memory. When you copy a struct that contains them, you copy the header — but the header still points to the **same underlying data**.
+In Go, **slices** are internally small descriptors (called "headers" — 3 words: pointer + length + capacity) that hold a pointer to data stored elsewhere. **Maps** and **channels** are even simpler — the variable itself IS a pointer to a runtime structure. When you copy a struct that contains any of these, you copy the header or pointer — but it still refers to the **same underlying data**.
 
 ```go
 original := Config{
@@ -70,7 +70,7 @@ copy.Tags     ──header──►  └───┴───┘
 | `[3]int` (fixed array) | Safe | Arrays are value types, fully copied |
 | `[]int` (slice) | **Unsafe** | Header copied, underlying array shared |
 | `map[string]any` | **Unsafe** | Header copied, underlying hash table shared |
-| `chan int` | **Unsafe** | Header copied, same channel underneath |
+| `chan int` | **Unsafe** | Channel variable is a pointer; copy gives another pointer to same channel |
 | `*Foo` (pointer field) | **Unsafe** | The pointer is copied, same target |
 
 ### How to Make a True Deep Copy
@@ -145,7 +145,10 @@ updateByPointer(&original)      // original.Name is now "changed" — function h
 func addTool(a Agent) {         // receives by VALUE (copy)
     a.Name = "new"              // safe — only changes the copy
     a.Tools[0] = "REPLACED"     // DANGER — changes original's slice data!
-    a.Tools = append(a.Tools, "new_tool")  // safe — append may create new array
+    a.Tools = append(a.Tools, "new_tool")
+    // ^ tricky: if cap > len, writes into shared backing array (caller can't see
+    //   the new element but the array slot is silently mutated).
+    //   if cap == len, allocates new array (original truly unaffected).
 }
 
 original := Agent{Name: "bot", Tools: []string{"ls", "grep"}}
@@ -217,7 +220,7 @@ m["key"] = 1          // works fine
 | Type | Zero value | Safe to read? | Safe to write? |
 |---|---|---|---|
 | `*T` | `nil` | No (panic) | No (panic) |
-| `[]T` | `nil` | Yes (`len` = 0) | Yes (`append` works) |
+| `[]T` | `nil` | Yes (`len` = 0) | **Partial** — `append` works, but `s[0]=x` panics |
 | `map[K]V` | `nil` | Yes (returns zero) | **No (panic!)** |
 | `chan T` | `nil` | Blocks forever | Blocks forever |
 | `error` | `nil` | Yes (means "no error") | N/A |
@@ -261,7 +264,7 @@ data, _ := json.Marshal(value)    // _ discards the error
 
 ## Goroutines & Channels
 
-**Goroutine** = lightweight thread. Costs ~2KB of memory (vs ~1MB for OS threads).
+**Goroutine** = lightweight thread. Initial stack is 2KB (grows dynamically as needed), vs ~8MB for OS threads.
 
 **Channel** = typed pipe for sending data between goroutines.
 
@@ -271,17 +274,17 @@ go func() {
     fmt.Println("runs concurrently")
 }()
 
-// Channel basics
-ch := make(chan string)         // unbuffered channel
-ch := make(chan string, 10)     // buffered channel (queue of size 10)
+// Channel basics — two forms:
+unbuffered := make(chan string)       // unbuffered — send blocks until someone receives
+buffered   := make(chan string, 10)   // buffered — queue of size 10, send blocks only when full
 
-ch <- "hello"                   // send (blocks if buffer full)
-msg := <-ch                     // receive (blocks if buffer empty)
-close(ch)                       // close channel (signals "no more data")
+buffered <- "hello"                   // send (blocks if buffer full)
+msg := <-buffered                     // receive (blocks if buffer empty)
+close(buffered)                       // close channel (signals "no more data")
 
 // Read until channel is closed
-for msg := range ch {
-    fmt.Println(msg)            // loops until ch is closed
+for msg := range buffered {
+    fmt.Println(msg)                  // loops until channel is closed
 }
 ```
 
@@ -345,6 +348,24 @@ defer fmt.Println("third")
 // Output: third, second, first
 ```
 
+**Gotchas:**
+
+```go
+// GOTCHA 1: deferred closures capture variables by REFERENCE, not value
+x := 1
+defer func() { fmt.Println(x) }()   // prints 99, not 1!
+x = 99
+
+// Fix: pass as argument (evaluated at defer time)
+defer func(v int) { fmt.Println(v) }(x)   // prints 1
+
+// GOTCHA 2: deferred functions can modify named return values
+func addOne() (result int) {
+    defer func() { result++ }()
+    return 41   // actually returns 42!
+}
+```
+
 ---
 
 ## Struct Embedding (Go's "Inheritance")
@@ -367,8 +388,10 @@ func (h *FilesystemHook) Name() string { return "filesystem" }
 func (h *FilesystemHook) BeforeAgent() error {
     // custom implementation
 }
-// BaseHook.Name() is now shadowed, but BaseHook.BeforeAgent() would still be available
-// if FilesystemHook didn't override it
+// h.Name() now calls FilesystemHook.Name() — BaseHook.Name() is "shadowed"
+// But the original is still accessible explicitly: h.BaseHook.Name()
+// If FilesystemHook didn't define BeforeAgent(), h.BeforeAgent() would
+// automatically call BaseHook.BeforeAgent() (this is called "promotion")
 ```
 
 Python equivalent:
@@ -468,8 +491,11 @@ result, err := divide(10, 3)
 // Map lookup: value + exists
 val, ok := myMap["key"]    // ok is false if key doesn't exist
 
-// Type assertion: value + ok
+// Type assertion: value + ok (safe form)
 name, ok := value.(string)  // ok is false if value isn't a string
+
+// WARNING: without ok, wrong type = runtime PANIC
+name := value.(string)      // panics if value is not a string!
 ```
 
 ---
