@@ -844,8 +844,14 @@ The agent loop runs hooks in this order each iteration:
 wick_deep_agent/server/
 ├── agent/
 │   ├── hook.go              # Hook interface + BaseHook
-│   ├── types.go             # Message, ToolCall, ToolResult, AgentState, Todo, StreamEvent
-│   └── messages.go          # Messages chain, role constants, validation, builders, token estimation
+│   ├── types.go             # Message, ToolCall, ToolResult, AgentState, Todo, StreamEvent, AgentConfig
+│   ├── messages.go          # Messages chain, role constants, validation, builders, token estimation
+│   ├── tool.go              # Tool interface, FuncTool, ToolRegistry, RegisterToolOnState()
+│   ├── http_tool.go         # HTTPTool — forwards tool calls to remote HTTP callback
+│   ├── loop.go              # Agent struct, Run/RunStream, onion ring build, LLM-tool loop (max 25 iter)
+│   ├── registry.go          # Registry (templates + per-user instances), Template, Instance, HookOverrides
+│   ├── thread.go            # ThreadStore (in-memory, 1h TTL, 5min eviction), GlobalThreadStore
+│   └── trace_iface.go       # TraceRecorder / SpanHandle interfaces, context helpers
 │
 ├── hooks/
 │   ├── filesystem.go        # FilesystemHook — 7 file tools + large result eviction
@@ -855,10 +861,15 @@ wick_deep_agent/server/
 │   └── todolist.go          # TodoListHook — write_todos tool
 │
 ├── tracing/
-│   └── hook.go              # TracingHook — timing spans for LLM and tool calls
+│   ├── hook.go              # TracingHook — timing spans for LLM and tool calls
+│   └── trace.go             # TraceRecorder / SpanHandle concrete implementation
 │
 └── handlers/
-    └── handlers.go          # Hook registration and composition
+    ├── handlers.go          # HTTP routes, hook registration and composition, agent creation
+    ├── events.go            # EventBus — SSE event fan-out to connected clients
+    ├── backends.go          # BackendStore — per-user backend lifecycle (create/get/stop/restart)
+    ├── builtin_tools.go     # NewBuiltinTools() — built-in tools registered outside hooks
+    └── tool_store.go        # ToolStore — unified store for HTTPTool + native agent.Tool
 ```
 
 ---
