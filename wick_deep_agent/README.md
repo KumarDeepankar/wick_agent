@@ -1,12 +1,8 @@
-# wick-deep-agent
+# wick_server
 
-AI agent framework with a **Go library** (`package wickserver`) at its core and a **Python SDK** for scripting, lifecycle management, and CLI access.
+Go library (`package wickserver`) for building AI agent applications. Import it directly into your Go application — single binary, single process, zero IPC.
 
-## Two Ways to Use
-
-### 1. Go Library (Recommended)
-
-Import `wick_server` directly into a Go application — single binary, single process, zero IPC:
+## Usage
 
 ```go
 import (
@@ -15,77 +11,48 @@ import (
 )
 
 s := wickserver.New(wickserver.WithPort(8000))
+
 s.RegisterAgent("default", &agent.AgentConfig{
     Name:  "My Agent",
     Model: "ollama:llama3.1:8b",
+    SystemPrompt: "You are a helpful assistant.",
+    Backend: &agent.BackendCfg{Type: "local", Workdir: "./workspace"},
 })
+
 s.RegisterTool(&agent.FuncTool{
     ToolName: "add",
+    ToolDesc: "Add two numbers",
+    ToolParams: map[string]any{
+        "type": "object",
+        "properties": map[string]any{
+            "a": map[string]any{"type": "number"},
+            "b": map[string]any{"type": "number"},
+        },
+        "required": []string{"a", "b"},
+    },
     Fn: func(ctx context.Context, args map[string]any) (string, error) {
         a, _ := args["a"].(float64)
         b, _ := args["b"].(float64)
         return fmt.Sprintf("%g", a+b), nil
     },
 })
-s.Start() // blocks
+
+s.Start() // blocks until shutdown signal
 ```
 
-See [`wick_go/`](../wick_go/) for a full example application.
+See [`wick_go/`](../wick_go/) for a full application example.
 
-### 2. Python SDK
+## Standalone Binary
 
-Build and manage the standalone Go binary from Python:
-
-```python
-from wick_deep_agent import WickClient, WickServer
-from wick_deep_agent.messages import HumanMessage
-
-# Build the server binary
-WickServer.build()
-
-# Start with inline agent config
-server = WickServer(
-    port=8000,
-    agents={
-        "default": {
-            "name": "My Agent",
-            "model": "ollama:llama3.1:8b",
-            "system_prompt": "You are a helpful assistant.",
-        },
-    },
-)
-server.start()
-server.wait_ready()
-
-# Talk to the agent
-client = WickClient("http://localhost:8000")
-result = client.invoke(HumanMessage("Hello!"), agent_id="default")
-print(result)
-
-server.stop()
-```
-
-### CLI
+For `agents.yaml`-based deployments without writing Go code:
 
 ```bash
-wick-agent build                         # Compile Go binary
-wick-agent start --port 8000             # Start server
-wick-agent status                        # Check if running
-wick-agent logs -n 100                   # Tail logs
-wick-agent stop                          # Stop server
-wick-agent systemd --binary ./wick_go    # Generate systemd unit
+cd server
+go build -o wick_server ./cmd/wick_server/
+./wick_server --config agents.yaml --port 8000
 ```
 
-## Installation (Python SDK)
-
-```bash
-pip install -e .
-
-# With dev tools
-pip install -e ".[dev]"
-```
-
-## Go Library Packages
+## Packages
 
 ```
 server/                              # package wickserver
@@ -129,7 +96,7 @@ server/                              # package wickserver
 ├── handlers/                        # HTTP endpoints
 │   ├── handlers.go                  # All /agents/* routes
 │   ├── builtin_tools.go             # NewBuiltinTools (search, calc, datetime)
-│   └── tool_store.go                # ToolStore (HTTP + native tools)
+│   └── tool_store.go                # ToolStore (native + HTTP tools)
 │
 ├── sse/writer.go                    # SSE event writer
 ├── tracing/                         # Request tracing
@@ -158,15 +125,12 @@ Host (DaemonClient) ──TCP:9090──► Container (wick-daemon) ──sh -c�
 
 - Injected automatically via `docker cp` + `docker exec -d` on container launch
 - Falls back to `docker exec` transparently if daemon is unavailable
-- Supports both local Docker daemon and remote Docker (`tcp://host:2376`)
+- Supports both local and remote Docker daemons (`tcp://host:2376`)
 
 ### Container Control
 
 ```bash
-# Stop container
 curl -X POST /agents/{id}/container -d '{"action":"stop"}'
-
-# Restart container
 curl -X POST /agents/{id}/container -d '{"action":"restart"}'
 ```
 
@@ -184,25 +148,13 @@ curl -X POST /agents/{id}/container -d '{"action":"restart"}'
 | `/agents/{id}/hooks` | PATCH | Toggle hooks |
 | `/agents/{id}/terminal` | WS | WebSocket interactive shell |
 | `/agents/{id}/files/*` | GET/PUT | File operations |
-| `/agents/tools/*` | GET/POST/DELETE | External tool registration |
+| `/agents/tools/*` | GET/POST/DELETE | Tool registration |
 | `/agents/skills/available` | GET | List available skills |
-
-## Python SDK Imports
-
-```python
-# Core API
-from wick_deep_agent import WickClient, WickServer, tool, model
-
-# Message types
-from wick_deep_agent.messages import (
-    HumanMessage, SystemMessage, AIMessage, ToolMessage, Messages,
-)
-```
 
 ## Build Commands
 
 ```bash
-# Go library + all sub-packages
+# Library + all sub-packages
 cd server && go build ./...
 
 # Standalone binary
@@ -216,31 +168,6 @@ cd server && go build -o wick-daemon ./cmd/wickdaemon/
 
 # Tests
 cd server && go test ./...
-```
-
-## Project Layout
-
-```
-wick_deep_agent/
-├── server/                  # Go library (package wickserver)
-│   ├── app.go               # Server struct, public API
-│   ├── agent/               # Core runtime (loop, hooks, tools, threads)
-│   ├── llm/                 # LLM clients (OpenAI, Anthropic, Ollama)
-│   ├── backend/             # Execution backends (local, docker, daemon)
-│   ├── wickfs/              # Filesystem abstraction (local, remote)
-│   ├── hooks/               # Agent middleware (fs, memory, skills, todos)
-│   ├── handlers/            # HTTP endpoints
-│   └── cmd/                 # Binaries (wick_server, wickfs, wickdaemon)
-├── wick_deep_agent/         # Python SDK
-│   ├── __init__.py          # WickClient, WickServer, tool, model
-│   ├── client.py            # Typed HTTP client
-│   ├── launcher.py          # Server lifecycle manager
-│   ├── cli.py               # wick-agent CLI
-│   ├── messages.py          # Message types
-│   ├── tool.py              # @tool decorator
-│   └── model.py             # @model decorator
-├── pyproject.toml
-└── README.md
 ```
 
 ## License

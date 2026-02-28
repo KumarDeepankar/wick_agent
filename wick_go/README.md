@@ -40,9 +40,7 @@ main.go (Go)
        └─────────────────────────────────────────────────┘
 ```
 
-**Before (Python wrapper):** 3 processes (Python launcher + Go binary + ToolServer), 2 ports, HTTP callbacks for tools.
-
-**After (pure Go):** 1 process, 1 port. Tools are native Go functions (`agent.FuncTool`) — zero serialization overhead.
+Single process, single port. Tools are native Go functions (`agent.FuncTool`) — zero serialization overhead.
 
 ## Execution Modes (Backends)
 
