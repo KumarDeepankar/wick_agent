@@ -5,6 +5,33 @@ import (
 	"strings"
 )
 
+// --- Core message types ---
+
+// Message represents a chat message in the conversation.
+type Message struct {
+	Role       string     `json:"role"`                  // "system", "user", "assistant", "tool"
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"` // set when Role == "tool"
+	Name       string     `json:"name,omitempty"`         // tool name when Role == "tool"
+}
+
+// ToolCall represents an LLM's request to invoke a tool.
+type ToolCall struct {
+	ID       string         `json:"id"`
+	Name     string         `json:"name"`
+	Args     map[string]any `json:"args"`
+	RawArgs  string         `json:"-"` // raw JSON string from LLM
+}
+
+// ToolResult holds the output of a tool execution.
+type ToolResult struct {
+	ToolCallID string `json:"tool_call_id"`
+	Name       string `json:"name"`
+	Output     string `json:"output"`
+	Error      string `json:"error,omitempty"`
+}
+
 // --- Role constants ---
 
 const (

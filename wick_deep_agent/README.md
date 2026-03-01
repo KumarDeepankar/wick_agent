@@ -63,7 +63,10 @@ server/                              # package wickserver
 ├── auth.go                          # Bearer token auth middleware
 │
 ├── agent/                           # Core runtime
-│   ├── types.go                     # Message, ToolCall, AgentState, AgentConfig
+│   ├── messages.go                  # Message, ToolCall, ToolResult, Messages chain, validation, builders
+│   ├── state.go                     # AgentState, Todo
+│   ├── config.go                    # AgentConfig, BackendCfg, SkillsCfg, MemoryCfg, AgentInfo
+│   ├── events.go                    # StreamEvent
 │   ├── hook.go                      # Hook interface (4 phases)
 │   ├── tool.go                      # Tool interface + FuncTool + registry
 │   ├── loop.go                      # Agent loop (LLM ↔ tool iteration)

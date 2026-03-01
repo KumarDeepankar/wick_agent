@@ -1,58 +1,5 @@
 package agent
 
-// Message represents a chat message in the conversation.
-type Message struct {
-	Role       string     `json:"role"`                  // "system", "user", "assistant", "tool"
-	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"` // set when Role == "tool"
-	Name       string     `json:"name,omitempty"`         // tool name when Role == "tool"
-}
-
-// ToolCall represents an LLM's request to invoke a tool.
-type ToolCall struct {
-	ID       string         `json:"id"`
-	Name     string         `json:"name"`
-	Args     map[string]any `json:"args"`
-	RawArgs  string         `json:"-"` // raw JSON string from LLM
-}
-
-// ToolResult holds the output of a tool execution.
-type ToolResult struct {
-	ToolCallID string `json:"tool_call_id"`
-	Name       string `json:"name"`
-	Output     string `json:"output"`
-	Error      string `json:"error,omitempty"`
-}
-
-// AgentState holds the full conversation state for a thread.
-type AgentState struct {
-	ThreadID string    `json:"thread_id"`
-	Messages []Message `json:"messages"`
-	Todos    []Todo    `json:"todos,omitempty"`
-	Files    map[string]string `json:"files,omitempty"` // path → content (tracked writes)
-
-	// toolRegistry holds tools registered at runtime by hooks (e.g. FilesystemHook).
-	// Not serialized — rebuilt on each agent run.
-	toolRegistry map[string]Tool `json:"-"`
-}
-
-// Todo represents a task tracked by the TodoList hook.
-type Todo struct {
-	ID     string `json:"id"`
-	Title  string `json:"title"`
-	Status string `json:"status"` // "pending", "in_progress", "done"
-}
-
-// StreamEvent is sent from the agent loop to the SSE handler.
-type StreamEvent struct {
-	Event    string `json:"event"`              // on_chat_model_stream, on_tool_start, on_tool_end, done, error
-	Name     string `json:"name,omitempty"`     // tool name or model name
-	RunID    string `json:"run_id,omitempty"`
-	Data     any    `json:"data,omitempty"`
-	ThreadID string `json:"thread_id,omitempty"` // set on "done" event
-}
-
 // AgentConfig is the configuration for creating an agent from agents.yaml.
 type AgentConfig struct {
 	Name        string         `yaml:"name" json:"name"`
@@ -100,7 +47,7 @@ type MemoryCfg struct {
 	InitialContent map[string]string `yaml:"initial_content" json:"initial_content"`
 }
 
-// AgentInfo is the JSON response for agent metadata (matches Python AgentInfo).
+// AgentInfo is the JSON response for agent metadata.
 type AgentInfo struct {
 	AgentID         string   `json:"agent_id"`
 	Name            *string  `json:"name"`

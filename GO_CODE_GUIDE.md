@@ -226,7 +226,7 @@ type Agent struct {
 
 ### AgentState — the conversation session
 
-`AgentState` is defined in `agent/types.go`. It holds everything about one chat thread:
+`AgentState` is defined in `agent/state.go`. It holds everything about one chat thread:
 
 ```go
 type AgentState struct {

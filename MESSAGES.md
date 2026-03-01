@@ -1,6 +1,6 @@
 # Messages — Conversation Data Model
 
-> **What this covers:** The `Message` struct, the `Messages` chain type, role enforcement, validation, and how messages flow through the agent loop. Source files: `agent/types.go` (structs) and `agent/messages.go` (chain + validation).
+> **What this covers:** The `Message` struct, the `Messages` chain type, role enforcement, validation, and how messages flow through the agent loop. Source file: `agent/messages.go` (structs, chain, and validation are all in one file).
 >
 > **Go concepts used:** structs, slices, methods on named types, variadic functions (`...`), `append`, `switch`, `fmt.Errorf`, JSON tags, `strings.Builder`. If any of these are unfamiliar, see [GO_BASICS.md](GO_BASICS.md).
 
@@ -11,7 +11,7 @@
 An LLM conversation is a list of messages. Each message has a **role** (who said it) and **content** (what they said). Some messages also carry tool calls or tool results.
 
 ```go
-// agent/types.go
+// agent/messages.go
 
 type Message struct {
     Role       string     `json:"role"`                  // who: "system", "user", "assistant", or "tool"
@@ -38,7 +38,7 @@ There are exactly four roles. The framework enforces this — you cannot use any
 These two structs connect assistant messages to tool messages:
 
 ```go
-// agent/types.go
+// agent/messages.go
 
 // The LLM says: "I want to call this tool with these arguments"
 type ToolCall struct {
@@ -528,7 +528,7 @@ Now that you know the data model, here's how messages are used in `agent/loop.go
 Messages live in `AgentState.Messages`, which is saved to the `ThreadStore` (see [HOOKS.md §3](HOOKS.md)):
 
 ```go
-// agent/types.go
+// agent/messages.go
 type AgentState struct {
     ThreadID string            `json:"thread_id"`
     Messages []Message         `json:"messages"`     // ← the conversation history
@@ -653,8 +653,10 @@ tokens := chain.EstimateTokens()
 
 ```
 wick_deep_agent/server/agent/
-├── types.go       # Message, ToolCall, ToolResult, AgentState, Todo structs (§1)
-└── messages.go    # Role constants (§2), constructors (§3), validation (§4),
-                   # Messages chain type with builder/filter/accessor methods (§5),
-                   # pretty printing, token estimation
+├── messages.go    # Message, ToolCall, ToolResult structs (§1), role constants (§2),
+│                  # constructors (§3), validation (§4), Messages chain type (§5),
+│                  # pretty printing, token estimation
+├── state.go       # AgentState (§7), Todo
+├── config.go      # AgentConfig, BackendCfg, SkillsCfg, MemoryCfg, SubAgentCfg, AgentInfo
+└── events.go      # StreamEvent
 ```
