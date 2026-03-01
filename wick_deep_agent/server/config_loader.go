@@ -69,38 +69,23 @@ func LoadConfigFile(path string, deps *handlers.Deps) error {
 		// Register agent template
 		deps.Registry.RegisterTemplate(agentID, agentCfg)
 
-		// Initialize backend
+		// Initialize backend — always Docker (local or remote daemon).
 		if agentCfg.Backend != nil {
 			username := "local"
-			var b backend.Backend
-
-			if agentCfg.Backend.Type == "local" {
-				// Local backend — runs wickfs directly on the host
-				workdir := agentCfg.Backend.Workdir
-				if workdir == "" {
-					workdir = filepath.Join(configDir, "workspace")
-				} else if !filepath.IsAbs(workdir) {
-					workdir = filepath.Join(configDir, workdir)
-				}
-				b = backend.NewLocalBackend(workdir, agentCfg.Backend.Timeout, agentCfg.Backend.MaxOutputBytes)
-			} else {
-				// Docker backend (default)
-				containerName := agentCfg.Backend.ContainerName
-				if containerName == "" {
-					containerName = fmt.Sprintf("wick-sandbox-%s", username)
-				}
-				db := backend.NewDockerBackend(
-					containerName, agentCfg.Backend.Workdir,
-					agentCfg.Backend.Timeout, agentCfg.Backend.MaxOutputBytes,
-					agentCfg.Backend.DockerHost, agentCfg.Backend.Image, username,
-				)
-				db.LaunchContainerAsync(func(event, user string) {
-					deps.EventBus.Broadcast(event + ":" + user)
-				})
-				b = db
+			containerName := agentCfg.Backend.ContainerName
+			if containerName == "" {
+				containerName = fmt.Sprintf("wick-sandbox-%s", username)
 			}
+			db := backend.NewDockerBackend(
+				containerName, agentCfg.Backend.Workdir,
+				agentCfg.Backend.Timeout, agentCfg.Backend.MaxOutputBytes,
+				agentCfg.Backend.DockerHost, agentCfg.Backend.Image, username,
+			)
+			db.LaunchContainerAsync(func(event, user string) {
+				deps.EventBus.Broadcast(event + ":" + user)
+			})
 
-			deps.Backends.Set(agentID, username, b)
+			deps.Backends.Set(agentID, username, db)
 		}
 
 		log.Printf("  loaded agent %q (%s)", agentID, agentCfg.Name)

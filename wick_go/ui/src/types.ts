@@ -20,11 +20,27 @@ export interface AgentInfo {
   container_error: string | null;
 }
 
+export interface ToolCallInfo {
+  id: string;                              // run_id from SSE
+  name: string;                            // tool name
+  args: Record<string, unknown> | null;    // from on_tool_start data.input
+  output: string | null;                   // from on_tool_end data.output
+  status: 'running' | 'done' | 'error';
+}
+
+export interface Iteration {
+  index: number;
+  content: string;                         // model text for this iteration
+  toolCalls: ToolCallInfo[];
+  status: 'thinking' | 'streaming' | 'tool_running' | 'done';
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  iterations?: Iteration[];
 }
 
 export interface TraceEvent {

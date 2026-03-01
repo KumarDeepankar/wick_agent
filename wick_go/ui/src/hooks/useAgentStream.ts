@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
-import type { ChatMessage, TraceEvent, StreamStatus, CanvasArtifact } from '../types';
+import type { ChatMessage, TraceEvent, StreamStatus, CanvasArtifact, Iteration, ToolCallInfo } from '../types';
 import { extractExtension, extractFileName, resolveContentType, resolveLanguage, isBinaryExtension, isSlideContent } from '../utils/canvasUtils';
 import { fetchFileDownload, getToken } from '../api';
 
@@ -75,11 +75,26 @@ export function useAgentStream() {
   const assistantIdRef = useRef<string | null>(null);
   // Track edit_file run_id → file_path so we can fetch on on_tool_end
   const pendingEditsRef = useRef<Map<string, string>>(new Map());
-  // Insert a separator before next text chunk after a tool call finishes
-  const needsSeparatorRef = useRef(false);
+  // Iteration tracking for ReAct loop grouping
+  const iterationsRef = useRef<Iteration[]>([]);
+  const currentIterRef = useRef<Iteration | null>(null);
   // Batch streaming tokens via rAF for performance
   const pendingTokensRef = useRef('');
   const rafRef = useRef<number>(0);
+
+  // Flush iteration state into the assistant message (both iterations[] and flat content)
+  const flushIterationsToMessage = useCallback(() => {
+    const iters = iterationsRef.current;
+    if (!iters.length) return;
+    const flatContent = iters.map((it) => it.content).filter(Boolean).join('\n\n---\n\n');
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === assistantIdRef.current
+          ? { ...m, content: flatContent, iterations: iters.map((it) => ({ ...it, toolCalls: it.toolCalls.map((tc) => ({ ...tc })) })) }
+          : m,
+      ),
+    );
+  }, []);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -105,11 +120,14 @@ export function useAgentStream() {
       // Create empty assistant message for token assembly
       const assistantId = `assistant-${Date.now()}`;
       assistantIdRef.current = assistantId;
+      iterationsRef.current = [];
+      currentIterRef.current = null;
       const assistantMsg: ChatMessage = {
         id: assistantId,
         role: 'assistant',
         content: '',
         timestamp: Date.now(),
+        iterations: [],
       };
       setMessages((prev) => [...prev, assistantMsg]);
 
@@ -166,8 +184,38 @@ export function useAgentStream() {
           };
           setTraceEvents((prev) => [...prev, traceEvt]);
 
+          // on_chat_model_start → push new iteration
+          if (sse.event === 'on_chat_model_start') {
+            // Finalize previous iteration if it exists
+            if (currentIterRef.current && currentIterRef.current.status !== 'done') {
+              currentIterRef.current.status = 'done';
+            }
+            const newIter: Iteration = {
+              index: iterationsRef.current.length,
+              content: '',
+              toolCalls: [],
+              status: 'streaming',
+            };
+            iterationsRef.current.push(newIter);
+            currentIterRef.current = newIter;
+          }
+
           // Detect write_file / edit_file tool calls → canvas artifacts
           if (sse.event === 'on_tool_start') {
+            // Track tool call in current iteration
+            if (currentIterRef.current) {
+              const toolCall: ToolCallInfo = {
+                id: (parsed.run_id as string) ?? `tool-${Date.now()}`,
+                name: (parsed.name as string) ?? 'unknown',
+                args: ((parsed.data as Record<string, unknown>)?.input as Record<string, unknown>) ?? null,
+                output: null,
+                status: 'running',
+              };
+              currentIterRef.current.toolCalls.push(toolCall);
+              currentIterRef.current.status = 'tool_running';
+              flushIterationsToMessage();
+            }
+
             const toolName = parsed.name as string;
             const input = (parsed.data as Record<string, unknown>)?.input as Record<string, unknown> | undefined;
             const rawPath = (input?.file_path ?? input?.path) as string | undefined;
@@ -212,19 +260,26 @@ export function useAgentStream() {
             }
           }
 
-          // Mark that a step boundary occurred so we insert a divider before next text
+          // Detect edit_file completion → fetch updated file from backend
           if (sse.event === 'on_tool_end') {
-            // Only set if assistant already has content
-            setMessages((prev) => {
-              const cur = prev.find((m) => m.id === assistantIdRef.current);
-              if (cur && cur.content.trim()) {
-                needsSeparatorRef.current = true;
+            // Mark matching tool call as done in current iteration
+            if (currentIterRef.current) {
+              const runId = parsed.run_id as string;
+              const output = (parsed.data as Record<string, unknown>)?.output;
+              const outputStr = typeof output === 'string' ? output : (output != null ? JSON.stringify(output) : null);
+              const tc = currentIterRef.current.toolCalls.find((t) => t.id === runId);
+              if (tc) {
+                tc.status = 'done';
+                tc.output = outputStr;
               }
-              return prev;
-            });
+              // If all tool calls done, mark iteration as done (next model_start will create new iteration)
+              if (currentIterRef.current.toolCalls.every((t) => t.status !== 'running')) {
+                currentIterRef.current.status = 'done';
+              }
+              flushIterationsToMessage();
+            }
           }
 
-          // Detect edit_file completion → fetch updated file from backend
           if (sse.event === 'on_tool_end') {
             const toolName = parsed.name as string;
             const runId = parsed.run_id as string;
@@ -326,22 +381,27 @@ export function useAgentStream() {
               const chunk = (parsed.data as Record<string, unknown>)?.chunk as Record<string, unknown> | undefined;
               const token = (chunk?.content as string) ?? '';
               if (token) {
-                const prefix = needsSeparatorRef.current ? '\n\n---\n\n' : '';
-                needsSeparatorRef.current = false;
+                // Ensure we have a current iteration (handle edge case of stream without model_start)
+                if (!currentIterRef.current) {
+                  const newIter: Iteration = {
+                    index: iterationsRef.current.length,
+                    content: '',
+                    toolCalls: [],
+                    status: 'streaming',
+                  };
+                  iterationsRef.current.push(newIter);
+                  currentIterRef.current = newIter;
+                }
+                // Append token to current iteration content
+                currentIterRef.current.content += token;
+
                 // Batch tokens via rAF to avoid per-token re-renders
-                pendingTokensRef.current += prefix + token;
+                pendingTokensRef.current += token;
                 if (!rafRef.current) {
                   rafRef.current = requestAnimationFrame(() => {
-                    const batch = pendingTokensRef.current;
                     pendingTokensRef.current = '';
                     rafRef.current = 0;
-                    setMessages((prev) =>
-                      prev.map((m) =>
-                        m.id === assistantIdRef.current
-                          ? { ...m, content: m.content + batch }
-                          : m,
-                      ),
-                    );
+                    flushIterationsToMessage();
                   });
                 }
               }
@@ -351,17 +411,15 @@ export function useAgentStream() {
             case 'done': {
               // Flush any pending batched tokens
               if (pendingTokensRef.current) {
-                const batch = pendingTokensRef.current;
                 pendingTokensRef.current = '';
                 if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === assistantIdRef.current
-                      ? { ...m, content: m.content + batch }
-                      : m,
-                  ),
-                );
               }
+              // Mark final iteration as done
+              if (currentIterRef.current && currentIterRef.current.status !== 'done') {
+                currentIterRef.current.status = 'done';
+              }
+              flushIterationsToMessage();
+              currentIterRef.current = null;
               const tid = parsed.thread_id as string;
               if (tid) setThreadId(tid);
               setStatus('done');
@@ -412,7 +470,8 @@ export function useAgentStream() {
     setError(null);
     setStatus('idle');
     pendingEditsRef.current.clear();
-    needsSeparatorRef.current = false;
+    iterationsRef.current = [];
+    currentIterRef.current = null;
   }, [stop]);
 
   return {

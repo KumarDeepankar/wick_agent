@@ -10,7 +10,7 @@ interface Props {
 const EVENT_CATEGORIES: Record<string, string[]> = {
   all: [],
   setup: ['agent_start', 'input_prompt', 'files_seeded'],
-  llm: ['on_chat_model_start', 'on_chat_model_stream', 'on_chat_model_end'],
+  llm: ['on_llm_input', 'on_chat_model_start', 'on_chat_model_stream', 'on_chat_model_end', 'on_llm_output'],
   tools: ['on_tool_start', 'on_tool_end'],
   chain: ['on_chain_start', 'on_chain_end', 'on_chain_stream'],
   status: ['done', 'error'],
