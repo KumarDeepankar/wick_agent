@@ -127,9 +127,13 @@ const (
 
 ---
 
-## 3. Message Constructors
+## 3. Constructors
 
-Instead of writing out the full `Message{Role: ..., Content: ...}` struct every time, use these shortcut functions:
+Instead of writing out the full `Message{Role: ..., Content: ...}` struct every time, use these shortcut functions. There are two kinds: **single-message constructors** (create one message) and the **chain constructor** (create a list of messages).
+
+### 3.1 Single-Message Constructors
+
+Each returns one `Message` with the correct role pre-filled:
 
 ```go
 // agent/messages.go
@@ -171,6 +175,38 @@ msg := agent.AI("", agent.ToolCall{ID: "call_1", Name: "ls", Args: map[string]an
 // Tool result:
 msg := agent.ToolMsg("call_1", "ls", `[{"name":"main.py","type":"file","size":256}]`)
 ```
+
+### 3.2 Chain Constructor — NewMessages
+
+A conversation is a **list** of messages, not a single message. `Messages` is a named type over `[]Message` (explained fully in §5), and `NewMessages` creates one:
+
+```go
+// Messages is just a []Message with methods attached
+type Messages []Message
+
+// NewMessages creates a Messages chain — empty or from existing messages
+func NewMessages(msgs ...Message) Messages {
+    return Messages(msgs)
+}
+```
+
+**Usage:**
+
+```go
+// Empty chain:
+chain := agent.NewMessages()
+
+// Chain with initial messages:
+chain := agent.NewMessages(
+    agent.System("You are helpful."),
+    agent.Human("What is 2+2?"),
+)
+
+// You can also use make() since Messages is just a slice:
+chain := make(agent.Messages, 0)
+```
+
+`NewMessages` returns a `Messages` value. Because `Messages` is a named type (not just `[]Message`), it has methods like `.Validate()`, `.Human()`, `.Last()` — all covered in §5. But you need `NewMessages` first to create one, which is why it's introduced here alongside the other constructors.
 
 ---
 
