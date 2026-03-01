@@ -508,6 +508,13 @@ func (h *agentHandler) stream(w http.ResponseWriter, r *http.Request, agentID *s
 				"data":  evt.Data,
 			})
 
+		case "on_llm_input":
+			sseWriter.SendEvent("on_llm_input", map[string]any{
+				"event": "on_llm_input",
+				"name":  evt.Name,
+				"data":  evt.Data,
+			})
+
 		case "on_chat_model_start":
 			sseWriter.SendEvent("on_chat_model_start", map[string]any{
 				"event": "on_chat_model_start",
@@ -518,6 +525,13 @@ func (h *agentHandler) stream(w http.ResponseWriter, r *http.Request, agentID *s
 			sseWriter.SendEvent("on_chat_model_end", map[string]any{
 				"event": "on_chat_model_end",
 				"name":  evt.Name,
+			})
+
+		case "on_llm_output":
+			sseWriter.SendEvent("on_llm_output", map[string]any{
+				"event": "on_llm_output",
+				"name":  evt.Name,
+				"data":  evt.Data,
 			})
 
 		case "on_tool_start":
@@ -932,13 +946,19 @@ func (h *agentHandler) patchBackend(w http.ResponseWriter, r *http.Request, agen
 
 	switch body.Mode {
 	case "local":
-		// True local mode — no Docker at all, direct Go stdlib calls.
-		b = backend.NewLocalBackend(defaultWorkdir, defaultTimeout, defaultMaxOutput)
-		inst.Config.Backend = &agent.BackendCfg{Type: "local", Workdir: defaultWorkdir}
-		// No container status — local backend runs on the host directly.
+		// Local mode — Docker container on the local Docker daemon.
+		db := backend.NewDockerBackend(defaultContainerName, defaultWorkdir, defaultTimeout, defaultMaxOutput, "", defaultImage, username)
+		b = db
+		inst.Config.Backend = &agent.BackendCfg{Type: "docker", Workdir: defaultWorkdir, ContainerName: defaultContainerName}
+
+		// Async container launch
+		db.LaunchContainerAsync(func(event, user string) {
+			h.deps.EventBus.Broadcast(event + ":" + user)
+		})
+		containerStatus = "launching"
 
 	case "remote":
-		// Remote mode — Docker container (local or remote daemon).
+		// Remote mode — Docker container on a remote Docker daemon via TCP.
 		dockerHost := ""
 		if body.SandboxURL != nil {
 			dockerHost = *body.SandboxURL
@@ -1655,13 +1675,10 @@ func getConfigPaths(hookConfig map[string]any, name string) []string {
 
 // --- Agent builder ---
 
-// createBackend creates the appropriate backend (local or docker) based on config.
+// createBackend creates a Docker backend based on config.
+// All execution happens inside Docker containers — local mode uses the local
+// Docker daemon, remote mode uses a remote daemon via TCP.
 func (h *agentHandler) createBackend(cfg *agent.BackendCfg, username string) backend.Backend {
-	if cfg.Type == "local" {
-		return backend.NewLocalBackend(cfg.Workdir, cfg.Timeout, cfg.MaxOutputBytes)
-	}
-
-	// Default: Docker backend
 	containerName := cfg.ContainerName
 	if containerName == "" {
 		containerName = fmt.Sprintf("wick-sandbox-%s", username)

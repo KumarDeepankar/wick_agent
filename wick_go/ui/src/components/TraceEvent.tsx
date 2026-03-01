@@ -6,9 +6,11 @@ interface Props {
 }
 
 const EVENT_VAR_MAP: Record<string, string> = {
+  on_llm_input: 'var(--trace-llm)',
   on_chat_model_start: 'var(--trace-llm)',
   on_chat_model_stream: 'var(--trace-llm)',
   on_chat_model_end: 'var(--trace-llm)',
+  on_llm_output: 'var(--trace-llm)',
   on_tool_start: 'var(--trace-tool)',
   on_tool_end: 'var(--trace-tool)',
   on_chain_start: 'var(--trace-chain)',
@@ -27,10 +29,23 @@ function getSummary(event: TraceEventType): string {
   const name = d.name as string ?? '';
 
   switch (event.eventType) {
+    case 'on_llm_input': {
+      const data = d.data as Record<string, unknown> | undefined;
+      const msgCount = data?.message_count ?? '?';
+      const iter = data?.iteration ?? '?';
+      return `Iteration ${iter} | ${msgCount} messages → ${name}`;
+    }
     case 'on_chat_model_start':
       return `${name}`;
     case 'on_chat_model_stream':
       return ((d.data as Record<string, unknown>)?.chunk as Record<string, unknown>)?.content as string || '[chunk]';
+    case 'on_llm_output': {
+      const data = d.data as Record<string, unknown> | undefined;
+      const iter = data?.iteration ?? '?';
+      const contentLen = data?.content_length ?? 0;
+      const tcCount = data?.tool_call_count ?? 0;
+      return `Iteration ${iter} | ${contentLen} chars${tcCount ? ` | ${tcCount} tool calls` : ''} ← ${name}`;
+    }
     case 'on_chat_model_end':
       return `${name}`;
     case 'on_tool_start':

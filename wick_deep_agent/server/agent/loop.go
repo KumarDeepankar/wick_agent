@@ -205,6 +205,37 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 			tr.RecordEvent("llm.input", inputEvent)
 		}
 
+		// When debug is enabled, emit full untruncated LLM input as SSE event
+		if a.Config.Debug && eventCh != nil {
+			fullMsgs := make([]map[string]any, len(msgs))
+			for i, m := range msgs {
+				entry := map[string]any{
+					"role":    m.Role,
+					"content": m.Content,
+				}
+				if len(m.ToolCalls) > 0 {
+					tcs := make([]map[string]any, len(m.ToolCalls))
+					for j, tc := range m.ToolCalls {
+						tcs[j] = map[string]any{"id": tc.ID, "name": tc.Name, "args": tc.Args}
+					}
+					entry["tool_calls"] = tcs
+				}
+				if m.ToolCallID != "" {
+					entry["tool_call_id"] = m.ToolCallID
+				}
+				fullMsgs[i] = entry
+			}
+			debugData := map[string]any{
+				"iteration":     iter,
+				"message_count": len(msgs),
+				"messages":      fullMsgs,
+			}
+			if a.Config.SystemPrompt != "" {
+				debugData["system_prompt"] = a.Config.SystemPrompt
+			}
+			eventCh <- StreamEvent{Event: "on_llm_input", Name: a.Config.ModelStr(), Data: debugData}
+		}
+
 		// Build model call chain (onion ring)
 		modelCall := a.buildModelChain(toolSchemas)
 
@@ -217,6 +248,24 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 		}
 
 		eventCh <- StreamEvent{Event: "on_chat_model_end", Name: a.Config.ModelStr()}
+
+		// When debug is enabled, emit full LLM response as SSE event
+		if a.Config.Debug && eventCh != nil {
+			debugResp := map[string]any{
+				"iteration":      iter,
+				"content":        response.Content,
+				"content_length": len(response.Content),
+				"tool_call_count": len(response.ToolCalls),
+			}
+			if len(response.ToolCalls) > 0 {
+				tcs := make([]map[string]any, len(response.ToolCalls))
+				for j, tc := range response.ToolCalls {
+					tcs[j] = map[string]any{"id": tc.ID, "name": tc.Name, "args": tc.Args}
+				}
+				debugResp["tool_calls"] = tcs
+			}
+			eventCh <- StreamEvent{Event: "on_llm_output", Name: a.Config.ModelStr(), Data: debugResp}
+		}
 
 		// Add assistant message
 		state.Messages = append(state.Messages, AI(response.Content, response.ToolCalls...))

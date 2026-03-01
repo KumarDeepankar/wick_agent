@@ -14,13 +14,11 @@ import (
 func main() {
 	here, _ := filepath.Abs(filepath.Dir(os.Args[0]))
 	skillsDir := filepath.Join(here, "skills")
-	workspaceDir := filepath.Join(here, "workspace")
 
 	// If running via `go run`, use the source directory instead.
 	if wd, err := os.Getwd(); err == nil {
 		if _, err := os.Stat(filepath.Join(wd, "skills")); err == nil {
 			skillsDir = filepath.Join(wd, "skills")
-			workspaceDir = filepath.Join(wd, "workspace")
 		}
 	}
 
@@ -53,7 +51,7 @@ Prefer using skills over writing custom code. Skills give you proven, consistent
 		SystemPrompt: systemPrompt,
 		Tools:        []string{"internet_search", "calculate", "current_datetime"},
 		Skills:       &agent.SkillsCfg{Paths: []string{skillsDir}},
-		Backend:      &agent.BackendCfg{Type: "local", Workdir: workspaceDir},
+		Backend:      &agent.BackendCfg{Type: "docker", Workdir: "/workspace", Image: "wick-sandbox"},
 		Debug:        true,
 		Subagents: []agent.SubAgentCfg{
 			{
@@ -78,7 +76,7 @@ Prefer using skills over writing custom code. Skills give you proven, consistent
 		SystemPrompt: systemPrompt,
 		Tools:        []string{"internet_search", "calculate", "current_datetime"},
 		Skills:       &agent.SkillsCfg{Paths: []string{skillsDir}},
-		Backend:      &agent.BackendCfg{Type: "local", Workdir: workspaceDir},
+		Backend:      &agent.BackendCfg{Type: "docker", Workdir: "/workspace", Image: "wick-sandbox"},
 		Debug:        true,
 	})
 
