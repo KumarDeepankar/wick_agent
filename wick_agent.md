@@ -47,8 +47,10 @@ wick_agent/
 │   │   ├── auth.go                 # Bearer token auth middleware
 │   │   ├── go.mod                  # Module: wick_server (go 1.24)
 │   │   ├── agent/                  # Core runtime
-│   │   │   ├── types.go            # Message, ToolCall, AgentState, AgentConfig, StreamEvent
-│   │   │   ├── messages.go         # Messages chain, role constants, ValidRole/Validate, builders, token estimation
+│   │   │   ├── messages.go         # Message, ToolCall, ToolResult, Messages chain, role constants, validation, builders
+│   │   │   ├── state.go            # AgentState, Todo
+│   │   │   ├── config.go           # AgentConfig, BackendCfg, SkillsCfg, MemoryCfg, SubAgentCfg, AgentInfo
+│   │   │   ├── events.go           # StreamEvent
 │   │   │   ├── hook.go             # Hook interface (4 phases) + BaseHook
 │   │   │   ├── tool.go             # Tool interface + FuncTool + ToolRegistry + RegisterToolOnState()
 │   │   │   ├── loop.go             # Agent loop (LLM ↔ tool iteration, max 25 turns)

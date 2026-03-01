@@ -8,7 +8,7 @@
 
 These types appear in every hook signature. Learn them first.
 
-### 1.1 Message (`agent/types.go`)
+### 1.1 Message (`agent/messages.go`)
 
 A single entry in the conversation. Every chat turn — system prompt, user input, LLM reply, tool output — is a `Message`.
 
@@ -63,7 +63,7 @@ type Message struct {
 ]
 ```
 
-### 1.2 ToolCall (`agent/types.go`)
+### 1.2 ToolCall (`agent/messages.go`)
 
 When the LLM wants to use a tool, it returns one or more `ToolCall` values inside an assistant message's `ToolCalls` field (see §1.1 above).
 
@@ -90,7 +90,7 @@ type ToolCall struct {
 }
 ```
 
-### 1.3 ToolResult (`agent/types.go`)
+### 1.3 ToolResult (`agent/messages.go`)
 
 After a tool executes, the framework wraps its output in a `ToolResult`. This becomes a `"tool"` role message (see §1.1).
 
@@ -124,7 +124,7 @@ type ToolResult struct {
 }
 ```
 
-### 1.4 Todo (`agent/types.go`)
+### 1.4 Todo (`agent/state.go`)
 
 A single task item. Managed by the TodoListHook (see §6.5).
 
@@ -340,7 +340,7 @@ type HTTPTool struct {
 
 Now that you know Message (§1.1), Todo (§1.4), and Tool (§2.1), here's how they're stored together.
 
-### 3.1 AgentState (`agent/types.go`)
+### 3.1 AgentState (`agent/state.go`)
 
 The full conversation state for a single thread. This is what hooks read from and write to.
 
@@ -847,7 +847,7 @@ func WithTraceRecorder(ctx context.Context, tr TraceRecorder) context.Context
 func TraceFromContext(ctx context.Context) TraceRecorder  // returns nil if not set
 ```
 
-### 7.3 StreamEvent (`agent/types.go`)
+### 7.3 StreamEvent (`agent/events.go`)
 
 Events emitted from the agent loop (§8) to the SSE handler during streaming. Not directly used by hooks, but useful to understand the full picture.
 
@@ -872,7 +872,7 @@ type StreamEvent struct {
 {"event": "done", "thread_id": "th_8f3a2b"}
 ```
 
-### 7.4 Agent Configuration (`agent/types.go`)
+### 7.4 Agent Configuration (`agent/config.go`)
 
 The YAML/JSON config that controls which hooks are activated. This is what `handlers.go` reads to decide which hooks to create (§5.2).
 
@@ -1007,8 +1007,10 @@ Agent loop (§8)
 ```
 wick_deep_agent/server/
 ├── agent/
-│   ├── types.go             # Message (§1.1), ToolCall (§1.2), ToolResult (§1.3), AgentState (§3.1), Todo (§1.4), StreamEvent (§7.3), AgentConfig (§7.4)
-│   ├── messages.go          # Messages chain (§1.6), role constants (§1.5), validation, builders, token estimation
+│   ├── state.go             # AgentState (§3.1), Todo (§1.4)
+│   ├── config.go            # AgentConfig (§7.4), BackendCfg, SkillsCfg, MemoryCfg, SubAgentCfg, AgentInfo
+│   ├── events.go            # StreamEvent (§7.3)
+│   ├── messages.go          # Message (§1.1), ToolCall (§1.2), ToolResult (§1.3), Messages chain (§1.6), role constants (§1.5), validation, builders
 │   ├── hook.go              # Hook interface (§4.1), BaseHook (§4.3), ModelCallWrapFunc, ToolCallFunc (§4.2)
 │   ├── tool.go              # Tool interface (§2.1), FuncTool (§2.2), ToolRegistry, RegisterToolOnState (§2.3)
 │   ├── http_tool.go         # HTTPTool (§2.4) — forwards tool calls to remote HTTP callback
