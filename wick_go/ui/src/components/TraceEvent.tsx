@@ -31,9 +31,10 @@ function getSummary(event: TraceEventType): string {
   switch (event.eventType) {
     case 'on_llm_input': {
       const data = d.data as Record<string, unknown> | undefined;
-      const msgCount = data?.message_count ?? '?';
-      const iter = data?.iteration ?? '?';
-      return `Iteration ${iter} | ${msgCount} messages → ${name}`;
+      const msgs = data?.messages as unknown[] | undefined;
+      const tools = data?.tools as unknown[] | undefined;
+      const model = (data?.model as string) ?? name;
+      return `${msgs?.length ?? '?'} messages | ${tools?.length ?? 0} tools → ${model}`;
     }
     case 'on_chat_model_start':
       return `${name}`;

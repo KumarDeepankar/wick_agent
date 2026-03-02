@@ -90,8 +90,8 @@ func (h *SummarizationHook) WrapModelCall(ctx context.Context, msgs []agent.Mess
 	return next(ctx, compressed)
 }
 
-func (h *SummarizationHook) ModifyRequest(ctx context.Context, msgs []agent.Message) ([]agent.Message, error) {
-	return msgs, nil
+func (h *SummarizationHook) ModifyRequest(ctx context.Context, systemPrompt string, msgs []agent.Message) (string, []agent.Message, error) {
+	return systemPrompt, msgs, nil
 }
 
 func (h *SummarizationHook) WrapToolCall(ctx context.Context, call agent.ToolCall, next agent.ToolCallFunc) (*agent.ToolResult, error) {

@@ -25,6 +25,12 @@ type HookOverrides struct {
 	Config map[string]any `json:"config"` // per-hook config (e.g. memory paths)
 }
 
+// SkillPrefs holds per-user skill preferences.
+type SkillPrefs struct {
+	Disabled   map[string]bool `json:"disabled"`    // skill name → disabled
+	ExtraPaths []string        `json:"extra_paths"` // user-added skill scan paths
+}
+
 // Instance is a user-scoped live agent created from a template.
 type Instance struct {
 	AgentID       string
@@ -32,6 +38,7 @@ type Instance struct {
 	Config        *AgentConfig
 	Agent         *Agent // set after first use (lazy clone)
 	HookOverrides *HookOverrides
+	SkillPrefs    *SkillPrefs
 	// Backend and other runtime state
 	BackendID string
 }
@@ -189,6 +196,23 @@ func (r *Registry) UpdateHookOverrides(agentID, username string, overrides *Hook
 	return nil
 }
 
+// UpdateSkillPrefs atomically updates the skill preferences for an instance
+// and forces an agent rebuild on the next use.
+func (r *Registry) UpdateSkillPrefs(agentID, username string, prefs *SkillPrefs) error {
+	key := scopedKey(agentID, username)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	inst, ok := r.instances[key]
+	if !ok {
+		return fmt.Errorf("agent %q not found for user %q", agentID, username)
+	}
+	inst.SkillPrefs = prefs
+	inst.Agent = nil // force rebuild on next use
+	return nil
+}
+
 // InvalidateAllAgents forces all cached agent instances to rebuild on next use.
 // Called when external tools are registered/deregistered so agents pick up the changes.
 func (r *Registry) InvalidateAllAgents() {
@@ -286,6 +310,12 @@ func templateToInfo(tmpl *Template) AgentInfo {
 		if cfg.Backend.DockerHost != "" {
 			info.SandboxURL = &cfg.Backend.DockerHost
 		}
+	}
+	if cfg.Skills != nil {
+		info.Skills = cfg.Skills.Paths
+	}
+	if cfg.Memory != nil {
+		info.Memory = cfg.Memory.Paths
 	}
 	return info
 }

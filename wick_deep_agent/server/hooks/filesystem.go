@@ -285,8 +285,8 @@ func (h *FilesystemHook) WrapToolCall(ctx context.Context, call agent.ToolCall, 
 }
 
 // ModifyRequest is a no-op for FilesystemHook.
-func (h *FilesystemHook) ModifyRequest(ctx context.Context, msgs []agent.Message) ([]agent.Message, error) {
-	return msgs, nil
+func (h *FilesystemHook) ModifyRequest(ctx context.Context, systemPrompt string, msgs []agent.Message) (string, []agent.Message, error) {
+	return systemPrompt, msgs, nil
 }
 
 // WrapModelCall passes through.

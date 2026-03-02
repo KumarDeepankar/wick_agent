@@ -51,10 +51,10 @@ func (h *MemoryHook) BeforeAgent(ctx context.Context, state *agent.AgentState) e
 	return nil
 }
 
-// ModifyRequest injects memory content wrapped in <agent_memory> tags.
-func (h *MemoryHook) ModifyRequest(ctx context.Context, msgs []agent.Message) ([]agent.Message, error) {
+// ModifyRequest injects memory content wrapped in <agent_memory> tags into the system prompt.
+func (h *MemoryHook) ModifyRequest(ctx context.Context, systemPrompt string, msgs []agent.Message) (string, []agent.Message, error) {
 	if h.memoryContent == "" {
-		return msgs, nil
+		return systemPrompt, msgs, nil
 	}
 
 	injection := fmt.Sprintf(`
@@ -69,14 +69,7 @@ Guidelines for agent memory:
 - Use it to track important context, decisions, and patterns
 - Keep entries concise and organized`, h.memoryContent)
 
-	// Find or create system message
-	if len(msgs) > 0 && msgs[0].Role == "system" {
-		msgs[0].Content += injection
-	} else {
-		msgs = append([]agent.Message{{Role: "system", Content: injection}}, msgs...)
-	}
-
-	return msgs, nil
+	return systemPrompt + injection, msgs, nil
 }
 
 func (h *MemoryHook) WrapModelCall(ctx context.Context, msgs []agent.Message, next agent.ModelCallWrapFunc) (*llm.Response, error) {

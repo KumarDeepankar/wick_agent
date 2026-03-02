@@ -274,6 +274,11 @@ func (c *OpenAIClient) buildRequest(req Request, stream bool) []byte {
 	return data
 }
 
+// BuildRequestJSON returns the OpenAI-formatted JSON request body.
+func (c *OpenAIClient) BuildRequestJSON(req Request) json.RawMessage {
+	return c.buildRequest(req, false)
+}
+
 func (c *OpenAIClient) doRequest(ctx context.Context, body []byte) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {

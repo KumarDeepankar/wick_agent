@@ -268,6 +268,11 @@ func (c *AnthropicClient) buildRequest(req Request, stream bool) []byte {
 	return data
 }
 
+// BuildRequestJSON returns the Anthropic-formatted JSON request body.
+func (c *AnthropicClient) BuildRequestJSON(req Request) json.RawMessage {
+	return c.buildRequest(req, false)
+}
+
 func (c *AnthropicClient) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", c.apiKey)

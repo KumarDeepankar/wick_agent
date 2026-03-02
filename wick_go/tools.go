@@ -1,4 +1,4 @@
-package handlers
+package main
 
 import (
 	"context"
@@ -7,47 +7,52 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	wickserver "wick_server"
 	"wick_server/agent"
 )
 
-// NewBuiltinTools returns the set of built-in tools (not backend-dependent).
-// Tavily API key is read from the agent's BuiltinConfig map.
-func NewBuiltinTools(cfg *agent.AgentConfig) []agent.Tool {
-	var tools []agent.Tool
-
-	// internet_search — uses Tavily API from agent's builtin_config
-	tavilyKey := ""
-	if cfg.BuiltinConfig != nil {
-		tavilyKey = cfg.BuiltinConfig["tavily_api_key"]
-	}
-	if tavilyKey != "" {
-		key := tavilyKey // capture for closure
-		tools = append(tools, &agent.FuncTool{
-			ToolName: "internet_search",
-			ToolDesc: "Search the internet for information. Returns relevant search results with snippets.",
-			ToolParams: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"query": map[string]any{"type": "string", "description": "Search query"},
-				},
-				"required": []string{"query"},
+// registerTools registers all application-level tools on the server.
+func registerTools(s *wickserver.Server) {
+	s.RegisterTool(&agent.FuncTool{
+		ToolName: "add",
+		ToolDesc: "Add two numbers together and return the sum.",
+		ToolParams: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"a": map[string]any{"type": "number", "description": "First number"},
+				"b": map[string]any{"type": "number", "description": "Second number"},
 			},
-			Fn: func(ctx context.Context, args map[string]any) (string, error) {
-				query, _ := args["query"].(string)
-				if query == "" {
-					return "Error: query is required", nil
-				}
-				return tavilySearch(ctx, key, query)
-			},
-		})
-	}
+			"required": []string{"a", "b"},
+		},
+		Fn: func(ctx context.Context, args map[string]any) (string, error) {
+			a, _ := args["a"].(float64)
+			b, _ := args["b"].(float64)
+			return fmt.Sprintf("%g", a+b), nil
+		},
+	})
 
-	// calculate
-	tools = append(tools, &agent.FuncTool{
+	s.RegisterTool(&agent.FuncTool{
+		ToolName: "weather",
+		ToolDesc: "Get the current weather for a city (demo — returns mock data).",
+		ToolParams: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"city": map[string]any{"type": "string", "description": "City name"},
+			},
+			"required": []string{"city"},
+		},
+		Fn: func(ctx context.Context, args map[string]any) (string, error) {
+			city, _ := args["city"].(string)
+			return fmt.Sprintf("Weather in %s: 72°F, sunny", city), nil
+		},
+	})
+
+	s.RegisterTool(&agent.FuncTool{
 		ToolName: "calculate",
 		ToolDesc: "Evaluate a mathematical expression. Supports basic arithmetic (+, -, *, /, ^, %, sqrt).",
 		ToolParams: map[string]any{
@@ -66,8 +71,7 @@ func NewBuiltinTools(cfg *agent.AgentConfig) []agent.Tool {
 		},
 	})
 
-	// current_datetime
-	tools = append(tools, &agent.FuncTool{
+	s.RegisterTool(&agent.FuncTool{
 		ToolName: "current_datetime",
 		ToolDesc: "Get the current date and time in UTC and local timezone.",
 		ToolParams: map[string]any{
@@ -83,17 +87,39 @@ func NewBuiltinTools(cfg *agent.AgentConfig) []agent.Tool {
 		},
 	})
 
-	return tools
+	tavilyKey := os.Getenv("TAVILY_API_KEY")
+	if tavilyKey != "" {
+		s.RegisterTool(&agent.FuncTool{
+			ToolName: "internet_search",
+			ToolDesc: "Search the internet for information. Returns relevant search results with snippets.",
+			ToolParams: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{"type": "string", "description": "Search query"},
+				},
+				"required": []string{"query"},
+			},
+			Fn: func(ctx context.Context, args map[string]any) (string, error) {
+				query, _ := args["query"].(string)
+				if query == "" {
+					return "Error: query is required", nil
+				}
+				return tavilySearch(ctx, tavilyKey, query)
+			},
+		})
+	}
 }
+
+// --- Helper functions ---
 
 // tavilySearch calls the Tavily search API.
 func tavilySearch(ctx context.Context, apiKey, query string) (string, error) {
 	body, _ := json.Marshal(map[string]any{
-		"api_key":            apiKey,
-		"query":              query,
-		"search_depth":       "basic",
-		"include_answer":     true,
-		"max_results":        5,
+		"api_key":        apiKey,
+		"query":          query,
+		"search_depth":   "basic",
+		"include_answer": true,
+		"max_results":    5,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.tavily.com/search", strings.NewReader(string(body)))
@@ -154,7 +180,6 @@ func calculate(expr string) string {
 
 	// Simple two-operand expression
 	for _, op := range []string{"+", "-", "*", "/", "^", "%"} {
-		// Find the operator (skip if it's at the start for negative numbers)
 		idx := -1
 		for i := 1; i < len(expr); i++ {
 			if string(expr[i]) == op {
@@ -191,7 +216,6 @@ func calculate(expr string) string {
 		}
 	}
 
-	// Try as a plain number
 	if val, err := strconv.ParseFloat(expr, 64); err == nil {
 		return fmt.Sprintf("%g", val)
 	}

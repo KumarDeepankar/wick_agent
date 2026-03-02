@@ -185,6 +185,67 @@ export async function updateAgentHooks(
   return res.json();
 }
 
+// ── Skills Management ───────────────────────────────────────────────────
+
+export interface AgentSkillEntry {
+  name: string;
+  description: string;
+  enabled: boolean;
+  path: string;
+}
+
+export interface AgentSkillsResponse {
+  skills: AgentSkillEntry[];
+  paths: string[];
+  extra_paths: string[];
+}
+
+export async function fetchAgentSkills(agentId: string): Promise<AgentSkillsResponse> {
+  const res = await authFetch(`/agents/${agentId}/skills`);
+  if (!res.ok) throw new Error(`Failed to fetch skills: ${res.status}`);
+  return res.json();
+}
+
+export async function toggleAgentSkills(
+  agentId: string,
+  payload: { enable?: string[]; disable?: string[] },
+): Promise<AgentSkillsResponse> {
+  const res = await authFetch(`/agents/${agentId}/skills`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`Failed to toggle skills: ${res.status}`);
+  return res.json();
+}
+
+export async function updateSkillPaths(
+  agentId: string,
+  payload: { add?: string[]; remove?: string[] },
+): Promise<{ paths: string[]; extra_paths: string[] }> {
+  const res = await authFetch(`/agents/${agentId}/skills/paths`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`Failed to update skill paths: ${res.status}`);
+  return res.json();
+}
+
+export async function uploadSkillZip(
+  agentId: string,
+  file: File,
+): Promise<{ status: string; skill_dir: string; target: string }> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await authFetch(`/agents/${agentId}/skills/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) throw new Error(`Failed to upload skill: ${res.status}`);
+  return res.json();
+}
+
 // ── Container file browser ──────────────────────────────────────────────
 
 export interface FileEntry {

@@ -11,9 +11,8 @@ type AgentConfig struct {
 	Backend     *BackendCfg    `yaml:"backend" json:"backend"`
 	Skills      *SkillsCfg     `yaml:"skills" json:"skills"`
 	Memory      *MemoryCfg     `yaml:"memory" json:"memory"`
-	Debug         bool              `yaml:"debug" json:"debug"`
-	ContextWindow int               `yaml:"context_window" json:"context_window"`
-	BuiltinConfig map[string]string `yaml:"builtin_config" json:"builtin_config"`
+	Debug         bool `yaml:"debug" json:"debug"`
+	ContextWindow int  `yaml:"context_window" json:"context_window"`
 }
 
 // SubAgentCfg describes a subagent template.
@@ -38,7 +37,8 @@ type BackendCfg struct {
 
 // SkillsCfg holds skills configuration.
 type SkillsCfg struct {
-	Paths []string `yaml:"paths" json:"paths"`
+	Paths     []string `yaml:"paths" json:"paths"`           // container-side paths (used by SkillsHook via backend.Execute)
+	HostPaths []string `yaml:"host_paths" json:"host_paths"` // host-side paths (used by availableSkills for welcome page)
 }
 
 // MemoryCfg holds memory configuration.

@@ -72,8 +72,8 @@ func (h *TodoListHook) BeforeAgent(ctx context.Context, state *agent.AgentState)
 	return nil
 }
 
-func (h *TodoListHook) ModifyRequest(ctx context.Context, msgs []agent.Message) ([]agent.Message, error) {
-	return msgs, nil
+func (h *TodoListHook) ModifyRequest(ctx context.Context, systemPrompt string, msgs []agent.Message) (string, []agent.Message, error) {
+	return systemPrompt, msgs, nil
 }
 
 func (h *TodoListHook) WrapModelCall(ctx context.Context, msgs []agent.Message, next agent.ModelCallWrapFunc) (*llm.Response, error) {

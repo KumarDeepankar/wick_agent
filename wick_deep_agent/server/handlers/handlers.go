@@ -1,6 +1,9 @@
 package handlers
 
 import (
+	"archive/zip"
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 	"wick_server/agent"
 	"wick_server/backend"
@@ -20,6 +24,7 @@ import (
 	"wick_server/llm"
 	"wick_server/sse"
 	"wick_server/tracing"
+	"wick_server/wickfs"
 )
 
 // Config holds handler-level configuration.
@@ -125,6 +130,10 @@ func RegisterRoutes(mux *http.ServeMux, deps *Deps) {
 			h.resume(w, r, nil)
 			return
 		}
+		if path == "slides/export" {
+			h.slidesExport(w, r)
+			return
+		}
 		if path == "files/download" {
 			h.downloadFile(w, r)
 			return
@@ -172,6 +181,27 @@ func RegisterRoutes(mux *http.ServeMux, deps *Deps) {
 			h.containerControl(w, r, agentID)
 		case "terminal":
 			h.terminal(w, r, agentID)
+		case "skills":
+			switch r.Method {
+			case http.MethodGet:
+				h.agentSkills(w, r, agentID)
+			case http.MethodPatch:
+				h.toggleSkills(w, r, agentID)
+			default:
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			}
+		case "skills/paths":
+			if r.Method == http.MethodPatch {
+				h.updateSkillPaths(w, r, agentID)
+			} else {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			}
+		case "skills/upload":
+			if r.Method == http.MethodPost {
+				h.uploadSkill(w, r, agentID)
+			} else {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			}
 		case "files/list":
 			h.listFiles(w, r, agentID)
 		case "files/read":
@@ -271,7 +301,6 @@ func (h *agentHandler) createAgent(w http.ResponseWriter, r *http.Request) {
 		Memory       *agent.MemoryCfg      `json:"memory"`
 		Debug         bool                 `json:"debug"`
 		ContextWindow int                  `json:"context_window"`
-		BuiltinConfig map[string]string    `json:"builtin_config"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -290,7 +319,6 @@ func (h *agentHandler) createAgent(w http.ResponseWriter, r *http.Request) {
 		Memory:       req.Memory,
 		Debug:         req.Debug,
 		ContextWindow: req.ContextWindow,
-		BuiltinConfig: req.BuiltinConfig,
 	}
 
 	username := h.resolveUsername(r)
@@ -299,7 +327,7 @@ func (h *agentHandler) createAgent(w http.ResponseWriter, r *http.Request) {
 
 	// Eagerly initialize backend so container_status is available immediately
 	if cfg.Backend != nil && h.deps.Backends.Get(req.AgentID, username) == nil {
-		b := h.createBackend(cfg.Backend, username)
+		b := h.createBackend(cfg.Backend, cfg.Skills, username)
 		if b != nil {
 			h.deps.Backends.Set(req.AgentID, username, b)
 		}
@@ -586,13 +614,18 @@ func (h *agentHandler) availableSkills(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Collect all skill paths from agent configs via registry.
+	// Prefer HostPaths (readable on this machine) over Paths (container-side).
 	seen := map[string]bool{}
 	var skillDirs []string
 	for _, cfg := range h.deps.Registry.AllConfigs() {
 		if cfg.Skills == nil {
 			continue
 		}
-		for _, s := range cfg.Skills.Paths {
+		paths := cfg.Skills.HostPaths
+		if len(paths) == 0 {
+			paths = cfg.Skills.Paths
+		}
+		for _, s := range paths {
 			if seen[s] {
 				continue
 			}
@@ -732,13 +765,7 @@ func (h *agentHandler) availableTools(w http.ResponseWriter, r *http.Request) {
 		Source string `json:"source"` // "builtin", or hook name e.g. "filesystem", "todolist"
 	}
 
-	tools := []toolEntry{
-		// Builtin tools (always available, not tied to any hook)
-		{Name: "calculate", Source: "builtin"},
-		{Name: "current_datetime", Source: "builtin"},
-		// internet_search availability depends on per-agent builtin_config.tavily_api_key
-		{Name: "internet_search", Source: "builtin"},
-	}
+	var tools []toolEntry
 
 	// Hook-provided tools (system tools — controlled via hook toggles)
 	tools = append(tools,
@@ -752,10 +779,14 @@ func (h *agentHandler) availableTools(w http.ResponseWriter, r *http.Request) {
 		toolEntry{Name: "write_todos", Source: "todolist"},
 	)
 
-	// External tools registered via HTTP callback
+	// Registered tools (app-level + external HTTP)
 	if h.deps.ExternalTools != nil {
-		for _, name := range h.deps.ExternalTools.Names() {
-			tools = append(tools, toolEntry{Name: name, Source: "external"})
+		for _, t := range h.deps.ExternalTools.All() {
+			source := "registered"
+			if _, ok := t.(*agent.HTTPTool); ok {
+				source = "external"
+			}
+			tools = append(tools, toolEntry{Name: t.Name(), Source: source})
 		}
 	}
 
@@ -951,7 +982,13 @@ func (h *agentHandler) patchBackend(w http.ResponseWriter, r *http.Request, agen
 		b = db
 		inst.Config.Backend = &agent.BackendCfg{Type: "docker", Workdir: defaultWorkdir, ContainerName: defaultContainerName}
 
-		// Async container launch
+		// Sync skills into container at launch time
+		if inst.Config.Skills != nil && len(inst.Config.Skills.HostPaths) > 0 && len(inst.Config.Skills.Paths) > 0 {
+			paths := inst.Config.Skills.Paths
+			hostPaths := inst.Config.Skills.HostPaths
+			db.OnReady = func() { hooks.SyncHostSkills(db, paths, hostPaths) }
+		}
+
 		db.LaunchContainerAsync(func(event, user string) {
 			h.deps.EventBus.Broadcast(event + ":" + user)
 		})
@@ -967,7 +1004,13 @@ func (h *agentHandler) patchBackend(w http.ResponseWriter, r *http.Request, agen
 		b = db
 		inst.Config.Backend = &agent.BackendCfg{Type: "docker", DockerHost: dockerHost, ContainerName: defaultContainerName}
 
-		// Async container launch
+		// Sync skills into container at launch time
+		if inst.Config.Skills != nil && len(inst.Config.Skills.HostPaths) > 0 && len(inst.Config.Skills.Paths) > 0 {
+			paths := inst.Config.Skills.Paths
+			hostPaths := inst.Config.Skills.HostPaths
+			db.OnReady = func() { hooks.SyncHostSkills(db, paths, hostPaths) }
+		}
+
 		db.LaunchContainerAsync(func(event, user string) {
 			h.deps.EventBus.Broadcast(event + ":" + user)
 		})
@@ -1098,31 +1141,26 @@ func (h *agentHandler) terminal(w http.ResponseWriter, r *http.Request, agentID 
 	defer conn.Close()
 
 	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte("Error: "+err.Error()))
-		return
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte("Error: "+err.Error()))
-		return
-	}
-	cmd.Stderr = cmd.Stdout // merge stderr into stdout
 
-	if err := cmd.Start(); err != nil {
+	// Allocate a PTY so the shell runs interactively (prompt, line editing, etc.)
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte("Error: "+err.Error()))
 		return
 	}
+	defer ptmx.Close()
+
+	// Set initial terminal size
+	pty.Setsize(ptmx, &pty.Winsize{Rows: 24, Cols: 80})
 
 	done := make(chan struct{})
 
-	// stdout → websocket
+	// PTY → WebSocket
 	go func() {
 		defer close(done)
 		buf := make([]byte, 4096)
 		for {
-			n, err := stdout.Read(buf)
+			n, err := ptmx.Read(buf)
 			if n > 0 {
 				if werr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
 					break
@@ -1134,22 +1172,31 @@ func (h *agentHandler) terminal(w http.ResponseWriter, r *http.Request, agentID 
 		}
 	}()
 
-	// websocket → stdin
+	// WebSocket → PTY (with control message support for resize)
 	go func() {
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
 				break
 			}
-			if _, err := io.WriteString(stdin, string(msg)); err != nil {
-				break
+			// Control messages start with SOH (0x01)
+			if len(msg) > 1 && msg[0] == 1 {
+				var ctrl struct {
+					Type string `json:"type"`
+					Cols uint16 `json:"cols"`
+					Rows uint16 `json:"rows"`
+				}
+				if json.Unmarshal(msg[1:], &ctrl) == nil && ctrl.Type == "resize" {
+					pty.Setsize(ptmx, &pty.Winsize{Rows: ctrl.Rows, Cols: ctrl.Cols})
+				}
+				continue
 			}
+			ptmx.Write(msg)
 		}
-		stdin.Close()
+		ptmx.Close() // signal shell to exit when WebSocket disconnects
 	}()
 
 	<-done
-	cmd.Process.Kill()
 	cmd.Wait()
 }
 
@@ -1173,11 +1220,31 @@ func (h *agentHandler) listFiles(w http.ResponseWriter, r *http.Request, agentID
 
 	entries, fsErr := b.FS().Ls(r.Context(), resolved)
 	if fsErr != nil {
-		writeJSONError(w, http.StatusInternalServerError, fsErr.Error())
-		return
+		// Fallback: use shell commands when wickfs is not available
+		entries, fsErr = shellListDir(b, resolved)
+		if fsErr != nil {
+			writeJSONError(w, http.StatusInternalServerError, fsErr.Error())
+			return
+		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"path": resolved, "entries": entries})
+	// Add full path to each entry (DirEntry only has name)
+	type entryWithPath struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+		Type string `json:"type"`
+		Size int64  `json:"size"`
+	}
+	result := make([]entryWithPath, 0, len(entries))
+	for _, e := range entries {
+		ep := resolved + "/" + e.Name
+		if resolved == "/" {
+			ep = "/" + e.Name
+		}
+		result = append(result, entryWithPath{Name: e.Name, Path: ep, Type: e.Type, Size: e.Size})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"path": resolved, "entries": result})
 }
 
 func (h *agentHandler) readFile(w http.ResponseWriter, r *http.Request, agentID string) {
@@ -1198,8 +1265,16 @@ func (h *agentHandler) readFile(w http.ResponseWriter, r *http.Request, agentID 
 
 	content, fsErr := b.FS().ReadFile(r.Context(), resolved)
 	if fsErr != nil {
-		writeJSONError(w, http.StatusNotFound, "file not found: "+resolved)
-		return
+		// Fallback: use cat when wickfs is not available
+		result := b.Execute(fmt.Sprintf("cat %s", shellQuote(resolved)))
+		if result.ExitCode != 0 {
+			writeJSONError(w, http.StatusNotFound, "file not found: "+resolved)
+			return
+		}
+		content = result.Output
+		if content == "<no output>" {
+			content = ""
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"path": resolved, "content": content})
@@ -1239,6 +1314,69 @@ func (h *agentHandler) downloadFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	w.Write(results[0].Content)
+}
+
+// slidesExport reads a markdown slides file and returns a PPTX binary.
+// GET /agents/slides/export?path=...&agent_id=...
+func (h *agentHandler) slidesExport(w http.ResponseWriter, r *http.Request) {
+	filePath := r.URL.Query().Get("path")
+	if filePath == "" {
+		writeJSONError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+
+	agentIDParam := r.URL.Query().Get("agent_id")
+	if agentIDParam == "" {
+		agentIDParam = "default"
+	}
+
+	username := h.resolveUsername(r)
+	b := h.deps.Backends.Get(agentIDParam, username)
+	if b == nil {
+		writeJSONError(w, http.StatusBadRequest, "agent has no backend")
+		return
+	}
+
+	// Read the markdown file
+	content, fsErr := b.FS().ReadFile(r.Context(), filePath)
+	if fsErr != nil {
+		// Fallback: cat via shell
+		result := b.Execute(fmt.Sprintf("cat %s", shellQuote(filePath)))
+		if result.ExitCode != 0 {
+			writeJSONError(w, http.StatusNotFound, "file not found: "+filePath)
+			return
+		}
+		content = result.Output
+		if content == "<no output>" {
+			content = ""
+		}
+	}
+
+	slides := parseMarkdownSlides(content)
+	if len(slides) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "no slides found in file")
+		return
+	}
+
+	pptxData, err := generatePPTX(slides)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "PPTX generation failed: "+err.Error())
+		return
+	}
+
+	// Derive filename
+	outName := "slides.pptx"
+	if idx := strings.LastIndex(filePath, "/"); idx >= 0 {
+		base := filePath[idx+1:]
+		if dot := strings.LastIndex(base, "."); dot >= 0 {
+			outName = base[:dot] + ".pptx"
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, outName))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(pptxData)))
+	w.Write(pptxData)
 }
 
 func (h *agentHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
@@ -1535,6 +1673,311 @@ func (h *agentHandler) patchHooks(w http.ResponseWriter, r *http.Request, agentI
 	})
 }
 
+// --- Skills Management ---
+
+// agentSkills lists discovered skills with enabled state for the current user.
+func (h *agentHandler) agentSkills(w http.ResponseWriter, r *http.Request, agentID string) {
+	username := h.resolveUsername(r)
+	inst, err := h.deps.Registry.GetOrClone(agentID, username)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	// Ensure agent is built so skills are scanned
+	a, buildErr := h.buildAgent(inst, username)
+	if buildErr != nil {
+		writeJSONError(w, http.StatusInternalServerError, buildErr.Error())
+		return
+	}
+
+	// Find the skills hook in the chain
+	type skillItem struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Enabled     bool   `json:"enabled"`
+		Path        string `json:"path"`
+	}
+
+	var items []skillItem
+	for _, hook := range a.Hooks {
+		if sh, ok := hook.(*hooks.SkillsHook); ok {
+			for _, entry := range sh.Skills() {
+				enabled := true
+				if inst.SkillPrefs != nil && inst.SkillPrefs.Disabled[entry.Name] {
+					enabled = false
+				}
+				items = append(items, skillItem{
+					Name:        entry.Name,
+					Description: entry.Description,
+					Enabled:     enabled,
+					Path:        entry.Path,
+				})
+			}
+			break
+		}
+	}
+
+	if items == nil {
+		items = []skillItem{}
+	}
+
+	// Collect paths
+	paths := []string{}
+	if inst.Config.Skills != nil {
+		paths = inst.Config.Skills.Paths
+	}
+	extraPaths := []string{}
+	if inst.SkillPrefs != nil && len(inst.SkillPrefs.ExtraPaths) > 0 {
+		extraPaths = inst.SkillPrefs.ExtraPaths
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"skills":      items,
+		"paths":       paths,
+		"extra_paths": extraPaths,
+	})
+}
+
+// toggleSkills enables or disables specific skills for the current user.
+func (h *agentHandler) toggleSkills(w http.ResponseWriter, r *http.Request, agentID string) {
+	var body struct {
+		Enable  []string `json:"enable"`
+		Disable []string `json:"disable"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	username := h.resolveUsername(r)
+	inst, err := h.deps.Registry.GetOrClone(agentID, username)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	// Get or create prefs
+	prefs := inst.SkillPrefs
+	if prefs == nil {
+		prefs = &agent.SkillPrefs{
+			Disabled: make(map[string]bool),
+		}
+	}
+	if prefs.Disabled == nil {
+		prefs.Disabled = make(map[string]bool)
+	}
+
+	for _, name := range body.Disable {
+		prefs.Disabled[name] = true
+	}
+	for _, name := range body.Enable {
+		delete(prefs.Disabled, name)
+	}
+
+	// Atomically update and invalidate
+	if err := h.deps.Registry.UpdateSkillPrefs(agentID, username, prefs); err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	// Emit config change event for SSE
+	h.deps.EventBus.Broadcast("config_changed:" + username)
+
+	// Rebuild to get updated list
+	h.agentSkills(w, r, agentID)
+}
+
+// updateSkillPaths adds or removes extra skill scan paths for the current user.
+func (h *agentHandler) updateSkillPaths(w http.ResponseWriter, r *http.Request, agentID string) {
+	var body struct {
+		Add    []string `json:"add"`
+		Remove []string `json:"remove"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	username := h.resolveUsername(r)
+	inst, err := h.deps.Registry.GetOrClone(agentID, username)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	// Get or create prefs
+	prefs := inst.SkillPrefs
+	if prefs == nil {
+		prefs = &agent.SkillPrefs{
+			Disabled: make(map[string]bool),
+		}
+	}
+
+	// Remove specified paths
+	if len(body.Remove) > 0 {
+		removeSet := make(map[string]bool, len(body.Remove))
+		for _, p := range body.Remove {
+			removeSet[p] = true
+		}
+		var filtered []string
+		for _, p := range prefs.ExtraPaths {
+			if !removeSet[p] {
+				filtered = append(filtered, p)
+			}
+		}
+		prefs.ExtraPaths = filtered
+	}
+
+	// Add new paths (avoid duplicates)
+	if len(body.Add) > 0 {
+		existing := make(map[string]bool, len(prefs.ExtraPaths))
+		for _, p := range prefs.ExtraPaths {
+			existing[p] = true
+		}
+		for _, p := range body.Add {
+			if !existing[p] {
+				prefs.ExtraPaths = append(prefs.ExtraPaths, p)
+				existing[p] = true
+			}
+		}
+	}
+
+	// Atomically update and invalidate
+	if err := h.deps.Registry.UpdateSkillPrefs(agentID, username, prefs); err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	// Emit config change event for SSE
+	h.deps.EventBus.Broadcast("config_changed:" + username)
+
+	// Return updated paths
+	paths := []string{}
+	if inst.Config.Skills != nil {
+		paths = inst.Config.Skills.Paths
+	}
+	extraPaths := prefs.ExtraPaths
+	if extraPaths == nil {
+		extraPaths = []string{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"paths":       paths,
+		"extra_paths": extraPaths,
+	})
+}
+
+// uploadSkill accepts a zip file containing a skill folder and deploys it to the backend.
+func (h *agentHandler) uploadSkill(w http.ResponseWriter, r *http.Request, agentID string) {
+	username := h.resolveUsername(r)
+	inst, err := h.deps.Registry.GetOrClone(agentID, username)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	// Parse multipart form (max 32MB)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "failed to parse multipart form: "+err.Error())
+		return
+	}
+
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "missing 'file' field: "+err.Error())
+		return
+	}
+	defer file.Close()
+
+	// Read zip contents into memory
+	zipData, err := io.ReadAll(file)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "failed to read file: "+err.Error())
+		return
+	}
+
+	// Extract and validate zip
+	zipReader, err := newZipReader(zipData)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid zip file: "+err.Error())
+		return
+	}
+
+	// Find SKILL.md in the archive
+	var skillMdFound bool
+	var skillDir string // top-level directory name containing SKILL.md
+	for _, f := range zipReader.File {
+		if strings.HasSuffix(f.Name, "SKILL.md") || strings.HasSuffix(f.Name, "SKILL.md/") {
+			skillMdFound = true
+			parts := strings.SplitN(f.Name, "/", 2)
+			if len(parts) > 1 {
+				skillDir = parts[0]
+			}
+			break
+		}
+	}
+	if !skillMdFound {
+		writeJSONError(w, http.StatusBadRequest, "zip must contain a SKILL.md file")
+		return
+	}
+
+	// Determine target path (first configured skills path)
+	var targetBase string
+	if inst.Config.Skills != nil && len(inst.Config.Skills.Paths) > 0 {
+		targetBase = inst.Config.Skills.Paths[0]
+	} else {
+		targetBase = "/workspace/skills"
+	}
+
+	// Get backend to upload files
+	b := h.deps.Backends.Get(agentID, username)
+	if b == nil {
+		writeJSONError(w, http.StatusBadRequest, "no backend available for file upload")
+		return
+	}
+
+	// Extract each file to the backend
+	for _, f := range zipReader.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		content, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			continue
+		}
+
+		targetPath := filepath.Join(targetBase, f.Name)
+		targetDir := filepath.Dir(targetPath)
+
+		// Create parent directories and write file via backend
+		b.Execute(fmt.Sprintf("mkdir -p %s", shellQuote(targetDir)))
+		// Write file content via base64 to avoid shell escaping issues
+		encoded := encodeBase64(content)
+		b.Execute(fmt.Sprintf("echo %s | base64 -d > %s", shellQuote(encoded), shellQuote(targetPath)))
+	}
+
+	// Invalidate agent to trigger re-scan of skills
+	if err := h.deps.Registry.UpdateSkillPrefs(agentID, username, inst.SkillPrefs); err != nil {
+		// Non-fatal — prefs update just forces rebuild
+		log.Printf("warning: failed to invalidate agent after skill upload: %v", err)
+	}
+
+	// Emit config change event for SSE
+	h.deps.EventBus.Broadcast("config_changed:" + username)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":    "uploaded",
+		"skill_dir": skillDir,
+		"target":    targetBase,
+	})
+}
+
 // mergeStringSlice appends items from b that are not already in a.
 func mergeStringSlice(a, b []string) []string {
 	set := make(map[string]bool, len(a))
@@ -1625,7 +2068,7 @@ func createHookByName(name string, b backend.Backend, llmClient llm.Client, cfg 
 			paths = cfg.Skills.Paths
 		}
 		if len(paths) > 0 && b != nil {
-			return hooks.NewSkillsHook(b, paths)
+			return hooks.NewSkillsHook(b, paths, nil)
 		}
 	case "memory":
 		paths := getConfigPaths(hookConfig, "memory")
@@ -1678,7 +2121,9 @@ func getConfigPaths(hookConfig map[string]any, name string) []string {
 // createBackend creates a Docker backend based on config.
 // All execution happens inside Docker containers — local mode uses the local
 // Docker daemon, remote mode uses a remote daemon via TCP.
-func (h *agentHandler) createBackend(cfg *agent.BackendCfg, username string) backend.Backend {
+// If skillsCfg is non-nil with HostPaths, skills are synced into the container
+// at launch time (via OnReady callback) so they're available immediately.
+func (h *agentHandler) createBackend(cfg *agent.BackendCfg, skillsCfg *agent.SkillsCfg, username string) backend.Backend {
 	containerName := cfg.ContainerName
 	if containerName == "" {
 		containerName = fmt.Sprintf("wick-sandbox-%s", username)
@@ -1688,6 +2133,16 @@ func (h *agentHandler) createBackend(cfg *agent.BackendCfg, username string) bac
 		cfg.Timeout, cfg.MaxOutputBytes,
 		cfg.DockerHost, cfg.Image, username,
 	)
+
+	// Sync skills into container right after it launches
+	if skillsCfg != nil && len(skillsCfg.HostPaths) > 0 && len(skillsCfg.Paths) > 0 {
+		paths := skillsCfg.Paths
+		hostPaths := skillsCfg.HostPaths
+		db.OnReady = func() {
+			hooks.SyncHostSkills(db, paths, hostPaths)
+		}
+	}
+
 	db.LaunchContainerAsync(func(event, user string) {
 		h.deps.EventBus.Broadcast(event + ":" + user)
 	})
@@ -1707,10 +2162,19 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) (*agent
 		return nil, fmt.Errorf("failed to resolve model for agent %s: %w", inst.AgentID, err)
 	}
 
-	// Resolve backend
+	// Resolve backend — reuse existing backend if another agent shares the same container
 	b := h.deps.Backends.Get(inst.AgentID, username)
 	if b == nil && cfg.Backend != nil {
-		b = h.createBackend(cfg.Backend, username)
+		// Check if another agent already manages this container
+		containerName := cfg.Backend.ContainerName
+		if containerName == "" {
+			containerName = fmt.Sprintf("wick-sandbox-%s", username)
+		}
+		if existing := h.deps.Backends.GetByContainer(containerName); existing != nil {
+			b = existing
+		} else {
+			b = h.createBackend(cfg.Backend, cfg.Skills, username)
+		}
 		if b != nil {
 			h.deps.Backends.Set(inst.AgentID, username, b)
 		}
@@ -1730,9 +2194,9 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) (*agent
 		agentHooks = append(agentHooks, hooks.NewFilesystemHook(b))
 	}
 
-	// Skills hook
+	// Skills hook (host→container sync is handled by OnReady at container launch)
 	if cfg.Skills != nil && len(cfg.Skills.Paths) > 0 && b != nil {
-		agentHooks = append(agentHooks, hooks.NewSkillsHook(b, cfg.Skills.Paths))
+		agentHooks = append(agentHooks, hooks.NewSkillsHook(b, cfg.Skills.Paths, inst.SkillPrefs))
 	}
 
 	// Memory hook
@@ -1752,11 +2216,8 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) (*agent
 		agentHooks = applyHookOverrides(agentHooks, inst.HookOverrides, b, llmClient, cfg)
 	}
 
-	// Build tools (built-in tools from agent config)
+	// Build tools from registered tool store (app-level + external HTTP)
 	var tools []agent.Tool
-	tools = append(tools, NewBuiltinTools(cfg)...)
-
-	// Append externally registered tools (HTTP callback tools)
 	if h.deps.ExternalTools != nil {
 		tools = append(tools, h.deps.ExternalTools.All()...)
 	}
@@ -1858,4 +2319,45 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeJSONError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func newZipReader(data []byte) (*zip.Reader, error) {
+	return zip.NewReader(bytes.NewReader(data), int64(len(data)))
+}
+
+func encodeBase64(data []byte) string {
+	return base64.StdEncoding.EncodeToString(data)
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// shellListDir lists directory entries using basic shell commands (fallback when wickfs is unavailable).
+// Uses GNU find -printf which works in standard Linux containers.
+func shellListDir(b backend.Backend, path string) ([]wickfs.DirEntry, error) {
+	cmd := fmt.Sprintf(`find %s -maxdepth 1 -mindepth 1 -printf '%%y\t%%s\t%%f\n' 2>/dev/null | sort -t'	' -k1,1 -k3,3`, shellQuote(path))
+	result := b.Execute(cmd)
+	if result.ExitCode != 0 || result.Output == "<no output>" {
+		return nil, fmt.Errorf("cannot list directory: %s", path)
+	}
+
+	var entries []wickfs.DirEntry
+	for _, line := range strings.Split(strings.TrimSpace(result.Output), "\n") {
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 || parts[2] == "" {
+			continue
+		}
+		typ := "file"
+		switch parts[0] {
+		case "d":
+			typ = "dir"
+		case "l":
+			typ = "symlink"
+		}
+		size := int64(0)
+		fmt.Sscanf(parts[1], "%d", &size)
+		entries = append(entries, wickfs.DirEntry{Name: parts[2], Type: typ, Size: size})
+	}
+	return entries, nil
 }

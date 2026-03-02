@@ -33,9 +33,9 @@ type Hook interface {
 	// WrapToolCall wraps each tool execution (logging, large result eviction).
 	WrapToolCall(ctx context.Context, call ToolCall, next ToolCallFunc) (*ToolResult, error)
 
-	// ModifyRequest is called before each LLM call to modify the message list.
-	// Use for injecting system prompt sections.
-	ModifyRequest(ctx context.Context, msgs []Message) ([]Message, error)
+	// ModifyRequest is called before each LLM call to modify the system prompt and message list.
+	// Use for injecting system prompt sections (skills catalog, memory, etc.).
+	ModifyRequest(ctx context.Context, systemPrompt string, msgs []Message) (string, []Message, error)
 }
 
 // BaseHook provides no-op defaults for all hook methods.
@@ -60,6 +60,6 @@ func (BaseHook) WrapToolCall(ctx context.Context, call ToolCall, next ToolCallFu
 	return next(ctx, call)
 }
 
-func (BaseHook) ModifyRequest(ctx context.Context, msgs []Message) ([]Message, error) {
-	return msgs, nil
+func (BaseHook) ModifyRequest(ctx context.Context, systemPrompt string, msgs []Message) (string, []Message, error) {
+	return systemPrompt, msgs, nil
 }

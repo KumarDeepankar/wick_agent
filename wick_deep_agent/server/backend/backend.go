@@ -54,6 +54,7 @@ type Backend interface {
 type ContainerManager interface {
 	CancelLaunch()
 	StopContainer()
+	ContainerName() string
 }
 
 // resolvePath is a shared helper that resolves a path relative to a workdir

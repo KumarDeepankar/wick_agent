@@ -1,6 +1,9 @@
 package llm
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // Client is the interface for LLM providers.
 type Client interface {
@@ -10,6 +13,10 @@ type Client interface {
 	// Stream makes an LLM call and sends chunks to the channel.
 	// The channel is closed when streaming is complete.
 	Stream(ctx context.Context, req Request, ch chan<- StreamChunk) error
+
+	// BuildRequestJSON returns the provider-specific JSON body that would be
+	// sent to the LLM API for the given request. Used for debug/tracing.
+	BuildRequestJSON(req Request) json.RawMessage
 }
 
 // Message represents a chat message for the LLM.

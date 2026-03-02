@@ -83,7 +83,7 @@ export default function App() {
     setUser(null);
   }, []);
 
-  const { messages, traceEvents, canvasArtifacts, status, threadId, error, send, stop, reset, updateArtifactContent, removeArtifact } =
+  const { messages, traceEvents, canvasArtifacts, status, threadId, error, send, stop, reset, restore, updateArtifactContent, removeArtifact } =
     useAgentStream();
 
   // Auto-expand canvas when first artifact arrives
@@ -146,6 +146,36 @@ export default function App() {
 
   const handleCloseTerminal = useCallback(() => {
     setTerminalOpen(false);
+  }, []);
+
+  // ── Undo toast for reset ──
+  const [undoToast, setUndoToast] = useState<{
+    visible: boolean;
+    snapshot: { messages: typeof messages; traceEvents: typeof traceEvents; canvasArtifacts: typeof canvasArtifacts; threadId: string | null } | null;
+  }>({ visible: false, snapshot: null });
+  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleReset = useCallback(() => {
+    const snapshot = { messages, traceEvents, canvasArtifacts, threadId };
+    reset();
+    setUndoToast({ visible: true, snapshot });
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    undoTimerRef.current = setTimeout(() => {
+      setUndoToast({ visible: false, snapshot: null });
+    }, 5000);
+  }, [messages, traceEvents, canvasArtifacts, threadId, reset]);
+
+  const handleUndo = useCallback(() => {
+    if (undoToast.snapshot) {
+      restore(undoToast.snapshot);
+    }
+    setUndoToast({ visible: false, snapshot: null });
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+  }, [undoToast.snapshot, restore]);
+
+  const dismissToast = useCallback(() => {
+    setUndoToast({ visible: false, snapshot: null });
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
   }, []);
 
   const handleSend = (content: string) => {
@@ -305,6 +335,20 @@ export default function App() {
           <h1 className="app-title">Wick Agent</h1>
         </div>
         <div className="app-controls">
+          {agents.length > 1 && (
+            <select
+              className="agent-selector"
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
+              disabled={isActive}
+            >
+              {agents.map((a) => (
+                <option key={a.agent_id} value={a.agent_id}>
+                  {a.name ?? a.agent_id} ({a.model})
+                </option>
+              ))}
+            </select>
+          )}
           <div className="settings-anchor">
             <button
               className={`settings-gear-btn ${settingsOpen ? 'active' : ''}`}
@@ -328,7 +372,13 @@ export default function App() {
               onOpenTerminal={handleOpenTerminal}
             />
           </div>
-          {containerLaunched && (
+          {currentAgent?.container_status === 'launching' && (
+            <span className="container-hint --launching">
+              <span className="container-hint-dot" />
+              Launching…
+            </span>
+          )}
+          {currentAgent?.container_status === 'launched' && (
             <button
               className={`terminal-toggle-btn ${terminalOpen ? 'active' : ''}`}
               onClick={() => setTerminalOpen((o) => !o)}
@@ -341,6 +391,12 @@ export default function App() {
               </svg>
               Terminal
             </button>
+          )}
+          {currentAgent?.container_status === 'error' && (
+            <span className="container-hint --error">
+              <span className="container-hint-dot" />
+              Container error
+            </span>
           )}
           <button
             className={`canvas-collapse-toggle ${canvasCollapsed ? 'collapsed' : ''}`}
@@ -394,7 +450,7 @@ export default function App() {
             threadId={threadId}
             onSend={handleSend}
             onStop={stop}
-            onReset={reset}
+            onReset={handleReset}
             pendingPrompt={pendingPrompt}
             onPromptConsumed={handlePromptConsumed}
           />
@@ -471,7 +527,7 @@ export default function App() {
                 threadId={threadId}
                 onSend={handleSend}
                 onStop={stop}
-                onReset={reset}
+                onReset={handleReset}
                 pendingPrompt={pendingPrompt}
                 onPromptConsumed={handlePromptConsumed}
               />
@@ -508,6 +564,14 @@ export default function App() {
         isOpen={traceOpen}
         onClose={() => setTraceOpen(false)}
       />
+
+      {undoToast.visible && (
+        <div className="undo-toast">
+          <span>Thread discarded</span>
+          <button className="undo-toast-btn" onClick={handleUndo}>Undo</button>
+          <button className="undo-toast-dismiss" onClick={dismissToast} aria-label="Dismiss">&times;</button>
+        </div>
+      )}
     </div>
   );
 }
