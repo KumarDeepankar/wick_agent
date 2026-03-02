@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import type { AgentInfo } from '../types';
-import { fetchAgents, fetchTools, updateAgentBackend, controlContainer, getToken, fetchHooks, updateAgentHooks } from '../api';
-import type { HookInfo, ToolInfo } from '../api';
+import { fetchAgents, fetchTools, updateAgentBackend, controlContainer, getToken, fetchHooks, updateAgentHooks, fetchAgentSkills, toggleAgentSkills, updateSkillPaths, uploadSkillZip } from '../api';
+import type { HookInfo, ToolInfo, AgentSkillEntry } from '../api';
 
 type Theme = 'light' | 'dark';
 type SandboxMode = 'local' | 'remote';
@@ -36,7 +36,14 @@ export function SettingsPanel({
   // Optimistic hook set — updated instantly on toggle, reconciled with server
   const [optimisticHooks, setOptimisticHooks] = useState<Set<string> | null>(null);
   const [sandboxUrl, setSandboxUrl] = useState('');
+  // Skills state
+  const [skillsList, setSkillsList] = useState<AgentSkillEntry[]>([]);
+  const [skillPaths, setSkillPaths] = useState<string[]>([]);
+  const [skillExtraPaths, setSkillExtraPaths] = useState<string[]>([]);
+  const [newSkillPath, setNewSkillPath] = useState('');
+  const [skillsLoading, setSkillsLoading] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadData = useCallback(() => {
     setLoading(true);
@@ -57,7 +64,21 @@ export function SettingsPanel({
     if (isOpen) loadData();
   }, [isOpen, loadData]);
 
-  // Refresh agents + tools + hooks — fetches are independent so one failure
+  // Load skills for the selected agent
+  const loadSkills = useCallback((agentId: string) => {
+    if (!agentId) return;
+    setSkillsLoading(true);
+    fetchAgentSkills(agentId)
+      .then((data) => {
+        setSkillsList(data.skills);
+        setSkillPaths(data.paths);
+        setSkillExtraPaths(data.extra_paths);
+      })
+      .catch(() => {})
+      .finally(() => setSkillsLoading(false));
+  }, []);
+
+  // Refresh agents + tools + hooks + skills — fetches are independent so one failure
   // doesn't block the other from updating.
   const refreshData = useCallback(() => {
     setOptimisticHooks(null);
@@ -70,7 +91,10 @@ export function SettingsPanel({
     fetchHooks()
       .then((hooksData) => setAllHooks(hooksData))
       .catch(() => {});
-  }, []);
+    if (selectedAgent) {
+      loadSkills(selectedAgent);
+    }
+  }, [selectedAgent, loadSkills]);
 
   // SSE for instant updates + 5s polling as reliable fallback
   useEffect(() => {
@@ -118,6 +142,13 @@ export function SettingsPanel({
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, [isOpen, onClose]);
+
+  // Reload skills when selected agent changes
+  useEffect(() => {
+    if (isOpen && selectedAgent) {
+      loadSkills(selectedAgent);
+    }
+  }, [isOpen, selectedAgent, loadSkills]);
 
   const currentAgent = agents.find((a) => a.agent_id === selectedAgent);
 
@@ -257,6 +288,87 @@ export function SettingsPanel({
       setUpdating(false);
     }
   }, [currentAgent, disabled, updating, loadData]);
+
+  // ── Skills handlers ──────────────────────────────────────────────────
+  const handleToggleSkill = useCallback(
+    async (skillName: string, currentlyEnabled: boolean) => {
+      if (!currentAgent || updating || disabled) return;
+      // Optimistic update
+      setSkillsList((prev) =>
+        prev.map((s) =>
+          s.name === skillName ? { ...s, enabled: !currentlyEnabled } : s,
+        ),
+      );
+      setUpdating(true);
+      try {
+        const payload = currentlyEnabled
+          ? { disable: [skillName] }
+          : { enable: [skillName] };
+        const result = await toggleAgentSkills(currentAgent.agent_id, payload);
+        setSkillsList(result.skills);
+        setSkillPaths(result.paths);
+        setSkillExtraPaths(result.extra_paths);
+      } catch {
+        // Revert on failure
+        loadSkills(currentAgent.agent_id);
+      } finally {
+        setUpdating(false);
+      }
+    },
+    [currentAgent, updating, disabled, loadSkills],
+  );
+
+  const handleAddSkillPath = useCallback(async () => {
+    if (!currentAgent || !newSkillPath.trim() || disabled) return;
+    setUpdating(true);
+    try {
+      const result = await updateSkillPaths(currentAgent.agent_id, {
+        add: [newSkillPath.trim()],
+      });
+      setSkillExtraPaths(result.extra_paths);
+      setNewSkillPath('');
+      loadSkills(currentAgent.agent_id);
+    } catch {
+      // ignore
+    } finally {
+      setUpdating(false);
+    }
+  }, [currentAgent, newSkillPath, disabled, loadSkills]);
+
+  const handleRemoveSkillPath = useCallback(
+    async (path: string) => {
+      if (!currentAgent || disabled) return;
+      setUpdating(true);
+      try {
+        const result = await updateSkillPaths(currentAgent.agent_id, {
+          remove: [path],
+        });
+        setSkillExtraPaths(result.extra_paths);
+        loadSkills(currentAgent.agent_id);
+      } catch {
+        // ignore
+      } finally {
+        setUpdating(false);
+      }
+    },
+    [currentAgent, disabled, loadSkills],
+  );
+
+  const handleUploadSkill = useCallback(
+    async (file: File) => {
+      if (!currentAgent || disabled) return;
+      setUpdating(true);
+      try {
+        await uploadSkillZip(currentAgent.agent_id, file);
+        loadSkills(currentAgent.agent_id);
+      } catch {
+        // ignore
+      } finally {
+        setUpdating(false);
+      }
+    },
+    [currentAgent, disabled, loadSkills],
+  );
 
   if (!isOpen) return null;
 
@@ -514,6 +626,120 @@ export function SettingsPanel({
               </span>
             )}
           </section>
+
+          {/* Skills */}
+          {currentAgent && (currentAgent.hooks?.includes('skills') || currentAgent.skills?.length > 0 || skillsList.length > 0) && (
+            <section className="settings-section">
+              <div className="settings-tools-header">
+                <label className="settings-label">
+                  Skills
+                  <span className="settings-tools-count">
+                    {skillsList.filter((s) => s.enabled).length}/{skillsList.length}
+                  </span>
+                </label>
+              </div>
+
+              {/* Skill paths */}
+              <div className="skills-paths">
+                {skillPaths.map((p) => (
+                  <div key={p} className="skills-path-row">
+                    <span className="skills-path-text" title={p}>{p}</span>
+                    <span className="skills-path-badge">config</span>
+                  </div>
+                ))}
+                {skillExtraPaths.map((p) => (
+                  <div key={p} className="skills-path-row">
+                    <span className="skills-path-text" title={p}>{p}</span>
+                    <button
+                      className="skills-path-remove"
+                      onClick={() => handleRemoveSkillPath(p)}
+                      disabled={updating || disabled}
+                      title="Remove path"
+                    >
+                      &times;
+                    </button>
+                  </div>
+                ))}
+                <div className="skills-path-add">
+                  <input
+                    className="settings-filter"
+                    type="text"
+                    placeholder="Add skill path..."
+                    value={newSkillPath}
+                    onChange={(e) => setNewSkillPath(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddSkillPath()}
+                    disabled={updating || disabled}
+                    style={{ marginBottom: 0 }}
+                  />
+                  <button
+                    className="skills-path-add-btn"
+                    onClick={handleAddSkillPath}
+                    disabled={!newSkillPath.trim() || updating || disabled}
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+
+              {/* Discovered skills */}
+              <div className="settings-tools-list">
+                {skillsLoading && <span className="settings-hint">Loading skills...</span>}
+                {!skillsLoading && skillsList.length === 0 && (
+                  <span className="settings-hint">No skills discovered</span>
+                )}
+                {skillsList.map((skill) => (
+                  <div key={skill.name} className="settings-hook-entry">
+                    <label
+                      className={`settings-tool-row ${skill.enabled ? 'active' : 'inactive'}`}
+                      title={skill.path}
+                    >
+                      <div className="settings-tool-info">
+                        <span className="settings-tool-name">{skill.name}</span>
+                        {skill.description && (
+                          <span className="settings-hint" style={{ margin: 0 }}>{skill.description}</span>
+                        )}
+                      </div>
+                      <button
+                        className={`settings-tool-toggle ${skill.enabled ? 'on' : 'off'}`}
+                        onClick={() => handleToggleSkill(skill.name, skill.enabled)}
+                        disabled={updating || disabled}
+                        aria-label={`${skill.enabled ? 'Disable' : 'Enable'} ${skill.name} skill`}
+                      >
+                        <span className="settings-toggle-knob" />
+                      </button>
+                    </label>
+                  </div>
+                ))}
+              </div>
+
+              {/* Upload skill */}
+              <div className="skills-upload">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".zip"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) handleUploadSkill(f);
+                    e.target.value = '';
+                  }}
+                />
+                <button
+                  className="skills-upload-btn"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={updating || disabled}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
+                  </svg>
+                  Upload Skill (.zip)
+                </button>
+              </div>
+            </section>
+          )}
 
           {/* Color Mode */}
           <section className="settings-section">

@@ -660,6 +660,121 @@ body,
   flex-shrink: 0;
 }
 
+/* ── Skills Section ── */
+.skills-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.skills-path-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+.skills-path-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+.skills-path-badge {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  flex-shrink: 0;
+}
+.skills-path-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  flex-shrink: 0;
+  transition: color var(--transition);
+}
+.skills-path-remove:hover {
+  color: var(--accent-red);
+}
+.skills-path-remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+.skills-path-add {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.skills-path-add .settings-filter {
+  flex: 1;
+}
+.skills-path-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all var(--transition);
+}
+.skills-path-add-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.skills-path-add-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.skills-upload {
+  margin-top: 8px;
+}
+.skills-upload-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  color: var(--text-secondary);
+  transition: all var(--transition);
+}
+.skills-upload-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.skills-upload-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ── Terminal Panel ── */
 .terminal-panel {
   border-top: 1px solid var(--border);
@@ -667,6 +782,21 @@ body,
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  position: relative;
+}
+.terminal-resize-handle {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: row-resize;
+  z-index: 10;
+}
+.terminal-resize-handle:hover,
+.terminal-resize-handle:active {
+  background: var(--accent);
+  opacity: 0.5;
 }
 .terminal-header {
   display: flex;
@@ -3830,4 +3960,87 @@ body,
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text-muted);
+}
+
+/* ── Undo Toast ── */
+.undo-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  z-index: 9999;
+  animation: toast-slide-up 0.25s ease-out;
+}
+@keyframes toast-slide-up {
+  from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.undo-toast-btn {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.undo-toast-btn:hover {
+  background: var(--accent-hover);
+}
+.undo-toast-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+.undo-toast-dismiss:hover {
+  color: var(--text-primary);
+}
+
+/* ── Container Hint ── */
+.container-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+.container-hint-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.container-hint.--launching {
+  color: var(--accent-orange);
+  background: var(--accent-orange-soft);
+}
+.container-hint.--launching .container-hint-dot {
+  background: var(--accent-orange);
+  animation: container-pulse 1.2s ease-in-out infinite;
+}
+.container-hint.--error {
+  color: var(--accent-red);
+  background: var(--accent-red-soft);
+}
+.container-hint.--error .container-hint-dot {
+  background: var(--accent-red);
 }

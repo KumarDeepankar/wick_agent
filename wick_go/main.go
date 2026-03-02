@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -12,15 +10,19 @@ import (
 )
 
 func main() {
+	// Resolve host-side skills directory (for docker cp into container)
 	here, _ := filepath.Abs(filepath.Dir(os.Args[0]))
-	skillsDir := filepath.Join(here, "skills")
+	hostSkillsDir := filepath.Join(here, "skills")
 
 	// If running via `go run`, use the source directory instead.
 	if wd, err := os.Getwd(); err == nil {
 		if _, err := os.Stat(filepath.Join(wd, "skills")); err == nil {
-			skillsDir = filepath.Join(wd, "skills")
+			hostSkillsDir = filepath.Join(wd, "skills")
 		}
 	}
+
+	// Container-side path — this is what the backend.Execute() sees
+	containerSkillsDir := "/workspace/skills"
 
 	systemPrompt := `You are a versatile AI assistant that creates high-quality content using your skills library.
 
@@ -44,14 +46,16 @@ Prefer using skills over writing custom code. Skills give you proven, consistent
 	}
 	s := wickserver.New(opts...)
 
+	containerName := "wick-sandbox-local"
+
 	// Default agent (Ollama local)
 	s.RegisterAgent("default", &agent.AgentConfig{
 		Name:         "Ollama Local",
 		Model:        "ollama:llama3.1:8b",
 		SystemPrompt: systemPrompt,
 		Tools:        []string{"internet_search", "calculate", "current_datetime"},
-		Skills:       &agent.SkillsCfg{Paths: []string{skillsDir}},
-		Backend:      &agent.BackendCfg{Type: "docker", Workdir: "/workspace", Image: "wick-sandbox"},
+		Skills:       &agent.SkillsCfg{Paths: []string{containerSkillsDir}, HostPaths: []string{hostSkillsDir}},
+		Backend:      &agent.BackendCfg{Type: "docker", Workdir: "/workspace", Image: "wick-sandbox", ContainerName: containerName},
 		Debug:        true,
 		Subagents: []agent.SubAgentCfg{
 			{
@@ -64,9 +68,6 @@ Prefer using skills over writing custom code. Skills give you proven, consistent
 	})
 
 	// Gateway Claude agent — uses Anthropic direct API.
-	// (The Python app.py used Bedrock with SigV4 via @model; the Go LLM resolver
-	// doesn't have a Bedrock client yet, so this uses the Anthropic provider instead.
-	// To add Bedrock support, implement an llm.BedrockClient in wick_server/llm/.)
 	s.RegisterAgent("gateway-claude", &agent.AgentConfig{
 		Name: "Claude",
 		Model: map[string]any{
@@ -75,45 +76,12 @@ Prefer using skills over writing custom code. Skills give you proven, consistent
 		},
 		SystemPrompt: systemPrompt,
 		Tools:        []string{"internet_search", "calculate", "current_datetime"},
-		Skills:       &agent.SkillsCfg{Paths: []string{skillsDir}},
-		Backend:      &agent.BackendCfg{Type: "docker", Workdir: "/workspace", Image: "wick-sandbox"},
+		Skills:       &agent.SkillsCfg{Paths: []string{containerSkillsDir}, HostPaths: []string{hostSkillsDir}},
+		Backend:      &agent.BackendCfg{Type: "docker", Workdir: "/workspace", Image: "wick-sandbox", ContainerName: containerName},
 		Debug:        true,
 	})
 
-	// App-level tools
-	s.RegisterTool(&agent.FuncTool{
-		ToolName: "add",
-		ToolDesc: "Add two numbers together and return the sum.",
-		ToolParams: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"a": map[string]any{"type": "number", "description": "First number"},
-				"b": map[string]any{"type": "number", "description": "Second number"},
-			},
-			"required": []string{"a", "b"},
-		},
-		Fn: func(ctx context.Context, args map[string]any) (string, error) {
-			a, _ := args["a"].(float64)
-			b, _ := args["b"].(float64)
-			return fmt.Sprintf("%g", a+b), nil
-		},
-	})
-
-	s.RegisterTool(&agent.FuncTool{
-		ToolName: "weather",
-		ToolDesc: "Get the current weather for a city (demo — returns mock data).",
-		ToolParams: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"city": map[string]any{"type": "string", "description": "City name"},
-			},
-			"required": []string{"city"},
-		},
-		Fn: func(ctx context.Context, args map[string]any) (string, error) {
-			city, _ := args["city"].(string)
-			return fmt.Sprintf("Weather in %s: 72°F, sunny", city), nil
-		},
-	})
+	registerTools(s)
 
 	log.Println("Starting wick_go...")
 	if err := s.Start(); err != nil {

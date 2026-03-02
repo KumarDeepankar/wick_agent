@@ -37,6 +37,21 @@ func (bs *BackendStore) Set(agentID, username string, b backend.Backend) {
 	bs.backends[backendKey(agentID, username)] = b
 }
 
+// GetByContainer returns an existing backend that manages the given container name, or nil.
+// This prevents multiple agents from creating duplicate backends for the same container.
+func (bs *BackendStore) GetByContainer(containerName string) backend.Backend {
+	bs.mu.RLock()
+	defer bs.mu.RUnlock()
+	for _, b := range bs.backends {
+		if cm, ok := b.(backend.ContainerManager); ok {
+			if cm.ContainerName() == containerName {
+				return b
+			}
+		}
+	}
+	return nil
+}
+
 // Remove removes and cleans up a backend.
 func (bs *BackendStore) Remove(agentID, username string) {
 	bs.mu.Lock()

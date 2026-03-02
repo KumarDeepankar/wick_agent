@@ -11,14 +11,64 @@ interface Props {
   agentId: string;
   onClose: () => void;
   theme: 'light' | 'dark';
-  height?: number;
 }
 
-export function TerminalPanel({ agentId, onClose, theme, height = 280 }: Props) {
+const MIN_HEIGHT = 120;
+const MAX_HEIGHT_RATIO = 0.8; // 80% of viewport
+const DEFAULT_HEIGHT = 280;
+
+export function TerminalPanel({ agentId, onClose, theme }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>('terminal');
+  const [panelHeight, setPanelHeight] = useState(DEFAULT_HEIGHT);
+  const dragging = useRef(false);
+  const startY = useRef(0);
+  const startH = useRef(0);
+
+  // Drag-to-resize from top edge
+  const handleDragStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    const clientY = 'touches' in e ? (e as React.TouchEvent).touches[0]!.clientY : (e as React.MouseEvent).clientY;
+    startY.current = clientY;
+    startH.current = panelHeight;
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+  }, [panelHeight]);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent | TouchEvent) => {
+      if (!dragging.current) return;
+      const clientY = 'touches' in e ? (e as TouchEvent).touches[0]!.clientY : (e as MouseEvent).clientY;
+      const delta = startY.current - clientY; // dragging up = bigger
+      const maxH = window.innerHeight * MAX_HEIGHT_RATIO;
+      const newH = Math.min(maxH, Math.max(MIN_HEIGHT, startH.current + delta));
+      setPanelHeight(newH);
+    };
+    const onUp = () => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('touchmove', onMove);
+    window.addEventListener('touchend', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onUp);
+    };
+  }, []);
 
   return (
-    <div className="terminal-panel" style={{ height }}>
+    <div className="terminal-panel" style={{ height: panelHeight }}>
+      <div
+        className="terminal-resize-handle"
+        onMouseDown={handleDragStart}
+        onTouchStart={handleDragStart}
+      />
       <div className="terminal-header">
         <div className="terminal-tabs">
           <button
@@ -94,6 +144,12 @@ function TerminalView({ agentId, theme }: { agentId: string; theme: 'light' | 'd
     ws.onopen = () => {
       term.writeln('\x1b[32mConnected to container.\x1b[0m\r');
       fitAddon.fit();
+      // Send initial terminal size to backend
+      const dims = fitAddon.proposeDimensions();
+      if (dims) {
+        const ctrl = '\x01' + JSON.stringify({ type: 'resize', cols: dims.cols, rows: dims.rows });
+        ws.send(new TextEncoder().encode(ctrl));
+      }
     };
 
     ws.onmessage = (ev) => {
@@ -114,6 +170,14 @@ function TerminalView({ agentId, theme }: { agentId: string; theme: 'light' | 'd
     term.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(new TextEncoder().encode(data));
+      }
+    });
+
+    // Send resize events to backend so PTY dimensions match
+    term.onResize(({ cols, rows }) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        const ctrl = '\x01' + JSON.stringify({ type: 'resize', cols, rows });
+        ws.send(new TextEncoder().encode(ctrl));
       }
     });
 

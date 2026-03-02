@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -137,9 +138,10 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 		default:
 		}
 
-		// Apply ModifyRequest hooks
+		// Apply ModifyRequest hooks — thread systemPrompt through all hooks
 		msgs := make([]Message, len(state.Messages))
 		copy(msgs, state.Messages)
+		systemPrompt := a.Config.SystemPrompt
 		for _, hook := range a.Hooks {
 			before := len(msgs)
 			var s SpanHandle
@@ -149,7 +151,7 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 				s.Set("message_count_before", before)
 			}
 			var err error
-			msgs, err = hook.ModifyRequest(ctx, msgs)
+			systemPrompt, msgs, err = hook.ModifyRequest(ctx, systemPrompt, msgs)
 			if err != nil {
 				if s != nil {
 					s.Set("error", err.Error()).End()
@@ -169,8 +171,8 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 			}
 
 			// System prompt (sent separately via req.SystemPrompt, not in messages)
-			if a.Config.SystemPrompt != "" {
-				sp := a.Config.SystemPrompt
+			if systemPrompt != "" {
+				sp := systemPrompt
 				if len(sp) <= 1000 {
 					inputEvent["system_prompt"] = sp
 				} else {
@@ -205,39 +207,8 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 			tr.RecordEvent("llm.input", inputEvent)
 		}
 
-		// When debug is enabled, emit full untruncated LLM input as SSE event
-		if a.Config.Debug && eventCh != nil {
-			fullMsgs := make([]map[string]any, len(msgs))
-			for i, m := range msgs {
-				entry := map[string]any{
-					"role":    m.Role,
-					"content": m.Content,
-				}
-				if len(m.ToolCalls) > 0 {
-					tcs := make([]map[string]any, len(m.ToolCalls))
-					for j, tc := range m.ToolCalls {
-						tcs[j] = map[string]any{"id": tc.ID, "name": tc.Name, "args": tc.Args}
-					}
-					entry["tool_calls"] = tcs
-				}
-				if m.ToolCallID != "" {
-					entry["tool_call_id"] = m.ToolCallID
-				}
-				fullMsgs[i] = entry
-			}
-			debugData := map[string]any{
-				"iteration":     iter,
-				"message_count": len(msgs),
-				"messages":      fullMsgs,
-			}
-			if a.Config.SystemPrompt != "" {
-				debugData["system_prompt"] = a.Config.SystemPrompt
-			}
-			eventCh <- StreamEvent{Event: "on_llm_input", Name: a.Config.ModelStr(), Data: debugData}
-		}
-
 		// Build model call chain (onion ring)
-		modelCall := a.buildModelChain(toolSchemas)
+		modelCall := a.buildModelChain(systemPrompt, toolSchemas)
 
 		eventCh <- StreamEvent{Event: "on_chat_model_start", Name: a.Config.ModelStr()}
 
@@ -249,8 +220,8 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 
 		eventCh <- StreamEvent{Event: "on_chat_model_end", Name: a.Config.ModelStr()}
 
-		// When debug is enabled, emit full LLM response as SSE event
-		if a.Config.Debug && eventCh != nil {
+		// Emit full LLM response for transparency
+		if eventCh != nil {
 			debugResp := map[string]any{
 				"iteration":      iter,
 				"content":        response.Content,
@@ -378,7 +349,7 @@ type ModelResponse struct {
 	ToolCalls []ToolCall
 }
 
-func (a *Agent) buildModelChain(toolSchemas []llm.ToolSchema) ModelCallFunc {
+func (a *Agent) buildModelChain(systemPrompt string, toolSchemas []llm.ToolSchema) ModelCallFunc {
 	// Base function: call the LLM
 	base := func(ctx context.Context, msgs []Message, eventCh chan<- StreamEvent) (*ModelResponse, error) {
 		llmMsgs := convertMessages(msgs)
@@ -389,8 +360,17 @@ func (a *Agent) buildModelChain(toolSchemas []llm.ToolSchema) ModelCallFunc {
 			MaxTokens:   4096,
 		}
 
-		if a.Config.SystemPrompt != "" {
-			req.SystemPrompt = a.Config.SystemPrompt
+		if systemPrompt != "" {
+			req.SystemPrompt = systemPrompt
+		}
+
+		// Emit the actual provider-specific JSON for full LLM transparency
+		if eventCh != nil {
+			eventCh <- StreamEvent{
+				Event: "on_llm_input",
+				Name:  a.Config.ModelStr(),
+				Data:  json.RawMessage(a.LLM.BuildRequestJSON(req)),
+			}
 		}
 
 		// Use streaming — capture errors from the LLM client

@@ -68,6 +68,12 @@ func (c *HTTPProxyClient) Call(ctx context.Context, req Request) (*Response, err
 	return &result, nil
 }
 
+// BuildRequestJSON returns the proxy request JSON body (same as llm.Request).
+func (c *HTTPProxyClient) BuildRequestJSON(req Request) json.RawMessage {
+	data, _ := json.Marshal(req)
+	return data
+}
+
 // Stream makes a streaming LLM call via the Python sidecar.
 // The sidecar returns SSE events (data: {...}\n\n) which are parsed
 // as StreamChunk and pushed to the channel.

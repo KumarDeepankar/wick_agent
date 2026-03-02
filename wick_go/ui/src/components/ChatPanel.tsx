@@ -136,7 +136,7 @@ export function ChatPanel({
         )}
         {confirmingReset ? (
           <span className="reset-confirm">
-            <span className="reset-confirm-text">Discard conversation?</span>
+            <span className="reset-confirm-text">Discard conversation and artifacts?</span>
             <button className="btn-reset-yes" onClick={handleReset}>Yes</button>
             <button className="btn-reset-no" onClick={cancelReset}>No</button>
           </span>

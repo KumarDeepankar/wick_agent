@@ -46,6 +46,10 @@ type DockerBackend struct {
 
 	// daemonFS is a RemoteFS backed by the daemon (fast path).
 	daemonFS *wickfs.RemoteFS
+
+	// OnReady is called once after the container status transitions to "launched".
+	// Set this before calling LaunchContainerAsync.
+	OnReady func()
 }
 
 // NewDockerBackend creates a Docker backend.
@@ -103,11 +107,11 @@ func (b *DockerBackend) ResolvePath(path string) (string, error) {
 }
 
 func (b *DockerBackend) TerminalCmd() []string {
-	return b.dockerCmd("exec", "-i",
+	return b.dockerCmd("exec", "-it",
 		"-e", "TERM=xterm-256color",
 		"-w", b.workdir,
 		b.containerName,
-		"sh",
+		"sh", "-c", "exec bash --login 2>/dev/null || exec sh",
 	)
 }
 
@@ -120,6 +124,11 @@ func (b *DockerBackend) FS() wickfs.FileSystem {
 		return b.daemonFS
 	}
 	return b.remoteFS
+}
+
+// ContainerName returns the Docker container name.
+func (b *DockerBackend) ContainerName() string {
+	return b.containerName
 }
 
 func (b *DockerBackend) ContainerStatus() string {
@@ -231,18 +240,6 @@ func (b *DockerBackend) LaunchContainerAsync(onStatus func(status, username stri
 
 		err := b.EnsureContainer()
 
-		if err == nil {
-			// Try to start/connect to wick-daemon (fast path)
-			if daemonErr := b.EnsureDaemon(); daemonErr != nil {
-				log.Printf("wick-daemon not available: %v (falling back to docker exec)", daemonErr)
-
-				// Fallback: ensure wickfs CLI is available for docker-exec path
-				if wickfsErr := b.EnsureWickfs(); wickfsErr != nil {
-					log.Printf("Warning: wickfs not available: %v (container will work with shell commands)", wickfsErr)
-				}
-			}
-		}
-
 		b.mu.Lock()
 		if err != nil {
 			b.containerStatus = "error"
@@ -254,6 +251,25 @@ func (b *DockerBackend) LaunchContainerAsync(onStatus func(status, username stri
 
 		if onStatus != nil {
 			onStatus("container_status", b.username)
+		}
+
+		if err != nil {
+			return
+		}
+
+		// Fire post-launch callback (e.g. skills sync) now that container is usable.
+		if b.OnReady != nil {
+			b.OnReady()
+		}
+
+		// Container is usable — set up daemon/wickfs in the background
+		// without blocking the "launched" status.
+		if daemonErr := b.EnsureDaemon(); daemonErr != nil {
+			log.Printf("wick-daemon not available: %v (falling back to docker exec)", daemonErr)
+
+			if wickfsErr := b.EnsureWickfs(); wickfsErr != nil {
+				log.Printf("Warning: wickfs not available: %v (container will work with shell commands)", wickfsErr)
+			}
 		}
 	}()
 }

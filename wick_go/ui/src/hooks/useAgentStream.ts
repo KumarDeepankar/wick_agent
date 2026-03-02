@@ -474,6 +474,20 @@ export function useAgentStream() {
     currentIterRef.current = null;
   }, [stop]);
 
+  const restore = useCallback((snapshot: {
+    messages: ChatMessage[];
+    traceEvents: TraceEvent[];
+    canvasArtifacts: CanvasArtifact[];
+    threadId: string | null;
+  }) => {
+    setMessages(snapshot.messages);
+    setTraceEvents(snapshot.traceEvents);
+    setCanvasArtifacts(snapshot.canvasArtifacts);
+    setThreadId(snapshot.threadId);
+    setError(null);
+    setStatus('idle');
+  }, []);
+
   return {
     messages,
     traceEvents,
@@ -484,6 +498,7 @@ export function useAgentStream() {
     send,
     stop,
     reset,
+    restore,
     updateArtifactContent,
     removeArtifact,
   };
