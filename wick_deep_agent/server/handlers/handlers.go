@@ -749,7 +749,7 @@ func (h *agentHandler) availableHooks(w http.ResponseWriter, r *http.Request) {
 
 	hooksInfo := []hookEntry{
 		{Name: "tracing", Description: "Records timed spans for LLM and tool calls", Phases: []string{"wrap_model_call", "wrap_tool_call"}, Configurable: false, Tools: []string{}},
-		{Name: "todolist", Description: "Tracks task progress via a write_todos tool", Phases: []string{"before_agent"}, Configurable: false, Tools: []string{"write_todos"}},
+		{Name: "todolist", Description: "Tracks task progress via write_todos and update_todo tools", Phases: []string{"before_agent", "modify_request", "after_model", "wrap_tool_call"}, Configurable: false, Tools: []string{"write_todos", "update_todo"}},
 		{Name: "filesystem", Description: "Registers file-operation tools (ls, read, write, edit, glob, grep, execute)", Phases: []string{"before_agent", "wrap_tool_call"}, Configurable: false, Tools: []string{"ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute"}},
 		{Name: "skills", Description: "Discovers SKILL.md files and injects catalog into system prompt", Phases: []string{"before_agent", "modify_request"}, Configurable: true, Tools: []string{}},
 		{Name: "memory", Description: "Loads AGENTS.md memory files and injects into system prompt", Phases: []string{"before_agent", "modify_request"}, Configurable: true, Tools: []string{}},
@@ -777,6 +777,7 @@ func (h *agentHandler) availableTools(w http.ResponseWriter, r *http.Request) {
 		toolEntry{Name: "grep", Source: "filesystem"},
 		toolEntry{Name: "execute", Source: "filesystem"},
 		toolEntry{Name: "write_todos", Source: "todolist"},
+		toolEntry{Name: "update_todo", Source: "todolist"},
 	)
 
 	// Registered tools (app-level + external HTTP)
