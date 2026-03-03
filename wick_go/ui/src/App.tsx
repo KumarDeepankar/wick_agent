@@ -344,7 +344,7 @@ export default function App() {
             >
               {agents.map((a) => (
                 <option key={a.agent_id} value={a.agent_id}>
-                  {a.name ?? a.agent_id} ({a.model})
+                  {a.name ?? a.agent_id}
                 </option>
               ))}
             </select>

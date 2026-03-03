@@ -13,13 +13,13 @@ type ModelCallWrapFunc func(ctx context.Context, msgs []Message) (*llm.Response,
 type ToolCallFunc func(ctx context.Context, call ToolCall) (*ToolResult, error)
 
 // Hook defines the interface for agent middleware (onion ring pattern).
-// Matches the 4 hook points from the Python deepagents middleware.
+// Matches the hook points from the Python deepagents middleware.
 type Hook interface {
 	// Name returns the hook identifier.
 	Name() string
 
 	// Phases returns which phases this hook is active in.
-	// Valid values: "before_agent", "modify_request", "wrap_model_call", "wrap_tool_call"
+	// Valid values: "before_agent", "modify_request", "wrap_model_call", "after_model", "wrap_tool_call"
 	Phases() []string
 
 	// BeforeAgent is called once before the agent loop starts.
@@ -29,6 +29,12 @@ type Hook interface {
 	// WrapModelCall wraps each LLM call (summarization, prompt caching).
 	// Return nil to pass through to the next hook.
 	WrapModelCall(ctx context.Context, msgs []Message, next ModelCallWrapFunc) (*llm.Response, error)
+
+	// AfterModel is called after the model responds but before tools are dispatched.
+	// It can inspect the model's tool calls and intercept specific calls by returning
+	// pre-built results for them. Intercepted calls are skipped during execution.
+	// Returns: intercepted map (tool call ID → pre-built result), or nil.
+	AfterModel(ctx context.Context, state *AgentState, toolCalls []ToolCall) (map[string]ToolResult, error)
 
 	// WrapToolCall wraps each tool execution (logging, large result eviction).
 	WrapToolCall(ctx context.Context, call ToolCall, next ToolCallFunc) (*ToolResult, error)
@@ -45,7 +51,7 @@ type BaseHook struct{}
 func (BaseHook) Name() string { return "base" }
 
 func (BaseHook) Phases() []string {
-	return []string{"before_agent", "modify_request", "wrap_model_call", "wrap_tool_call"}
+	return []string{"before_agent", "modify_request", "wrap_model_call", "after_model", "wrap_tool_call"}
 }
 
 func (BaseHook) BeforeAgent(ctx context.Context, state *AgentState) error {
@@ -54,6 +60,10 @@ func (BaseHook) BeforeAgent(ctx context.Context, state *AgentState) error {
 
 func (BaseHook) WrapModelCall(ctx context.Context, msgs []Message, next ModelCallWrapFunc) (*llm.Response, error) {
 	return next(ctx, msgs)
+}
+
+func (BaseHook) AfterModel(ctx context.Context, state *AgentState, toolCalls []ToolCall) (map[string]ToolResult, error) {
+	return nil, nil
 }
 
 func (BaseHook) WrapToolCall(ctx context.Context, call ToolCall, next ToolCallFunc) (*ToolResult, error) {

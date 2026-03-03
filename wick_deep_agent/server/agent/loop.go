@@ -82,6 +82,7 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 	// Load or create thread state
 	state := a.threadStore.LoadOrCreate(threadID)
 	state.Messages = append(state.Messages, messages...)
+	ctx = WithState(ctx, state)
 
 	// Trace recorder (nil-safe — all checks below handle nil)
 	tr := TraceFromContext(ctx)
@@ -246,11 +247,60 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 			break
 		}
 
-		// Execute tool calls
+		// 3. AfterModel hooks — intercept tool calls before dispatch.
+		// Hooks can return pre-built results for calls they want to reject
+		// (e.g. duplicate write_todos). Those calls skip execution entirely.
+		intercepted := make(map[string]ToolResult)
+		for _, hook := range a.Hooks {
+			var s SpanHandle
+			if tr != nil {
+				s = tr.StartSpan("hook.after_model/" + hook.Name())
+			}
+			got, err := hook.AfterModel(ctx, state, response.ToolCalls)
+			if err != nil {
+				if s != nil {
+					s.Set("error", err.Error()).End()
+				}
+				return nil, fmt.Errorf("hook %s AfterModel: %w", hook.Name(), err)
+			}
+			for id, r := range got {
+				intercepted[id] = r
+			}
+			if s != nil {
+				if len(got) > 0 {
+					ids := make([]string, 0, len(got))
+					for id := range got {
+						ids = append(ids, id)
+					}
+					s.Set("intercepted", ids)
+				}
+				s.End()
+			}
+		}
+
+		// Execute tool calls (skip intercepted ones)
 		var wg sync.WaitGroup
 		results := make([]ToolResult, len(response.ToolCalls))
 
 		for i, tc := range response.ToolCalls {
+			// Use pre-built result for intercepted calls
+			if ir, ok := intercepted[tc.ID]; ok {
+				results[i] = ir
+				eventCh <- StreamEvent{
+					Event: "on_tool_start",
+					Name:  tc.Name,
+					RunID: tc.ID,
+					Data:  map[string]any{"input": tc.Args},
+				}
+				eventCh <- StreamEvent{
+					Event: "on_tool_end",
+					Name:  tc.Name,
+					RunID: tc.ID,
+					Data:  map[string]any{"output": ir.Output},
+				}
+				continue
+			}
+
 			wg.Add(1)
 			go func(idx int, tc ToolCall) {
 				defer wg.Done()
