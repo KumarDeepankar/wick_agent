@@ -1,0 +1,21 @@
+sequenceDiagram
+    participant AL as Agent Run
+    participant H as Hooks[]
+    participant LLM as llm.Client
+    participant T as Tools[]
+
+    AL->>H: 1. BeforeAgent(state)
+    Note over AL,T: Steps 2-5 repeat up to 25 iterations
+    AL->>H: 2. ModifyRequest(prompt, msgs)
+    H-->>AL: modified prompt, msgs
+    AL->>H: 3. WrapModelCall(msgs, next)
+    H->>LLM: Call / Stream(request)
+    LLM-->>H: Response + tool_calls
+    H-->>AL: Response
+    AL->>H: 4. AfterModel(state, toolCalls)
+    H-->>AL: short-circuit results
+    AL->>H: 5. WrapToolCall(call, next)
+    H->>T: Execute(args)
+    T-->>H: result string
+    H-->>AL: ToolResult
+    Note over AL: Append results, go to step 2

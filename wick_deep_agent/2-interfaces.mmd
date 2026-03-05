@@ -1,0 +1,142 @@
+classDiagram
+    direction TB
+
+    class FileSystem {
+        <<interface>>
+        +Ls(ctx, path)
+        +ReadFile(ctx, path)
+        +WriteFile(ctx, path, content)
+        +EditFile(ctx, path, old, new)
+        +Grep(ctx, pattern, path)
+        +Glob(ctx, pattern, path)
+        +Exec(ctx, command)
+    }
+    class Executor {
+        <<interface>>
+        +Run(ctx, command)
+        +RunWithStdin(ctx, command, stdin)
+    }
+    class LocalFS
+    class RemoteFS
+
+    FileSystem <|.. LocalFS : implements
+    FileSystem <|.. RemoteFS : implements
+    RemoteFS --> Executor : uses
+
+    class Tool {
+        <<interface>>
+        +Name() string
+        +Description() string
+        +Parameters() map
+        +Execute(ctx, args)
+    }
+    class Hook {
+        <<interface>>
+        +Name() string
+        +Phases() []string
+        +BeforeAgent(ctx, state)
+        +WrapModelCall(ctx, msgs, next)
+        +AfterModel(ctx, state, toolCalls)
+        +WrapToolCall(ctx, call, next)
+        +ModifyRequest(ctx, prompt, msgs)
+    }
+    class BaseHook {
+        <<abstract>>
+        no-op defaults
+    }
+    class FuncTool
+    class HTTPTool
+    class TraceRecorder {
+        <<interface>>
+        +StartSpan(name) SpanHandle
+        +RecordEvent(name, metadata)
+    }
+    class SpanHandle {
+        <<interface>>
+        +Set(key, value) SpanHandle
+        +End()
+    }
+    class Agent {
+        -LLM Client
+        -Tools []Tool
+        -Hooks []Hook
+        +Run(ctx, state)
+        +RunStream(ctx, state)
+    }
+    class ToolRegistry {
+        -tools map
+    }
+
+    Tool <|.. FuncTool : implements
+    Tool <|.. HTTPTool : implements
+    Hook <|.. BaseHook : default impl
+    Agent --> Tool : has many
+    Agent --> Hook : has many
+    ToolRegistry --> Tool : stores
+
+    class Client {
+        <<interface>>
+        +Call(ctx, req)
+        +Stream(ctx, req, ch)
+        +BuildRequestJSON(req)
+    }
+    class OpenAIClient
+    class AnthropicClient
+    class HTTPProxyClient
+
+    Client <|.. OpenAIClient : implements
+    Client <|.. AnthropicClient : implements
+    Client <|.. HTTPProxyClient : implements
+    Agent --> Client : uses
+
+    class Backend {
+        <<interface>>
+        +ID() string
+        +Execute(command)
+        +ExecuteWithStdin(command, stdin)
+        +UploadFiles(files)
+        +DownloadFiles(paths)
+        +ContainerStatus() string
+        +ContainerError() string
+        +Workdir() string
+        +FS() FileSystem
+    }
+    class ContainerManager {
+        <<interface>>
+        +CancelLaunch()
+        +StopContainer()
+        +ContainerName() string
+    }
+    class LocalBackend
+    class DockerBackend
+    class DockerExecutor
+
+    Backend <|.. LocalBackend : implements
+    Backend <|.. DockerBackend : implements
+    ContainerManager <|.. DockerBackend : implements
+    Executor <|.. DockerExecutor : implements
+    Backend --> FileSystem : returns via FS
+
+    class FilesystemHook
+    class MemoryHook
+    class SkillsHook
+    class SummarizationHook
+    class TodoListHook
+    class TracingHook
+    class Trace
+    class SpanRecorder
+
+    BaseHook <|-- FilesystemHook : embeds
+    BaseHook <|-- MemoryHook : embeds
+    BaseHook <|-- SkillsHook : embeds
+    BaseHook <|-- SummarizationHook : embeds
+    BaseHook <|-- TodoListHook : embeds
+    BaseHook <|-- TracingHook : embeds
+    FilesystemHook --> Backend : depends on
+    FilesystemHook --> FileSystem : depends on
+    MemoryHook --> Backend : depends on
+    SkillsHook --> Backend : depends on
+    SummarizationHook --> Client : depends on
+    TraceRecorder <|.. Trace : implements
+    SpanHandle <|.. SpanRecorder : implements
+    TracingHook --> TraceRecorder : uses
