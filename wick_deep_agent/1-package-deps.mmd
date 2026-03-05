@@ -1,0 +1,19 @@
+graph TD
+    handlers["handlers/"]
+    hooks["hooks/"]
+    tracing["tracing/"]
+    agent["agent/"]
+    llm["llm/"]
+    backend["backend/"]
+    wickfs["wickfs/"]
+
+    handlers --> agent
+    handlers --> backend
+    handlers --> llm
+    hooks --> agent
+    hooks --> backend
+    hooks --> llm
+    hooks --> wickfs
+    tracing --> agent
+    backend --> wickfs
+    agent --> llm
