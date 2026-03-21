@@ -63,8 +63,8 @@ claude_agent = Agent(
 )
 
 
-GATEWAY_URL = os.environ.get("GATEWAY_URL", "https://my-gateway.com")
-GATEWAY_MODEL = os.environ.get("GATEWAY_MODEL", "claude-sonnet-4-20250514")
+GATEWAY_URL = os.environ.get("GATEWAY_URL", "https://xyz-abc")
+GATEWAY_MODEL = os.environ.get("GATEWAY_MODEL", "anthropic.claude-4-5-sonnet-v1:0")
 TOKEN_REFRESH_INTERVAL = 20 * 60  # 20 minutes
 
 # Token state — refreshed by background thread
@@ -103,43 +103,45 @@ _refresh_thread.start()
 
 @claude_agent.llm_provider("claude-sonnet")
 async def gateway_llm(request: LLMRequest):
-    """Route LLM calls to custom gateway (Anthropic-compatible)."""
+    """Route LLM calls to gateway (OpenAI chat completions format)."""
 
-    # Build messages in Anthropic format
+    # Build messages — system prompt as a "system" role message
     messages = []
+    if request.system_prompt:
+        messages.append({"role": "system", "content": request.system_prompt})
     for msg in request.messages:
         if msg.role in ("user", "assistant"):
             messages.append({"role": msg.role, "content": msg.content})
 
-    # Build tools in Anthropic format
+    # Build tools in OpenAI function-calling format
     tools = []
     if request.tools:
         for t in request.tools:
             tools.append({
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.parameters,
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                },
             })
 
-    # Build gateway request payload
     payload = {
         "model": GATEWAY_MODEL,
         "max_tokens": request.max_tokens or 4096,
         "messages": messages,
     }
-    if request.system_prompt:
-        payload["system"] = request.system_prompt
     if tools:
         payload["tools"] = tools
 
     headers = {
-        "Authorization": f"Bearer {_get_token()}",
         "Content-Type": "application/json",
+        "Authorization": f"Bearer {_get_token()}",
     }
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=5.0)) as client:
         resp = await client.post(
-            f"{GATEWAY_URL}/v1/messages",
+            f"{GATEWAY_URL}/chat/completions",
             headers=headers,
             json=payload,
         )
@@ -148,38 +150,36 @@ async def gateway_llm(request: LLMRequest):
 
     logger.info("Gateway response keys: %s", list(result.keys()))
 
-    # Extract content blocks — handle gateway wrapped format or standard Anthropic
-    content_blocks = []
-    if "result" in result and isinstance(result["result"], list):
-        # Gateway wrapped: {"status": "success", "result": [{"content": [...]}]}
-        first = result["result"][0] if result["result"] else {}
-        content_blocks = first.get("content", []) if isinstance(first, dict) else []
-    elif "content" in result:
-        # Standard Anthropic: {"content": [...]}
-        content_blocks = result.get("content", [])
+    # Parse OpenAI chat completions response
+    choices = result.get("choices", [])
+    if not choices:
+        logger.error("No choices in gateway response")
+        yield StreamChunk(done=True)
+        return
 
-    # Parse content blocks into StreamChunks with simulated streaming
-    import asyncio
+    message = choices[0].get("message", {})
 
-    CHUNK_SIZE = 4   # characters per chunk (smaller = smoother)
-    CHUNK_DELAY = 0.01  # seconds between chunks
+    # Handle text content
+    content = message.get("content") or ""
+    if content:
+        CHUNK_SIZE = 4
+        CHUNK_DELAY = 0.01
+        for i in range(0, len(content), CHUNK_SIZE):
+            yield StreamChunk(delta=content[i:i + CHUNK_SIZE])
+            await asyncio.sleep(CHUNK_DELAY)
 
-    for block in content_blocks:
-        block_type = block.get("type", "")
-
-        if block_type == "text":
-            text = block.get("text", "")
-            # Emit text in small chunks for typewriter effect
-            for i in range(0, len(text), CHUNK_SIZE):
-                yield StreamChunk(delta=text[i:i + CHUNK_SIZE])
-                await asyncio.sleep(CHUNK_DELAY)
-
-        elif block_type == "tool_use":
-            yield StreamChunk(tool_call=ToolCallResult(
-                id=block.get("id", f"call_{id(block)}"),
-                name=block.get("name", ""),
-                args=block.get("input", {}),
-            ))
+    # Handle tool calls
+    tool_calls = message.get("tool_calls", [])
+    for tc in tool_calls:
+        func = tc.get("function", {})
+        args = func.get("arguments", "{}")
+        if isinstance(args, str):
+            args = json.loads(args)
+        yield StreamChunk(tool_call=ToolCallResult(
+            id=tc.get("id", f"call_{id(tc)}"),
+            name=func.get("name", ""),
+            args=args,
+        ))
 
     yield StreamChunk(done=True)
 
