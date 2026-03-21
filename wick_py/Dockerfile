@@ -46,7 +46,8 @@ COPY wick_py/examples/ /app/examples/
 COPY wick_go/skills/ /app/skills/
 
 # Install Python deps
-RUN pip install --no-cache-dir fastapi 'uvicorn[standard]' httpx pydantic anthropic
+COPY wick_py/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Create workspace directory
 RUN mkdir -p /workspace
