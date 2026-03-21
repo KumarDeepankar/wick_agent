@@ -42,8 +42,10 @@ Agent {                              AgentState {
   LLM          llm.Client              Todos        []Todo          // managed by TodoListHook
   Tools        []Tool                  Files        map[string]string // path→content (tracked writes)
   Hooks        []Hook                  toolRegistry map[string]Tool  // runtime-registered by hooks, not serialized
-  threadStore  *ThreadStore          }
-}
+  threadStore  *ThreadStore            Phase        string           // unexported: "plan"|"execute"|"verify" (PhasedHook)
+}                                      ActiveSkill  string           // unexported: loaded skill name (LazySkillsHook)
+                                       ToolFilter   map[string]bool  // unexported: when non-nil, restricts visible tools
+                                     }
                                      Message {
 Tool interface {                       Role       string     // "system"|"user"|"assistant"|"tool"
   Name() string                        Content    string
@@ -173,19 +175,27 @@ runLoop(ctx, messages []Message, threadID string, eventCh chan<- StreamEvent)
 │   │   │       └── "execute"    — h.fs.Exec(ctx, command)
 │   │   │       All tools: resolve path via h.resolvePath(), return JSON
 │   │   │
-│   │   ├── SkillsHook.BeforeAgent:
+│   │   ├── LazySkillsHook.BeforeAgent:                              (default, replaces SkillsHook)
 │   │   │   ├── allPaths = h.paths + h.prefs?.ExtraPaths
 │   │   │   ├── seen = {existing skill paths}  // dedup
-│   │   │   └── for each skillsDir in allPaths:
-│   │   │       ├── h.backend.Execute("find {dir} -name SKILL.md -type f")
-│   │   │       └── for each SKILL.md found:
-│   │   │           ├── skip if seen[mdPath]
-│   │   │           ├── h.backend.Execute("cat {mdPath}")
-│   │   │           ├── entry.Name = directory name (fallback)
-│   │   │           ├── parse YAML frontmatter (?s)\A---\s*\n(.*?\n)---\s*\n
-│   │   │           │   ├── entry.Name = front["name"]
-│   │   │           │   └── entry.Description = front["description"]
-│   │   │           └── h.skills = append(h.skills, entry)
+│   │   │   ├── for each skillsDir in allPaths:
+│   │   │   │   ├── h.backend.Execute("find {dir} -name SKILL.md -type f")
+│   │   │   │   └── for each SKILL.md found:
+│   │   │   │       ├── skip if seen[mdPath]
+│   │   │   │       ├── h.backend.Execute("cat {mdPath}")
+│   │   │   │       ├── entry.Name = directory name (fallback)
+│   │   │   │       ├── parse YAML frontmatter (?s)\A---\s*\n(.*?\n)---\s*\n
+│   │   │   │       │   ├── entry.Name = front["name"]
+│   │   │   │       │   └── entry.Description = front["description"]
+│   │   │   │       └── h.skills = append(h.skills, entry)
+│   │   │   └── RegisterToolOnState(state, tool) × 3:
+│   │   │       ├── "list_skills"       — returns skill catalog (name + description)
+│   │   │       ├── "activate_skill"    — loads skill's SKILL.md into context, sets state.ActiveSkill
+│   │   │       └── "deactivate_skill"  — clears state.ActiveSkill
+│   │   │
+│   │   ├── PhasedHook.BeforeAgent:
+│   │   │   ├── state.Phase = PhasePlan
+│   │   │   └── builds tool catalog (maps tool names → categories)
 │   │   │
 │   │   ├── MemoryHook.BeforeAgent:
 │   │   │   ├── for each path in h.paths:
@@ -197,7 +207,8 @@ runLoop(ctx, messages []Message, threadID string, eventCh chan<- StreamEvent)
 │   │   │   ├── state.Todos = []Todo{}  // initialize
 │   │   │   └── RegisterToolOnState(state, tool) × 2:
 │   │   │       ├── "write_todos" — replaces entire state.Todos with input array
-│   │   │       │   params: {todos: [{id, title, status:"pending"|"in_progress"|"done"}]}
+│   │   │       │   params: {todos: [{id, title, status:"pending"|"in_progress"|"done", tool_hint?}]}
+│   │   │       │   tool_hint is optional — suggests which tool to use for phased execution
 │   │   │       └── "update_todo" — finds todo by ID, updates status
 │   │   │           params: {id, status}
 │   │   │
@@ -207,31 +218,6 @@ runLoop(ctx, messages []Message, threadID string, eventCh chan<- StreamEvent)
 │   ├── ON ERROR: return nil, "hook {name} BeforeAgent: {err}"
 │   └── tr?.span.End()
 │
-│
-│ ═══════════════════════════════════════════════════════════════════════
-│  TOOL MAP CONSTRUCTION (after BeforeAgent, before loop)
-│ ═══════════════════════════════════════════════════════════════════════
-│
-├── Build Tool Map
-│   ├── toolMap = map[string]Tool{}
-│   │
-│   ├── for each t in a.Tools:              // server-registered tools (via RegisterTool)
-│   │   └── toolMap[t.Name()] = t           // e.g. HTTPTool, custom FuncTool
-│   │
-│   ├── for each name, t in state.toolRegistry:  // hook-registered tools
-│   │   └── toolMap[name] = t               // ls, read_file, write_file, edit_file,
-│   │       // Note: hook tools override                glob, grep, execute,
-│   │       // server tools with same name              write_todos, update_todo
-│   │
-│   └── toolSchemas = buildToolSchemas(toolMap)
-│       └── for each tool in toolMap:
-│           └── schemas = append(schemas, llm.ToolSchema{
-│                 Name:        t.Name(),
-│                 Description: t.Description(),
-│                 Parameters:  t.Parameters(),  // JSON Schema
-│               })
-│
-├── Trace: tr?.RecordEvent("tools.available", {count, tools: [names]})
 │
 │
 │ ═══════════════════════════════════════════════════════════════════════
@@ -265,13 +251,22 @@ runLoop(ctx, messages []Message, threadID string, eventCh chan<- StreamEvent)
     │   │   │   │  FilesystemHook.ModifyRequest:                               │
     │   │   │   │    → no-op, returns systemPrompt unchanged                   │
     │   │   │   │                                                              │
-    │   │   │   │  SkillsHook.ModifyRequest:                                   │
-    │   │   │   │    IF len(h.skills) == 0: pass-through                       │
-    │   │   │   │    ELSE:                                                     │
-    │   │   │   │      sb = "\n\nAvailable Skills:\n"                          │
-    │   │   │   │      for each skill (skip if h.prefs.Disabled[name]):        │
-    │   │   │   │        sb += "- [{name}] {desc} → Read {path} for full...\n"│
-    │   │   │   │      IF count > 0: systemPrompt += sb                        │
+    │   │   │   │  LazySkillsHook.ModifyRequest:                               │
+    │   │   │   │    IF state.ActiveSkill != "":                               │
+    │   │   │   │      systemPrompt += active skill's full SKILL.md content    │
+    │   │   │   │    systemPrompt += "Call list_skills to discover skills.     │
+    │   │   │   │      Call activate_skill to load one."                       │
+    │   │   │   │                                                              │
+    │   │   │   │  PhasedHook.ModifyRequest:                                   │
+    │   │   │   │    Auto-transitions phase based on todo state:               │
+    │   │   │   │      plan→execute: todos exist, ≥1 in_progress              │
+    │   │   │   │      execute→verify: all todos done                          │
+    │   │   │   │      verify→execute: any todo re-opened                     │
+    │   │   │   │    Sets state.ToolFilter based on current phase:             │
+    │   │   │   │      plan: todo + skill meta-tools only                      │
+    │   │   │   │      execute: tools matching todo.ToolHint + categories     │
+    │   │   │   │      verify: verification tools only                         │
+    │   │   │   │    (does not modify systemPrompt, modifies state)            │
     │   │   │   │                                                              │
     │   │   │   │  MemoryHook.ModifyRequest:                                   │
     │   │   │   │    IF h.memoryContent == "": pass-through                    │
@@ -287,8 +282,9 @@ runLoop(ctx, messages []Message, threadID string, eventCh chan<- StreamEvent)
     │   │   │   │                                                              │
     │   │   │   │  TodoListHook.ModifyRequest:                                 │
     │   │   │   │    systemPrompt += "\n\n" + h.systemPrompt                   │
-    │   │   │   │      // ~50 lines of guidance: when to use write_todos,      │
-    │   │   │   │      // task states, management rules, update_todo usage     │
+    │   │   │   │      // compressed: "Use write_todos for 3+ step tasks.      │
+    │   │   │   │      // Use update_todo to change one task's status.         │
+    │   │   │   │      // Mark done immediately."                              │
     │   │   │   │    state = StateFromContext(ctx)                              │
     │   │   │   │    IF state.Todos not empty:                                 │
     │   │   │   │      systemPrompt += "\n\n## Current Task Progress\n"        │
@@ -305,16 +301,16 @@ runLoop(ctx, messages []Message, threadID string, eventCh chan<- StreamEvent)
     │   │   │   ┌──────────────────────────────────────┐
     │   │   │   │ a.Config.SystemPrompt (base)         │
     │   │   │   │                                      │
-    │   │   │   │ Available Skills:                    │
-    │   │   │   │ - [csv-analyzer] Analyze CSV files...│
+    │   │   │   │ {active skill SKILL.md, if any}      │
+    │   │   │   │ Call list_skills to discover skills.  │
+    │   │   │   │ Call activate_skill to load one.      │
     │   │   │   │                                      │
     │   │   │   │ <agent_memory>                       │
     │   │   │   │ {AGENTS.md content}                  │
     │   │   │   │ </agent_memory>                      │
     │   │   │   │ Guidelines for agent memory: ...     │
     │   │   │   │                                      │
-    │   │   │   │ ## write_todos                       │
-    │   │   │   │ {todo usage guidance}                │
+    │   │   │   │ Use write_todos for 3+ step tasks... │
     │   │   │   │                                      │
     │   │   │   │ ## Current Task Progress             │
     │   │   │   │ - [in_progress] t1: Fix bug          │
@@ -339,6 +335,37 @@ runLoop(ctx, messages []Message, threadID string, eventCh chan<- StreamEvent)
     │           }, ...
     │         ]
     │       }
+    │
+    │
+    │ ─────────────────────────────────────────────────────────────────
+    │  TOOL MAP CONSTRUCTION (per iteration, after ModifyRequest)
+    │ ─────────────────────────────────────────────────────────────────
+    │
+    ├── Build Tool Map
+    │   ├── toolMap = map[string]Tool{}
+    │   │
+    │   ├── for each t in a.Tools:              // server-registered tools (via RegisterTool)
+    │   │   └── toolMap[t.Name()] = t           // e.g. HTTPTool, custom FuncTool
+    │   │
+    │   ├── for each name, t in state.toolRegistry:  // hook-registered tools
+    │   │   └── toolMap[name] = t               // ls, read_file, ..., write_todos, update_todo,
+    │   │       // Note: hook tools override     // list_skills, activate_skill, deactivate_skill
+    │   │       // server tools with same name
+    │   │
+    │   ├── IF state.ToolFilter != nil:         // set by PhasedHook in ModifyRequest
+    │   │   └── for each name in toolMap:
+    │   │       └── IF !state.ToolFilter[name]: delete(toolMap, name)
+    │   │       // tools not in the filter are removed — LLM won't see them
+    │   │
+    │   └── toolSchemas = buildToolSchemas(toolMap)
+    │       └── for each tool in toolMap:
+    │           └── schemas = append(schemas, llm.ToolSchema{
+    │                 Name:        t.Name(),
+    │                 Description: t.Description(),
+    │                 Parameters:  t.Parameters(),  // JSON Schema
+    │               })
+    │
+    ├── Trace: tr?.RecordEvent("tools.available", {count, tools: [names]})
     │
     │
     │ ─────────────────────────────────────────────────────────────────
@@ -774,6 +801,18 @@ runLoop(ctx, messages []Message, threadID string, eventCh chan<- StreamEvent)
     │   │   │                      replaces the entire list.",
     │   │   │           }
     │   │   │
+    │   │   ├── PhasedHook.AfterModel:
+    │   │   │   │
+    │   │   │   │  for each tc in toolCalls:
+    │   │   │   │    IF state.ToolFilter != nil AND !state.ToolFilter[tc.Name]:
+    │   │   │   │      intercepted[tc.ID] = ToolResult{
+    │   │   │   │        Error:  "tool not available in current phase",
+    │   │   │   │        Output: "Error: {tc.Name} is not available in the
+    │   │   │   │                 {state.Phase} phase. Use tools appropriate
+    │   │   │   │                 for this phase.",
+    │   │   │   │      }
+    │   │   │   │
+    │   │   │
     │   │   └── SummarizationHook: return nil, nil  (BaseHook)
     │   │
     │   ├── for id, r := range got:
@@ -1059,7 +1098,7 @@ Post-loop:       threadStore.Save(threadID, state)
                     state.Todos mutated by tool functions:
 
 BeforeAgent:     []
-write_todos:     [{id:"t1", title:"Fix bug", status:"in_progress"},
+write_todos:     [{id:"t1", title:"Fix bug", status:"in_progress", tool_hint:"edit_file"},
                   {id:"t2", title:"Write tests", status:"pending"}]
 update_todo:     [{id:"t1", ..., status:"done"},
                   {id:"t2", ..., status:"in_progress"}]

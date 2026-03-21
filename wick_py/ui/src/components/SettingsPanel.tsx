@@ -44,6 +44,8 @@ export function SettingsPanel({
   const [skillsLoading, setSkillsLoading] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const selectedAgentRef = useRef(selectedAgent);
+  selectedAgentRef.current = selectedAgent;
 
   const loadData = useCallback(() => {
     setLoading(true);
@@ -52,7 +54,8 @@ export function SettingsPanel({
         setAgents(agentsData);
         setAllTools(toolsData);
         setAllHooks(hooksData);
-        if (agentsData.length > 0 && !selectedAgent) {
+        const current = selectedAgentRef.current;
+        if (agentsData.length > 0 && (!current || !agentsData.some((a) => a.agent_id === current))) {
           onSelectAgent(agentsData[0]!.agent_id);
         }
       })
@@ -238,9 +241,9 @@ export function SettingsPanel({
           sandbox_url: null,
         });
       } else {
-        // Remote Docker: separate container on remote daemon
-        // Default to host Docker daemon when no URL specified
-        const url = sandboxUrl.trim() || 'tcp://host.docker.internal:2375';
+        // Remote Docker: separate container per user
+        // When no URL specified, use the default Docker socket (mounted into this container)
+        const url = sandboxUrl.trim() || null;
         await updateAgentBackend(currentAgent.agent_id, {
           mode: 'remote',
           sandbox_url: url,
@@ -448,7 +451,7 @@ export function SettingsPanel({
                   <input
                     className="settings-filter"
                     type="text"
-                    placeholder="tcp://host.docker.internal:2375"
+                    placeholder="Leave empty for local Docker socket"
                     value={sandboxUrl}
                     onChange={(e) => setSandboxUrl(e.target.value)}
                     onBlur={handleSaveSandboxUrl}
@@ -457,7 +460,7 @@ export function SettingsPanel({
                     style={{ marginBottom: 0 }}
                   />
                   <span className="settings-hint">
-                    Docker daemon URL. Defaults to tcp://host.docker.internal:2375 (host machine).
+                    Optional. Set a tcp:// URL for a remote Docker daemon, or leave empty to use the local Docker socket.
                   </span>
                 </>
               )}
@@ -467,10 +470,10 @@ export function SettingsPanel({
                 <div className={`container-status container-status--${currentAgent.container_status ?? 'idle'}`}>
                   <span className="container-status-dot" />
                   <span className="container-status-text">
-                    {(!currentAgent.container_status || currentAgent.container_status === 'idle') && 'No container'}
-                    {currentAgent.container_status === 'launching' && 'Launching container...'}
-                    {currentAgent.container_status === 'launched' && 'Container running'}
-                    {currentAgent.container_status === 'error' && (currentAgent.container_error || 'Container error')}
+                    {(!currentAgent.container_status || currentAgent.container_status === 'idle') && 'Stopped'}
+                    {currentAgent.container_status === 'launching' && 'Launching...'}
+                    {currentAgent.container_status === 'launched' && ''}
+                    {currentAgent.container_status === 'error' && (currentAgent.container_error || 'Error')}
                   </span>
                   <div className="container-actions">
                     {currentAgent.container_status === 'launched' && onOpenTerminal && (
@@ -484,6 +487,19 @@ export function SettingsPanel({
                           <line x1="12" y1="19" x2="20" y2="19" />
                         </svg>
                         Terminal
+                      </button>
+                    )}
+                    {(!currentAgent.container_status || currentAgent.container_status === 'idle' || currentAgent.container_status === 'error') && (
+                      <button
+                        className="container-terminal-btn"
+                        onClick={() => handleContainerAction('restart')}
+                        disabled={updating}
+                        title="Start container"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polygon points="5 3 19 12 5 21 5 3" />
+                        </svg>
+                        Start
                       </button>
                     )}
                     {currentAgent.container_status === 'launched' && (

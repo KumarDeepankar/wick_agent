@@ -11,85 +11,10 @@ import (
 )
 
 // System prompt injected on every LLM call to guide todo usage.
-var defaultTodoSystemPrompt = `## write_todos
-
-You have access to the write_todos tool to help you manage and plan complex objectives.
-Use this tool for complex objectives to ensure that you are tracking each necessary step and giving the user visibility into your progress.
-This tool is very helpful for planning complex objectives, and for breaking down these larger complex objectives into smaller steps.
-
-It is critical that you mark todos as completed as soon as you are done with a step. Do not batch up multiple steps before marking them as completed.
-For simple objectives that only require a few steps, it is better to just complete the objective directly and NOT use this tool.
-Writing todos takes time and tokens, use it when it is helpful for managing complex many-step problems! But not for simple few-step requests.
-
-## Important To-Do List Usage Notes to Remember
-- The write_todos tool should never be called multiple times in parallel.
-- Don't be afraid to revise the To-Do list as you go. New information may reveal new tasks that need to be done, or old tasks that are irrelevant.
-
-## update_todo — single-task status changes
-
-You also have an update_todo tool. Use it instead of write_todos when you only need to change one task's status (e.g. marking a task done or starting the next task). This saves tokens because you don't need to re-send the entire list.
-
-- Use update_todo when: you finished a single task and just need to flip its status.
-- Use write_todos when: you need to add new tasks, remove tasks, reorder, or update multiple tasks at once.
-- Never call update_todo and write_todos in the same turn.`
+var defaultTodoSystemPrompt = `Use write_todos for 3+ step tasks. Use update_todo to change one task's status. Mark done immediately.`
 
 // Tool description for write_todos.
-var defaultTodoToolDescription = `Use this tool to create and manage a structured task list for your current work session. This helps you track progress, organize complex tasks, and demonstrate thoroughness to the user.
-
-Only use this tool if you think it will be helpful in staying organized. If the user's request is trivial and takes less than 3 steps, it is better to NOT use this tool and just do the task directly.
-
-## When to Use This Tool
-Use this tool in these scenarios:
-
-1. Complex multi-step tasks - When a task requires 3 or more distinct steps or actions
-2. Non-trivial and complex tasks - Tasks that require careful planning or multiple operations
-3. User explicitly requests todo list - When the user directly asks you to use the todo list
-4. User provides multiple tasks - When users provide a list of things to be done (numbered or comma-separated)
-5. The plan may need future revisions or updates based on results from the first few steps
-
-## How to Use This Tool
-1. When you start working on a task - Mark it as in_progress BEFORE beginning work.
-2. After completing a task - Mark it as done and add any new follow-up tasks discovered during implementation.
-3. You can also update future tasks, such as deleting them if they are no longer necessary, or adding new tasks that are necessary. Don't change previously completed tasks.
-4. You can make several updates to the todo list at once. For example, when you complete a task, you can mark the next task you need to start as in_progress.
-
-## When NOT to Use This Tool
-It is important to skip using this tool when:
-1. There is only a single, straightforward task
-2. The task is trivial and tracking it provides no benefit
-3. The task can be completed in less than 3 trivial steps
-4. The task is purely conversational or informational
-
-## Task States and Management
-
-1. Task States: Use these states to track progress:
-   - pending: Task not yet started
-   - in_progress: Currently working on (you can have multiple tasks in_progress at a time if they are not related to each other and can be run in parallel)
-   - done: Task finished successfully
-
-2. Task Management:
-   - Update task status in real-time as you work
-   - Mark tasks done IMMEDIATELY after finishing (don't batch completions)
-   - Complete current tasks before starting new ones
-   - Remove tasks that are no longer relevant from the list entirely
-   - IMPORTANT: When you write this todo list, you should mark your first task (or tasks) as in_progress immediately!
-   - IMPORTANT: Unless all tasks are done, you should always have at least one task in_progress to show the user that you are working on something.
-
-3. Task Completion Requirements:
-   - ONLY mark a task as done when you have FULLY accomplished it
-   - If you encounter errors, blockers, or cannot finish, keep the task as in_progress
-   - When blocked, create a new task describing what needs to be resolved
-   - Never mark a task as done if:
-     - There are unresolved issues or errors
-     - Work is partial or incomplete
-     - You encountered blockers that prevent completion
-
-4. Task Breakdown:
-   - Create specific, actionable items
-   - Break complex tasks into smaller, manageable steps
-   - Use clear, descriptive task names
-
-Remember: If you only need to make a few tool calls to complete a task, and it is clear what you need to do, it is better to just do the task directly and NOT call this tool at all.`
+var defaultTodoToolDescription = `Replace the full todo list. Each item: id, title, status (pending|in_progress|done), optional tool_hint.`
 
 // TodoListOption configures a TodoListHook.
 type TodoListOption func(*TodoListHook)
@@ -152,9 +77,10 @@ func (h *TodoListHook) BeforeAgent(ctx context.Context, state *agent.AgentState)
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"id":     map[string]any{"type": "string"},
-							"title":  map[string]any{"type": "string"},
-							"status": map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "done"}},
+							"id":        map[string]any{"type": "string"},
+							"title":     map[string]any{"type": "string"},
+							"status":    map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "done"}},
+							"tool_hint": map[string]any{"type": "string", "description": "Optional tool name hint for phased execution"},
 						},
 					},
 				},

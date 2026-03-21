@@ -104,33 +104,6 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 		}
 	}
 
-	// Build tool map for execution
-	toolMap := make(map[string]Tool)
-	for _, t := range a.Tools {
-		toolMap[t.Name()] = t
-	}
-	// Also check state-registered tools (from hooks like FilesystemHook)
-	if state.toolRegistry != nil {
-		for name, t := range state.toolRegistry {
-			toolMap[name] = t
-		}
-	}
-
-	// Build tool schemas for LLM
-	toolSchemas := buildToolSchemas(toolMap)
-
-	// Record available tools
-	if tr != nil {
-		names := make([]string, 0, len(toolMap))
-		for name := range toolMap {
-			names = append(names, name)
-		}
-		tr.RecordEvent("tools.available", map[string]any{
-			"count": len(names),
-			"tools": names,
-		})
-	}
-
 	// 2. LLM-Tool loop
 	for iter := 0; iter < MaxIterations; iter++ {
 		select {
@@ -139,7 +112,7 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 		default:
 		}
 
-		// Apply ModifyRequest hooks — thread systemPrompt through all hooks
+		// Apply ModifyRequest hooks first — they may set ToolFilter
 		msgs := make([]Message, len(state.Messages))
 		copy(msgs, state.Messages)
 		systemPrompt := a.Config.SystemPrompt
@@ -164,6 +137,41 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 			}
 		}
 
+		// Build tool map AFTER ModifyRequest (hooks may have set ToolFilter)
+		toolMap := make(map[string]Tool)
+		for _, t := range a.Tools {
+			toolMap[t.Name()] = t
+		}
+		if state.toolRegistry != nil {
+			for name, t := range state.toolRegistry {
+				toolMap[name] = t
+			}
+		}
+
+		// Apply tool visibility filter (set by hooks like PhasedHook)
+		if state.ToolFilter != nil {
+			for name := range toolMap {
+				if !state.ToolFilter[name] {
+					delete(toolMap, name)
+				}
+			}
+		}
+
+		toolSchemas := buildToolSchemas(toolMap)
+
+		// Record available tools
+		if tr != nil {
+			names := make([]string, 0, len(toolMap))
+			for name := range toolMap {
+				names = append(names, name)
+			}
+			tr.RecordEvent("tools.available", map[string]any{
+				"iteration": iter,
+				"count":     len(names),
+				"tools":     names,
+			})
+		}
+
 		// Record what will be sent to the LLM
 		if tr != nil {
 			inputEvent := map[string]any{
@@ -171,7 +179,6 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 				"message_count": len(msgs),
 			}
 
-			// System prompt (sent separately via req.SystemPrompt, not in messages)
 			if systemPrompt != "" {
 				sp := systemPrompt
 				if len(sp) <= 1000 {

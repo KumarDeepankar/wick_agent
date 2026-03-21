@@ -64,6 +64,7 @@ export interface CanvasArtifact {
   timestamp: number;
   isBinary: boolean;
   language?: string;
+  status?: 'pending' | 'ok' | 'error';
 }
 
 export interface SkillInfo {

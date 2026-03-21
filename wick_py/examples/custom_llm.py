@@ -2,18 +2,22 @@
 
 Registers two agents:
   - "default" — Ollama local (Go-native LLM)
-  - "gateway-claude" — Anthropic via Python LLM proxy
+  - "gateway-claude" — Custom gateway proxy (Anthropic-compatible)
 
 Uses local backend — each user gets /workspace/{username}/.
 Users can switch to Remote Docker in settings for full isolation.
 """
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from wick import Agent, LLMRequest, StreamChunk, ToolCallResult, tool
+import httpx
+from wick import Agent, LLMRequest, LLMResponse, StreamChunk, ToolCallResult, tool
 from wick._client import WickClient
+
+logger = logging.getLogger("wick.gateway")
 
 # ── Paths ────────────────────────────────────────────────────────────────
 import os
@@ -37,18 +41,7 @@ def calculate(expression: str) -> str:
 
 # ── System prompt ─────────────────────────────────────────────────────────
 
-system_prompt = """You are a versatile AI assistant that creates high-quality content using your skills library.
-
-When a user asks you to create documents, presentations, reports, spreadsheets, or other structured content:
-1. Check your available skills first — read the relevant SKILL.md for full instructions before acting.
-2. Always follow the skill's workflow (file format, markers, naming conventions).
-3. Write output files to /workspace/ using write_file.
-
-For presentations or slide decks: always use the slides skill.
-For data analysis or CSV work: always use the csv-analyzer or data-analysis skill.
-For research tasks: always use the research skill.
-
-Prefer using skills over writing custom code. Skills give you proven, consistent workflows."""
+system_prompt = """You are a helpful AI assistant. Use your available tools and skills to complete tasks. Write output files to /workspace/."""
 
 # Shared config — local backend, per-user workspace folders
 agent_config = {
@@ -67,18 +60,22 @@ claude_agent = Agent(
 )
 
 
+GATEWAY_URL = os.environ.get("GATEWAY_URL", "https://my-gateway.com")
+GATEWAY_TOKEN = os.environ.get("GATEWAY_TOKEN", "")
+GATEWAY_MODEL = os.environ.get("GATEWAY_MODEL", "claude-sonnet-4-20250514")
+
+
 @claude_agent.llm_provider("claude-sonnet")
-async def anthropic_llm(request: LLMRequest):
-    """Route LLM calls to Anthropic Claude via Python."""
-    import anthropic
+async def gateway_llm(request: LLMRequest):
+    """Route LLM calls to custom gateway (Anthropic-compatible)."""
 
-    client = anthropic.AsyncAnthropic()
-
+    # Build messages in Anthropic format
     messages = []
     for msg in request.messages:
         if msg.role in ("user", "assistant"):
             messages.append({"role": msg.role, "content": msg.content})
 
+    # Build tools in Anthropic format
     tools = []
     if request.tools:
         for t in request.tools:
@@ -88,40 +85,65 @@ async def anthropic_llm(request: LLMRequest):
                 "input_schema": t.parameters,
             })
 
-    async with client.messages.stream(
-        model="claude-sonnet-4-20250514",
-        system=request.system_prompt or "",
-        messages=messages,
-        tools=tools if tools else anthropic.NOT_GIVEN,
-        max_tokens=request.max_tokens or 4096,
-    ) as stream:
-        current_tool_id = None
-        current_tool_name = None
-        args_json = ""
+    # Build gateway request payload
+    payload = {
+        "model": GATEWAY_MODEL,
+        "max_tokens": request.max_tokens or 4096,
+        "messages": messages,
+    }
+    if request.system_prompt:
+        payload["system"] = request.system_prompt
+    if tools:
+        payload["tools"] = tools
 
-        async for event in stream:
-            if event.type == "content_block_start":
-                if hasattr(event.content_block, "type") and event.content_block.type == "tool_use":
-                    current_tool_id = event.content_block.id
-                    current_tool_name = event.content_block.name
-                    args_json = ""
+    headers = {
+        "Authorization": f"Bearer {GATEWAY_TOKEN}",
+        "Content-Type": "application/json",
+    }
 
-            elif event.type == "content_block_delta":
-                if hasattr(event.delta, "text"):
-                    yield StreamChunk(delta=event.delta.text)
-                elif hasattr(event.delta, "partial_json"):
-                    args_json += event.delta.partial_json
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=5.0)) as client:
+        resp = await client.post(
+            f"{GATEWAY_URL}/v1/messages",
+            headers=headers,
+            json=payload,
+        )
+        resp.raise_for_status()
+        result = resp.json()
 
-            elif event.type == "content_block_stop":
-                if current_tool_id:
-                    args = json.loads(args_json) if args_json else {}
-                    yield StreamChunk(tool_call=ToolCallResult(
-                        id=current_tool_id,
-                        name=current_tool_name,
-                        args=args,
-                    ))
-                    current_tool_id = None
-                    current_tool_name = None
+    logger.info("Gateway response keys: %s", list(result.keys()))
+
+    # Extract content blocks — handle gateway wrapped format or standard Anthropic
+    content_blocks = []
+    if "result" in result and isinstance(result["result"], list):
+        # Gateway wrapped: {"status": "success", "result": [{"content": [...]}]}
+        first = result["result"][0] if result["result"] else {}
+        content_blocks = first.get("content", []) if isinstance(first, dict) else []
+    elif "content" in result:
+        # Standard Anthropic: {"content": [...]}
+        content_blocks = result.get("content", [])
+
+    # Parse content blocks into StreamChunks with simulated streaming
+    import asyncio
+
+    CHUNK_SIZE = 4   # characters per chunk (smaller = smoother)
+    CHUNK_DELAY = 0.01  # seconds between chunks
+
+    for block in content_blocks:
+        block_type = block.get("type", "")
+
+        if block_type == "text":
+            text = block.get("text", "")
+            # Emit text in small chunks for typewriter effect
+            for i in range(0, len(text), CHUNK_SIZE):
+                yield StreamChunk(delta=text[i:i + CHUNK_SIZE])
+                await asyncio.sleep(CHUNK_DELAY)
+
+        elif block_type == "tool_use":
+            yield StreamChunk(tool_call=ToolCallResult(
+                id=block.get("id", f"call_{id(block)}"),
+                name=block.get("name", ""),
+                args=block.get("input", {}),
+            ))
 
     yield StreamChunk(done=True)
 

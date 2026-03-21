@@ -75,6 +75,10 @@ export function useAgentStream() {
   const assistantIdRef = useRef<string | null>(null);
   // Track edit_file run_id → file_path so we can fetch on on_tool_end
   const pendingEditsRef = useRef<Map<string, string>>(new Map());
+  // Track write_file run_id → file_path so we can update artifact status on on_tool_end
+  const pendingWritesRef = useRef<Map<string, string>>(new Map());
+  // Track fileNames created in the current turn for turn-scoped dedup
+  const turnFileNamesRef = useRef<Set<string>>(new Set());
   // Iteration tracking for ReAct loop grouping
   const iterationsRef = useRef<Iteration[]>([]);
   const currentIterRef = useRef<Iteration | null>(null);
@@ -122,6 +126,8 @@ export function useAgentStream() {
       assistantIdRef.current = assistantId;
       iterationsRef.current = [];
       currentIterRef.current = null;
+      pendingWritesRef.current.clear();
+      turnFileNamesRef.current.clear();
       const assistantMsg: ChatMessage = {
         id: assistantId,
         role: 'assistant',
@@ -223,6 +229,7 @@ export function useAgentStream() {
             if (toolName === 'write_file' && rawPath && input?.content) {
               const filePath = rawPath;
               const content = input.content as string;
+              const fileName = extractFileName(filePath);
               const ext = extractExtension(filePath);
               let contentType = resolveContentType(ext);
               // Auto-detect slide decks from markdown content
@@ -232,21 +239,43 @@ export function useAgentStream() {
               const artifact: CanvasArtifact = {
                 id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                 filePath,
-                fileName: extractFileName(filePath),
+                fileName,
                 contentType,
                 content: isBinaryExtension(ext) ? null : content,
                 extension: ext,
                 timestamp: Date.now(),
                 isBinary: isBinaryExtension(ext),
                 language: resolveLanguage(ext),
+                status: 'pending',
               };
+              // Track run_id → filePath for status update on on_tool_end
+              const runId = parsed.run_id as string;
+              if (runId) pendingWritesRef.current.set(runId, filePath);
               setCanvasArtifacts((prev) => {
+                // 1. Exact filePath match — always update
                 const idx = prev.findIndex((a) => a.filePath === filePath);
                 if (idx >= 0) {
                   const updated = [...prev];
                   updated[idx] = artifact;
                   return updated;
                 }
+                // 2. Same fileName with error status — replace across turns (retry with corrected path)
+                const errIdx = prev.findIndex((a) => a.fileName === fileName && a.status === 'error');
+                if (errIdx >= 0) {
+                  const updated = [...prev];
+                  updated[errIdx] = artifact;
+                  return updated;
+                }
+                // 3. Same fileName with pending status — replace within current turn only
+                if (turnFileNamesRef.current.has(fileName)) {
+                  const pendIdx = prev.findIndex((a) => a.fileName === fileName && a.status === 'pending');
+                  if (pendIdx >= 0) {
+                    const updated = [...prev];
+                    updated[pendIdx] = artifact;
+                    return updated;
+                  }
+                }
+                turnFileNamesRef.current.add(fileName);
                 return [...prev, artifact];
               });
             }
@@ -283,6 +312,18 @@ export function useAgentStream() {
           if (sse.event === 'on_tool_end') {
             const toolName = parsed.name as string;
             const runId = parsed.run_id as string;
+
+            // Update write_file artifact status based on tool result
+            if (toolName === 'write_file' && runId && pendingWritesRef.current.has(runId)) {
+              const writePath = pendingWritesRef.current.get(runId)!;
+              pendingWritesRef.current.delete(runId);
+              const output = (parsed.data as Record<string, unknown>)?.output;
+              const outputStr = typeof output === 'string' ? output : '';
+              const isError = outputStr.toLowerCase().startsWith('error');
+              setCanvasArtifacts((prev) => prev.map((a) =>
+                a.filePath === writePath ? { ...a, status: isError ? 'error' : 'ok' } : a
+              ));
+            }
 
             if ((toolName === 'edit_file' || toolName === 'read_file') && runId && pendingEditsRef.current.has(runId)) {
               const filePath = pendingEditsRef.current.get(runId)!;
@@ -470,6 +511,8 @@ export function useAgentStream() {
     setError(null);
     setStatus('idle');
     pendingEditsRef.current.clear();
+    pendingWritesRef.current.clear();
+    turnFileNamesRef.current.clear();
     iterationsRef.current = [];
     currentIterRef.current = null;
   }, [stop]);

@@ -751,7 +751,9 @@ func (h *agentHandler) availableHooks(w http.ResponseWriter, r *http.Request) {
 		{Name: "tracing", Description: "Records timed spans for LLM and tool calls", Phases: []string{"wrap_model_call", "wrap_tool_call"}, Configurable: false, Tools: []string{}},
 		{Name: "todolist", Description: "Tracks task progress via write_todos and update_todo tools", Phases: []string{"before_agent", "modify_request", "after_model", "wrap_tool_call"}, Configurable: false, Tools: []string{"write_todos", "update_todo"}},
 		{Name: "filesystem", Description: "Registers file-operation tools (ls, read, write, edit, glob, grep, execute)", Phases: []string{"before_agent", "wrap_tool_call"}, Configurable: false, Tools: []string{"ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute"}},
-		{Name: "skills", Description: "Discovers SKILL.md files and injects catalog into system prompt", Phases: []string{"before_agent", "modify_request"}, Configurable: true, Tools: []string{}},
+		{Name: "skills", Description: "Discovers SKILL.md files and injects catalog into system prompt (eager)", Phases: []string{"before_agent", "modify_request"}, Configurable: true, Tools: []string{}},
+		{Name: "lazy_skills", Description: "Discovers SKILL.md files but loads only on-demand via activate_skill tool", Phases: []string{"before_agent", "modify_request"}, Configurable: true, Tools: []string{"list_skills", "activate_skill", "deactivate_skill"}},
+		{Name: "phased", Description: "Plan→Execute→Verify phased tool gating with progressive tool revelation", Phases: []string{"before_agent", "modify_request", "after_model"}, Configurable: true, Tools: []string{}},
 		{Name: "memory", Description: "Loads AGENTS.md memory files and injects into system prompt", Phases: []string{"before_agent", "modify_request"}, Configurable: true, Tools: []string{}},
 		{Name: "summarization", Description: "Compresses conversation when context window nears capacity", Phases: []string{"wrap_model_call"}, Configurable: false, Tools: []string{}},
 	}
@@ -978,22 +980,11 @@ func (h *agentHandler) patchBackend(w http.ResponseWriter, r *http.Request, agen
 
 	switch body.Mode {
 	case "local":
-		// Local mode — Docker container on the local Docker daemon.
-		db := backend.NewDockerBackend(defaultContainerName, defaultWorkdir, defaultTimeout, defaultMaxOutput, "", defaultImage, username)
-		b = db
-		inst.Config.Backend = &agent.BackendCfg{Type: "docker", Workdir: defaultWorkdir, ContainerName: defaultContainerName}
-
-		// Sync skills into container at launch time
-		if inst.Config.Skills != nil && len(inst.Config.Skills.HostPaths) > 0 && len(inst.Config.Skills.Paths) > 0 {
-			paths := inst.Config.Skills.Paths
-			hostPaths := inst.Config.Skills.HostPaths
-			db.OnReady = func() { hooks.SyncHostSkills(db, paths, hostPaths) }
-		}
-
-		db.LaunchContainerAsync(func(event, user string) {
-			h.deps.EventBus.Broadcast(event + ":" + user)
-		})
-		containerStatus = "launching"
+		// Local mode — user-scoped folder inside the same container.
+		// No extra Docker container needed.
+		workdir := filepath.Join(defaultWorkdir, username)
+		b = backend.NewLocalBackend(workdir, defaultTimeout, defaultMaxOutput)
+		inst.Config.Backend = &agent.BackendCfg{Type: "local", Workdir: defaultWorkdir}
 
 	case "remote":
 		// Remote mode — Docker container on a remote Docker daemon via TCP.
@@ -1702,8 +1693,15 @@ func (h *agentHandler) agentSkills(w http.ResponseWriter, r *http.Request, agent
 
 	var items []skillItem
 	for _, hook := range a.Hooks {
-		if sh, ok := hook.(*hooks.SkillsHook); ok {
-			for _, entry := range sh.Skills() {
+		var entries []hooks.SkillEntry
+		switch sh := hook.(type) {
+		case *hooks.SkillsHook:
+			entries = sh.Skills()
+		case *hooks.LazySkillsHook:
+			entries = sh.Skills()
+		}
+		if len(entries) > 0 {
+			for _, entry := range entries {
 				enabled := true
 				if inst.SkillPrefs != nil && inst.SkillPrefs.Disabled[entry.Name] {
 					enabled = false
@@ -2071,6 +2069,16 @@ func createHookByName(name string, b backend.Backend, llmClient llm.Client, cfg 
 		if len(paths) > 0 && b != nil {
 			return hooks.NewSkillsHook(b, paths, nil)
 		}
+	case "lazy_skills":
+		paths := getConfigPaths(hookConfig, "skills")
+		if len(paths) == 0 && cfg.Skills != nil {
+			paths = cfg.Skills.Paths
+		}
+		if len(paths) > 0 && b != nil {
+			return hooks.NewLazySkillsHook(b, paths, nil)
+		}
+	case "phased":
+		return hooks.NewPhasedHook()
 	case "memory":
 		paths := getConfigPaths(hookConfig, "memory")
 		if len(paths) == 0 && cfg.Memory != nil {
@@ -2119,12 +2127,19 @@ func getConfigPaths(hookConfig map[string]any, name string) []string {
 
 // --- Agent builder ---
 
-// createBackend creates a Docker backend based on config.
-// All execution happens inside Docker containers — local mode uses the local
-// Docker daemon, remote mode uses a remote daemon via TCP.
-// If skillsCfg is non-nil with HostPaths, skills are synced into the container
-// at launch time (via OnReady callback) so they're available immediately.
+// createBackend creates a backend based on config.
+// When cfg.Type is "local", a LocalBackend is created (direct host execution).
+// Otherwise, a DockerBackend is created (execution inside Docker containers).
 func (h *agentHandler) createBackend(cfg *agent.BackendCfg, skillsCfg *agent.SkillsCfg, username string) backend.Backend {
+	if cfg.Type == "local" {
+		// Scope workdir per user to isolate filesystems
+		workdir := cfg.Workdir
+		if username != "" {
+			workdir = filepath.Join(workdir, username)
+		}
+		return backend.NewLocalBackend(workdir, cfg.Timeout, cfg.MaxOutputBytes)
+	}
+
 	containerName := cfg.ContainerName
 	if containerName == "" {
 		containerName = fmt.Sprintf("wick-sandbox-%s", username)
@@ -2195,10 +2210,34 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) (*agent
 		agentHooks = append(agentHooks, hooks.NewFilesystemHook(b))
 	}
 
-	// Skills hook (host→container sync is handled by OnReady at container launch)
+	// Skills hook — use lazy loading (only injects meta-tools, not full skill prompts).
+	// Host→container sync is handled by OnReady at container launch.
 	if cfg.Skills != nil && len(cfg.Skills.Paths) > 0 && b != nil {
-		agentHooks = append(agentHooks, hooks.NewSkillsHook(b, cfg.Skills.Paths, inst.SkillPrefs))
+		agentHooks = append(agentHooks, hooks.NewLazySkillsHook(b, cfg.Skills.Paths, inst.SkillPrefs))
 	}
+
+	// Phased hook — plan → execute → verify tool gating.
+	// Categories group tools so hinting one tool unlocks related ones.
+	agentHooks = append(agentHooks, hooks.NewPhasedHook(
+		hooks.WithToolCategories([]hooks.ToolCategory{
+			{Name: "file_read", Tools: []string{"read_file", "ls", "glob", "grep"}},
+			{Name: "file_write", Tools: []string{"write_file", "edit_file"}},
+			{Name: "exec", Tools: []string{"execute"}},
+			{Name: "utility", Tools: []string{"calculate", "current_datetime"}},
+		}),
+		hooks.WithToolCatalog([]string{
+			"read_file: read a file's contents",
+			"write_file: create or overwrite a file",
+			"edit_file: replace text in a file",
+			"ls: list files in a directory",
+			"glob: find files matching a pattern",
+			"grep: search file contents for a pattern",
+			"execute: run a shell command",
+			"calculate: evaluate a math expression",
+			"current_datetime: get current date and time",
+		}),
+		hooks.WithVerifyTools([]string{"execute", "read_file", "ls", "update_todo"}),
+	))
 
 	// Memory hook
 	if cfg.Memory != nil && len(cfg.Memory.Paths) > 0 && b != nil {
