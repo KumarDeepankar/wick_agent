@@ -8,14 +8,17 @@ Uses local backend — each user gets /workspace/{username}/.
 Users can switch to Remote Docker in settings for full isolation.
 """
 
+import asyncio
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 from wick import Agent, LLMRequest, LLMResponse, StreamChunk, ToolCallResult, tool
 from wick._client import WickClient
+from gateway_auth import fetch_token
 
 logger = logging.getLogger("wick.gateway")
 
@@ -61,8 +64,41 @@ claude_agent = Agent(
 
 
 GATEWAY_URL = os.environ.get("GATEWAY_URL", "https://my-gateway.com")
-GATEWAY_TOKEN = os.environ.get("GATEWAY_TOKEN", "")
 GATEWAY_MODEL = os.environ.get("GATEWAY_MODEL", "claude-sonnet-4-20250514")
+TOKEN_REFRESH_INTERVAL = 20 * 60  # 20 minutes
+
+# Token state — refreshed by background thread
+GATEWAY_TOKEN = ""
+_token_lock = threading.Lock()
+
+
+def _refresh_token():
+    global GATEWAY_TOKEN
+    try:
+        new_token = fetch_token()
+        with _token_lock:
+            GATEWAY_TOKEN = new_token
+        logger.info("Gateway token refreshed")
+    except Exception as e:
+        logger.error("Token refresh failed: %s", e)
+
+
+def _token_refresh_loop():
+    """Background thread that refreshes the token every 20 minutes."""
+    while True:
+        _refresh_token()
+        threading.Event().wait(TOKEN_REFRESH_INTERVAL)
+
+
+def _get_token() -> str:
+    with _token_lock:
+        return GATEWAY_TOKEN
+
+
+# Fetch initial token and start refresh thread
+_refresh_token()
+_refresh_thread = threading.Thread(target=_token_refresh_loop, daemon=True)
+_refresh_thread.start()
 
 
 @claude_agent.llm_provider("claude-sonnet")
@@ -97,7 +133,7 @@ async def gateway_llm(request: LLMRequest):
         payload["tools"] = tools
 
     headers = {
-        "Authorization": f"Bearer {GATEWAY_TOKEN}",
+        "Authorization": f"Bearer {_get_token()}",
         "Content-Type": "application/json",
     }
 
