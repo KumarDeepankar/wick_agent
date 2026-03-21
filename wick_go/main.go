@@ -24,18 +24,7 @@ func main() {
 	// Container-side path — this is what the backend.Execute() sees
 	containerSkillsDir := "/workspace/skills"
 
-	systemPrompt := `You are a versatile AI assistant that creates high-quality content using your skills library.
-
-When a user asks you to create documents, presentations, reports, spreadsheets, or other structured content:
-1. Check your available skills first — read the relevant SKILL.md for full instructions before acting.
-2. Always follow the skill's workflow (file format, markers, naming conventions).
-3. Write output files to /workspace/ using write_file.
-
-For presentations or slide decks: always use the slides skill.
-For data analysis or CSV work: always use the csv-analyzer or data-analysis skill.
-For research tasks: always use the research skill.
-
-Prefer using skills over writing custom code. Skills give you proven, consistent workflows.`
+	systemPrompt := `You are a helpful AI assistant. Use your available tools and skills to complete tasks. Write output files to /workspace/.`
 
 	opts := []wickserver.Option{
 		wickserver.WithPort(8000),

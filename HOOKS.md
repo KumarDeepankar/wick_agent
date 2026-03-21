@@ -37,7 +37,7 @@ The agent loop calls hooks at 5 distinct points. The execution order follows the
 | 4 | `AfterModel` | After LLM responds, before tool dispatch | `(ctx, *AgentState, []ToolCall) → (map[id]ToolResult, error)` | Inspect tool calls; return pre-built results to intercept/reject specific calls |
 | 5 | `WrapToolCall` | Around each tool execution | `(ctx, ToolCall, next) → (*ToolResult, error)` | Wrap individual tool calls (onion ring — call `next()` to proceed) |
 
-## The 5 Hooks
+## The 7 Hooks
 
 ### 1. FilesystemHook (`hooks/filesystem.go`)
 
@@ -67,7 +67,23 @@ Discovers skill definitions (SKILL.md files) and exposes them to the LLM via sys
 
 **Declared active phases:** `before_agent`, `modify_request`
 
-### 3. MemoryHook (`hooks/memory.go`)
+### 3. LazySkillsHook (`hooks/lazy_skills.go`)
+
+Replaces `SkillsHook` as the **default** skill hook. Instead of injecting all skill prompts eagerly, it registers 3 meta-tools and only injects the active skill's prompt on demand.
+
+| Phase | Active | Operation |
+|-------|--------|-----------|
+| BeforeAgent | Yes | Scans for SKILL.md files (same as SkillsHook). Registers 3 meta-tools on state: `list_skills` (returns skill catalog), `activate_skill` (loads a skill's prompt into context), `deactivate_skill` (removes the active skill's prompt). |
+| ModifyRequest | Yes | **Appends active skill prompt** — if `state.ActiveSkill` is set, injects only that skill's full SKILL.md content. Also appends: "Call list_skills to discover skills. Call activate_skill to load one." |
+| WrapModelCall | No | Pass-through |
+| AfterModel | No | No-op (via BaseHook) |
+| WrapToolCall | No | Pass-through |
+
+**Declared active phases:** `before_agent`, `modify_request`
+
+Note: `SkillsHook` still exists for backward compatibility but `LazySkillsHook` is now the default in `buildAgent()`.
+
+### 4. MemoryHook (`hooks/memory.go`)
 
 Loads persistent memory files (AGENTS.md) and injects them into the system prompt.
 
@@ -81,7 +97,7 @@ Loads persistent memory files (AGENTS.md) and injects them into the system promp
 
 **Declared active phases:** `before_agent`, `modify_request`
 
-### 4. TodoListHook (`hooks/todolist.go`)
+### 5. TodoListHook (`hooks/todolist.go`)
 
 Tracks task progress via `write_todos` and `update_todo` tools. The most active hook — uses 3 phases.
 
@@ -95,7 +111,26 @@ Tracks task progress via `write_todos` and `update_todo` tools. The most active 
 
 **Declared active phases:** `before_agent`, `modify_request`, `after_model`
 
-### 5. SummarizationHook (`hooks/summarization.go`)
+### 6. PhasedHook (`hooks/phased.go`)
+
+Implements Plan→Execute→Verify phased tool gating. Controls which tools the LLM sees per phase via `state.ToolFilter`.
+
+| Phase | Active | Operation |
+|-------|--------|-----------|
+| BeforeAgent | Yes | Initializes `state.Phase = PhasePlan`. Builds a tool catalog mapping tool names to categories. |
+| ModifyRequest | Yes | **Sets ToolFilter based on current phase.** Plan phase: only todo + skill meta-tools visible. Execute phase: tools based on `todo.ToolHint` + category matching. Verify phase: only verification tools. Auto-transitions phase based on todo state. |
+| WrapModelCall | No | Pass-through |
+| AfterModel | Yes | **Rejects tool calls outside current phase.** If the LLM calls a tool not in the current phase's ToolFilter, returns a pre-built error result explaining the tool is not available in this phase. |
+| WrapToolCall | No | Pass-through |
+
+**Declared active phases:** `before_agent`, `modify_request`, `after_model`
+
+**Phase transitions:**
+- `PhasePlan` → `PhaseExecute`: when todos exist and at least one is `in_progress`
+- `PhaseExecute` → `PhaseVerify`: when all todos are `done`
+- `PhaseVerify` → `PhaseExecute`: if any todo is re-opened
+
+### 7. SummarizationHook (`hooks/summarization.go`)
 
 Compresses conversation context when it approaches the model's context window limit.
 
@@ -116,26 +151,32 @@ Only the **ModifyRequest** phase can modify the system prompt. Three hooks activ
 ```
 Base System Prompt
   ↓
-+ SkillsHook.ModifyRequest    → appends available skills catalog
++ LazySkillsHook.ModifyRequest → appends active skill prompt (if any) + "Call list_skills to discover skills."
   ↓
-+ MemoryHook.ModifyRequest    → appends <agent_memory> block with AGENTS.md content
++ PhasedHook.ModifyRequest     → sets state.ToolFilter based on current phase (plan/execute/verify)
   ↓
-+ TodoListHook.ModifyRequest  → appends todo usage guidance + current task progress
++ MemoryHook.ModifyRequest     → appends <agent_memory> block with AGENTS.md content
+  ↓
++ TodoListHook.ModifyRequest   → appends todo usage guidance + current task progress
   ↓
 Final System Prompt (sent to LLM)
 ```
 
+Note: `SkillsHook` (eager) still exists but is no longer the default. `LazySkillsHook` replaces it in `buildAgent()`.
+
 Note: `SummarizationHook` modifies **messages** (not the system prompt) in `WrapModelCall` by replacing old messages with a summary.
+
+Note: `PhasedHook.ModifyRequest` sets `state.ToolFilter` which the agent loop applies *after* ModifyRequest to remove tools from `toolMap` before building schemas. This means the ToolFilter affects which tool schemas the LLM sees, not the system prompt text.
 
 ## Phase × Hook Matrix
 
-| Phase | Filesystem | Skills | Memory | TodoList | Summarization |
-|-------|:----------:|:------:|:------:|:--------:|:-------------:|
-| **BeforeAgent** | Register 7 tools | Discover SKILL.md | Load AGENTS.md | Init todos, register 2 tools | — |
-| **ModifyRequest** | — | Inject skills catalog | Inject `<agent_memory>` | Inject todo prompt + progress | — |
-| **WrapModelCall** | — | — | — | — | Context compression |
-| **AfterModel** | — | — | — | Reject conflicting todo calls | — |
-| **WrapToolCall** | Large result eviction | — | — | — | — |
+| Phase | Filesystem | Skills (eager) | LazySkills (default) | Memory | TodoList | Phased | Summarization |
+|-------|:----------:|:--------------:|:--------------------:|:------:|:--------:|:------:|:-------------:|
+| **BeforeAgent** | Register 7 tools | Discover SKILL.md | Discover SKILL.md, register 3 meta-tools | Load AGENTS.md | Init todos, register 2 tools | Init phase, build catalog | — |
+| **ModifyRequest** | — | Inject skills catalog | Inject active skill prompt | Inject `<agent_memory>` | Inject todo prompt + progress | Set ToolFilter per phase | — |
+| **WrapModelCall** | — | — | — | — | — | — | Context compression |
+| **AfterModel** | — | — | — | — | Reject conflicting todo calls | Reject out-of-phase tools | — |
+| **WrapToolCall** | Large result eviction | — | — | — | — | — | — |
 
 `—` = no-op or pass-through (delegates to `BaseHook` defaults)
 

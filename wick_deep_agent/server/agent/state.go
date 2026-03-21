@@ -12,14 +12,40 @@ type AgentState struct {
 	// toolRegistry holds tools registered at runtime by hooks (e.g. FilesystemHook).
 	// Not serialized — rebuilt on each agent run.
 	toolRegistry map[string]Tool `json:"-"`
+
+	// Phase tracks the current execution phase for phased hooks.
+	// Not serialized — managed by PhasedHook during the agent loop.
+	Phase string `json:"-"`
+
+	// ActiveSkill tracks the currently loaded skill for lazy skill loading.
+	// Not serialized — managed by LazySkillsHook during the agent loop.
+	ActiveSkill string `json:"-"`
+
+	// ActiveSkillPrompt holds the full prompt of the currently active skill.
+	// Not serialized — managed by LazySkillsHook during the agent loop.
+	ActiveSkillPrompt string `json:"-"`
+
+	// ToolFilter, when non-nil, restricts which tools are visible to the LLM.
+	// Only tools whose names are in this set will be included in the tool schemas.
+	// Applies to both a.Tools and state.toolRegistry.
+	// Not serialized — managed by hooks (e.g. PhasedHook) during the agent loop.
+	ToolFilter map[string]bool `json:"-"`
 }
 
 // Todo represents a task tracked by the TodoList hook.
 type Todo struct {
-	ID     string `json:"id"`
-	Title  string `json:"title"`
-	Status string `json:"status"` // "pending", "in_progress", "done"
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Status   string `json:"status"`              // "pending", "in_progress", "done"
+	ToolHint string `json:"tool_hint,omitempty"`  // optional tool name hint for phased execution
 }
+
+// Phase constants for phased agent execution.
+const (
+	PhasePlan    = "plan"
+	PhaseExecute = "execute"
+	PhaseVerify  = "verify"
+)
 
 // --- State context helpers (follows trace_iface.go pattern) ---
 

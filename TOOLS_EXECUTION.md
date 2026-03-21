@@ -105,6 +105,12 @@ func RegisterToolOnState(state *AgentState, tool Tool) {
 }
 ```
 
+Additional tool helpers (`agent/tool.go`):
+- `RemoveToolFromState(state, name)` — removes a tool from `state.toolRegistry` by name
+- `ClearToolsFromState(state)` — removes all tools from `state.toolRegistry`
+- `StateTools(state) []Tool` — returns all tools in `state.toolRegistry`
+- `StateToolNames(state) []string` — returns names of all tools in `state.toolRegistry`
+
 ---
 
 ## 3. How Tools Get Wired Into the Agent
@@ -134,7 +140,7 @@ loop.go:runLoop()
     → FilesystemHook registers tools on state       // state.toolRegistry
 ```
 
-### Merge point (loop.go:108-117)
+### Merge point (inside the loop, per iteration)
 
 ```go
 // Agent-level tools (Path A — from ExternalTools store)
@@ -149,10 +155,22 @@ if state.toolRegistry != nil {
         toolMap[name] = t
     }
 }
+
+// Apply ToolFilter (set by PhasedHook via ModifyRequest)
+if state.ToolFilter != nil {
+    for name := range toolMap {
+        if !state.ToolFilter[name] {
+            delete(toolMap, name)
+        }
+    }
+}
 ```
 
-The final `toolMap` contains all tools from both paths. This is what the agent uses for
-both telling the LLM what tools exist and executing them.
+**Important:** The tool map is rebuilt **every iteration inside the loop**, not once before it.
+This happens *after* `ModifyRequest` hooks run, because hooks like `PhasedHook` set
+`state.ToolFilter` during `ModifyRequest` to control which tools the LLM sees per phase.
+If `state.ToolFilter` is non-nil, tools not in the filter are deleted from `toolMap` before
+building schemas. This means the LLM only sees tool schemas for the currently allowed tools.
 
 ---
 
@@ -160,7 +178,7 @@ both telling the LLM what tools exist and executing them.
 
 Tools are converted to JSON Schema and sent to the LLM in the API request.
 
-### Step 1: Build schemas (loop.go:120)
+### Step 1: Build schemas (per iteration, after ToolFilter application)
 
 ```go
 toolSchemas := buildToolSchemas(toolMap)
@@ -570,8 +588,30 @@ Each tool call gets its own goroutine. Results are collected in a fixed-size sli
 
 | Tool | Parameters | What it does |
 |------|-----------|--------------|
-| `write_todos` | `todos: array` | Set the full todo list |
+| `write_todos` | `todos: array` | Set the full todo list. Each item: id, title, status (pending\|in_progress\|done), optional tool_hint. |
 | `update_todo` | `id: string, status: string` | Update a single todo item |
+
+### Hook-registered tools (from `hooks/lazy_skills.go`)
+
+| Tool | Parameters | What it does |
+|------|-----------|--------------|
+| `list_skills` | (none) | Returns the catalog of available skills (name + description) |
+| `activate_skill` | `name: string` | Loads a skill's SKILL.md prompt into context (sets `state.ActiveSkill`) |
+| `deactivate_skill` | (none) | Removes the active skill's prompt from context (clears `state.ActiveSkill`) |
+
+### Tool gating by PhasedHook (`hooks/phased.go`)
+
+`PhasedHook` does not register tools — it controls **which tools the LLM can see** per phase via `state.ToolFilter`:
+
+| Phase | Visible Tools |
+|-------|--------------|
+| `plan` | `write_todos`, `update_todo`, `list_skills`, `activate_skill`, `deactivate_skill` |
+| `execute` | Tools matching `todo.ToolHint` + category-based matching from the tool catalog |
+| `verify` | Verification-related tools only |
+
+Tools not in the filter are removed from `toolMap` before building schemas, so the LLM does not see them.
+If the LLM somehow calls a filtered-out tool (e.g., via hallucination), `PhasedHook.AfterModel` rejects the call
+with a pre-built error result.
 
 ---
 
@@ -590,9 +630,11 @@ Each tool call gets its own goroutine. Results are collected in a fixed-size sli
    A `strings.Builder` accumulates chunks until the tool call block is complete, then the
    full JSON is parsed once.
 
-5. **Three sources merge into one toolMap** — App-level tools (registered at startup),
+5. **Three sources merge into one toolMap, then ToolFilter applies** — App-level tools (registered at startup),
    external HTTP tools (registered via API), and hook-registered tools (per-session) all
-   merge into a single `map[string]Tool` that the agent loop uses.
+   merge into a single `map[string]Tool`. If `state.ToolFilter` is non-nil (set by `PhasedHook`),
+   tools not in the filter are removed before building schemas. The tool map is rebuilt
+   every iteration inside the loop (after `ModifyRequest`), not once before it.
 
 6. **Onion ring wraps execution** — Every tool call passes through the hook chain. Hooks
    can observe, modify, or block tool calls. Most are pass-through for most tools.

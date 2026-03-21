@@ -159,19 +159,25 @@ use `wick-sandbox-local`).
 ### 4d. Build hook chain (lines 2184-2218)
 Hooks are added in this exact order — **order matters** for the onion ring:
 ```go
-agentHooks = append(agentHooks, tracing.NewTracingHook())      // 1. outermost
-agentHooks = append(agentHooks, hooks.NewTodoListHook())       // 2. todo management
+agentHooks = append(agentHooks, tracing.NewTracingHook())        // 1. outermost
+agentHooks = append(agentHooks, hooks.NewTodoListHook())         // 2. todo management
 if b != nil {
-    agentHooks = append(agentHooks, hooks.NewFilesystemHook(b))  // 3. file tools
+    agentHooks = append(agentHooks, hooks.NewFilesystemHook(b))    // 3. file tools
 }
 if hasSkills && b != nil {
-    agentHooks = append(agentHooks, hooks.NewSkillsHook(...))    // 4. skill catalog
+    agentHooks = append(agentHooks, hooks.NewLazySkillsHook(...)) // 4. lazy skill catalog (default)
 }
+agentHooks = append(agentHooks, hooks.NewPhasedHook(...))        // 5. phased tool gating
 if hasMemory && b != nil {
-    agentHooks = append(agentHooks, hooks.NewMemoryHook(...))    // 5. agent memory
+    agentHooks = append(agentHooks, hooks.NewMemoryHook(...))      // 6. agent memory
 }
-agentHooks = append(agentHooks, hooks.NewSummarizationHook(...)) // 6. innermost
+agentHooks = append(agentHooks, hooks.NewSummarizationHook(...)) // 7. innermost
 ```
+`LazySkillsHook` replaces the eager `SkillsHook` as the default. `PhasedHook` is new — it gates which tools
+the LLM can see based on the current execution phase. `createHookByName` handles both `"lazy_skills"` and
+`"phased"` names for override configuration. The skills listing endpoint handles both `*SkillsHook` and
+`*LazySkillsHook` via type switch.
+
 Then hook overrides are applied if the user has customized them (line 2217).
 
 ### 4e. Collect tools and create agent (lines 2221-2228)
@@ -248,27 +254,7 @@ What each hook does here:
 - **TracingHook**: no-op (tracing starts later)
 - **SummarizationHook**: no-op (runs during ModifyRequest)
 
-### 6c. Build tool map (lines 108-121)
-```go
-// Agent-level tools (from main.go: calculate, internet_search, etc.)
-toolMap := make(map[string]Tool)
-for _, t := range a.Tools {
-    toolMap[t.Name()] = t
-}
-
-// Hook-registered tools (from FilesystemHook: ls, read_file, write_file, etc.)
-if state.toolRegistry != nil {
-    for name, t := range state.toolRegistry {
-        toolMap[name] = t
-    }
-}
-
-// Convert to JSON Schema for the LLM
-toolSchemas := buildToolSchemas(toolMap)
-```
-The LLM receives these schemas so it knows what tools it can call.
-
-### 6d. Main loop — up to 25 iterations (lines 135-349)
+### 6c. Main loop — up to 25 iterations (lines 135-349)
 
 ```
 for iter := 0; iter < 25; iter++ {
@@ -286,12 +272,43 @@ for _, hook := range a.Hooks {
 }
 ```
 What each hook does:
-- **SkillsHook**: appends the skill catalog to the system prompt
-  ("Available skills: slides, csv-analyzer, research...")
+- **LazySkillsHook**: appends active skill prompt (if any) + "Call list_skills to discover skills. Call activate_skill to load one."
+- **PhasedHook**: sets `state.ToolFilter` based on current phase (plan/execute/verify). Auto-transitions phase based on todo state.
 - **MemoryHook**: appends agent memory to the system prompt
 - **TodoListHook**: injects current todo list into the system prompt
 - **SummarizationHook**: if messages exceed 85% of context window, compresses
   older messages into a summary
+
+#### Step 1b: Build tool map (per iteration, after ModifyRequest)
+```go
+// Agent-level tools (from main.go: calculate, internet_search, etc.)
+toolMap := make(map[string]Tool)
+for _, t := range a.Tools {
+    toolMap[t.Name()] = t
+}
+
+// Hook-registered tools (from FilesystemHook: ls, read_file, write_file, etc.)
+if state.toolRegistry != nil {
+    for name, t := range state.toolRegistry {
+        toolMap[name] = t
+    }
+}
+
+// Apply ToolFilter (set by PhasedHook in ModifyRequest)
+if state.ToolFilter != nil {
+    for name := range toolMap {
+        if !state.ToolFilter[name] {
+            delete(toolMap, name)
+        }
+    }
+}
+
+// Convert to JSON Schema for the LLM
+toolSchemas := buildToolSchemas(toolMap)
+```
+The tool map is rebuilt **every iteration** (not once before the loop). This is because
+`ModifyRequest` hooks (like `PhasedHook`) can set `state.ToolFilter` to change which tools
+are visible to the LLM on each iteration. The LLM only sees schemas for tools that pass the filter.
 
 #### Step 2: Build model call chain — onion ring (line 212)
 ```go
@@ -494,10 +511,10 @@ Browser                    Handler (main goroutine)          Agent (background g
   |                              |                                    |
   |                              |                          LoadOrCreate(threadID)
   |                              |                          BeforeAgent hooks
-  |                              |                          build toolMap + schemas
   |                              |                                    |
   |                              |                          === ITERATION 0 ===
   |                              |                          ModifyRequest hooks
+  |                              |                          build toolMap + apply ToolFilter + schemas
   |                              |                          buildModelChain (onion ring)
   |                              |                                    |
   |                              |                          eventCh <- on_chat_model_start

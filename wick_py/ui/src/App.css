@@ -4013,33 +4013,25 @@ body,
   color: var(--text-primary);
 }
 
-/* ── Container Hint ── */
+/* ── Container Hint (dot-only in header) ── */
 .container-hint {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 500;
-  padding: 4px 10px;
-  border-radius: 6px;
+  padding: 4px;
+  cursor: default;
 }
 .container-hint-dot {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
-}
-.container-hint.--launching {
-  color: var(--accent-orange);
-  background: var(--accent-orange-soft);
 }
 .container-hint.--launching .container-hint-dot {
   background: var(--accent-orange);
   animation: container-pulse 1.2s ease-in-out infinite;
 }
-.container-hint.--error {
-  color: var(--accent-red);
-  background: var(--accent-red-soft);
+.container-hint.--running .container-hint-dot {
+  background: var(--accent-green);
 }
 .container-hint.--error .container-hint-dot {
   background: var(--accent-red);

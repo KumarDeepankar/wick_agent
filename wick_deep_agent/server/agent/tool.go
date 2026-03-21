@@ -71,3 +71,39 @@ func RegisterToolOnState(state *AgentState, tool Tool) {
 	}
 	state.toolRegistry[tool.Name()] = tool
 }
+
+// RemoveToolFromState removes a tool from an AgentState's per-session tool registry.
+func RemoveToolFromState(state *AgentState, name string) {
+	if state.toolRegistry != nil {
+		delete(state.toolRegistry, name)
+	}
+}
+
+// ClearToolsFromState removes all tools from an AgentState's per-session tool registry.
+func ClearToolsFromState(state *AgentState) {
+	state.toolRegistry = make(map[string]Tool)
+}
+
+// StateTools returns a copy of all tools in the state's tool registry.
+func StateTools(state *AgentState) map[string]Tool {
+	if state.toolRegistry == nil {
+		return nil
+	}
+	out := make(map[string]Tool, len(state.toolRegistry))
+	for k, v := range state.toolRegistry {
+		out[k] = v
+	}
+	return out
+}
+
+// StateToolNames returns the names of all tools in the state's tool registry.
+func StateToolNames(state *AgentState) []string {
+	if state.toolRegistry == nil {
+		return nil
+	}
+	names := make([]string, 0, len(state.toolRegistry))
+	for name := range state.toolRegistry {
+		names = append(names, name)
+	}
+	return names
+}
