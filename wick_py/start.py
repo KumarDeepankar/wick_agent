@@ -82,14 +82,16 @@ def docker_socket_mount() -> list[str]:
     return []
 
 
-def build(repo_root: str):
+def build(repo_root: str, no_cache: bool = False):
     print(f"Building image '{IMAGE_NAME}'...")
     cmd = [
         "docker", "build",
         "-f", DOCKERFILE,
         "-t", IMAGE_NAME,
-        ".",
     ]
+    if no_cache:
+        cmd.append("--no-cache")
+    cmd.append(".")
     ret = subprocess.run(cmd, cwd=repo_root)
     if ret.returncode != 0:
         print("Build failed.", file=sys.stderr)
@@ -200,6 +202,10 @@ def main():
         help="Skip building, just run the existing image",
     )
     parser.add_argument(
+        "--cache", action="store_true",
+        help="Use Docker build cache (default: no cache, always fresh build)",
+    )
+    parser.add_argument(
         "--no-sandbox", action="store_true",
         help="Don't mount the Docker socket (disables Remote Docker mode)",
     )
@@ -214,7 +220,7 @@ def main():
     check_docker()
 
     if not args.no_build:
-        build(repo_root)
+        build(repo_root, no_cache=not args.cache)
 
     if args.build_only:
         return
