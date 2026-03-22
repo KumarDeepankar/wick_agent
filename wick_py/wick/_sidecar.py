@@ -103,7 +103,7 @@ def build_app(
                     content=content,
                     tool_calls=tool_calls if tool_calls else None,
                 )
-                return JSONResponse(content=resp.model_dump())
+                return JSONResponse(content=resp.model_dump(by_alias=True))
 
             # If it's a coroutine, await it
             if inspect.isawaitable(result):
@@ -111,7 +111,7 @@ def build_app(
 
             # If it returns LLMResponse directly
             if isinstance(result, LLMResponse):
-                return JSONResponse(content=result.model_dump())
+                return JSONResponse(content=result.model_dump(by_alias=True))
 
             return JSONResponse(content=result)
         except Exception as e:
@@ -124,7 +124,7 @@ def build_app(
     #   Body: llm.Request JSON
     #   Response: SSE stream
     #     data: {"delta": "..."}\n\n
-    #     data: {"tool_call": {"id": ..., "name": ..., "args": ...}}\n\n
+    #     data: {"tool_call": {"id": ..., "name": ..., "arguments": ...}}\n\n
     #     data: {"done": true}\n\n
     #
     # Go parses with bufio.Scanner looking for "data: " prefix lines.
@@ -148,7 +148,7 @@ def build_app(
                 # Async generator — stream chunks
                 if inspect.isasyncgen(result):
                     async for chunk in result:
-                        yield f"data: {chunk.model_dump_json()}\n\n"
+                        yield f"data: {chunk.model_dump_json(by_alias=True)}\n\n"
                     # Ensure done is sent
                     yield f"data: {json.dumps({'done': True})}\n\n"
                     return
@@ -159,10 +159,10 @@ def build_app(
 
                 if isinstance(result, LLMResponse):
                     if result.content:
-                        yield f"data: {StreamChunk(delta=result.content).model_dump_json()}\n\n"
+                        yield f"data: {StreamChunk(delta=result.content).model_dump_json(by_alias=True)}\n\n"
                     if result.tool_calls:
                         for tc in result.tool_calls:
-                            yield f"data: {StreamChunk(tool_call=tc).model_dump_json()}\n\n"
+                            yield f"data: {StreamChunk(tool_call=tc).model_dump_json(by_alias=True)}\n\n"
                     yield f"data: {json.dumps({'done': True})}\n\n"
 
             except Exception as e:

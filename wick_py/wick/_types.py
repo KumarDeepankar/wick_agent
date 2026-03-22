@@ -50,7 +50,9 @@ class LLMRequest(BaseModel):
 class ToolCallResult(BaseModel):
     id: str
     name: str
-    args: dict[str, Any] = Field(default_factory=dict)
+    args: dict[str, Any] = Field(default_factory=dict, alias="arguments")
+
+    model_config = {"populate_by_name": True}
 
 
 class LLMResponse(BaseModel):
