@@ -105,13 +105,36 @@ _refresh_thread.start()
 async def gateway_llm(request: LLMRequest):
     """Route LLM calls to gateway (OpenAI chat completions format)."""
 
-    # Build messages — system prompt as a "system" role message
+    # Build messages in OpenAI chat completions format.
+    # Must include all roles: system, user, assistant (with tool_calls), and tool.
     messages = []
     if request.system_prompt:
         messages.append({"role": "system", "content": request.system_prompt})
     for msg in request.messages:
-        if msg.role in ("user", "assistant"):
-            messages.append({"role": msg.role, "content": msg.content})
+        if msg.role == "user":
+            messages.append({"role": "user", "content": msg.content})
+        elif msg.role == "assistant":
+            m = {"role": "assistant", "content": msg.content or ""}
+            # Preserve tool_calls on assistant messages (OpenAI format)
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                m["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.args) if isinstance(tc.args, dict) else tc.args,
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ]
+            messages.append(m)
+        elif msg.role == "tool":
+            messages.append({
+                "role": "tool",
+                "tool_call_id": msg.tool_call_id,
+                "content": msg.content or "",
+            })
 
     # Build tools in OpenAI function-calling format
     tools = []
