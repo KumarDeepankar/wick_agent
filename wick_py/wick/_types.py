@@ -31,6 +31,8 @@ class LLMMessage(BaseModel):
     name: str | None = None
     tool_calls: list[ToolCallInfo] | None = None
 
+    model_config = {"populate_by_name": True}
+
 
 class ToolSchema(BaseModel):
     name: str
@@ -46,6 +48,8 @@ class LLMRequest(BaseModel):
     max_tokens: int | None = None
     temperature: float | None = None
 
+    model_config = {"populate_by_name": True}
+
 
 class ToolCallResult(BaseModel):
     id: str
@@ -59,11 +63,15 @@ class LLMResponse(BaseModel):
     content: str = ""
     tool_calls: list[ToolCallResult] | None = None
 
+    model_config = {"populate_by_name": True}
+
 
 class StreamChunk(BaseModel):
     delta: str | None = None
     tool_call: ToolCallResult | None = None
     done: bool | None = None
+
+    model_config = {"populate_by_name": True}
 
 
 # ── Tool callback types (mirrors agent/http_tool.go) ───────────────────────
