@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import type { ChatMessage, StreamStatus } from '../types';
 import { MessageBubble } from './MessageBubble';
+import { WelcomeView } from './canvas/WelcomeView';
 
 interface Props {
   messages: ChatMessage[];
@@ -12,6 +13,7 @@ interface Props {
   onReset: () => void;
   pendingPrompt?: string;
   onPromptConsumed?: () => void;
+  onPromptClick?: (prompt: string) => void;
 }
 
 export function ChatPanel({
@@ -24,6 +26,7 @@ export function ChatPanel({
   onReset,
   pendingPrompt,
   onPromptConsumed,
+  onPromptClick,
 }: Props) {
   const [input, setInput] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
@@ -34,8 +37,8 @@ export function ChatPanel({
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const isActive = status === 'connecting' || status === 'streaming';
+  const isEmpty = messages.length === 0;
 
-  // Smart auto-scroll: only scroll to bottom if user hasn't scrolled up
   useEffect(() => {
     if (autoScroll && listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight;
@@ -49,7 +52,6 @@ export function ChatPanel({
     setAutoScroll(atBottom);
   }, []);
 
-  // Fill input from WelcomeView prompt click
   useEffect(() => {
     if (pendingPrompt) {
       setInput(pendingPrompt);
@@ -58,12 +60,10 @@ export function ChatPanel({
     }
   }, [pendingPrompt, onPromptConsumed]);
 
-  // Reset error dismissed state when a new error arrives
   useEffect(() => {
     if (error) setErrorDismissed(false);
   }, [error]);
 
-  // Auto-grow textarea
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
     const el = e.target;
@@ -75,7 +75,6 @@ export function ChatPanel({
     if (!input.trim() || isActive) return;
     onSend(input);
     setInput('');
-    // Reset textarea height
     if (inputRef.current) {
       inputRef.current.style.height = 'auto';
     }
@@ -116,66 +115,108 @@ export function ChatPanel({
     }
   }, [messages, onSend]);
 
-  // Find the last assistant message to mark as streaming
   const lastAssistantId =
     [...messages].reverse().find((m) => m.role === 'assistant')?.id ?? null;
 
-  return (
-    <div className="chat-panel">
-      <div className="chat-header">
-        <span className="chat-title">Chat</span>
-        {threadId && (
-          <button
-            className={`thread-id ${threadCopied ? 'copied' : ''}`}
-            onClick={handleCopyThreadId}
-            title="Click to copy thread ID"
-            aria-label="Copy thread ID"
-          >
-            {threadCopied ? 'Copied!' : `Thread: ${threadId.slice(0, 8)}...`}
-          </button>
-        )}
-        {confirmingReset ? (
-          <span className="reset-confirm">
-            <span className="reset-confirm-text">Discard conversation and artifacts?</span>
-            <button className="btn-reset-yes" onClick={handleReset}>Yes</button>
-            <button className="btn-reset-no" onClick={cancelReset}>No</button>
-          </span>
-        ) : (
-          <button className="btn-reset" onClick={handleReset} disabled={isActive} aria-label="Start new thread">
-            New Thread
-          </button>
-        )}
-      </div>
-
-      <div className="chat-messages" ref={listRef} onScroll={handleScroll}>
-        {messages.length === 0 && (
-          <div className="chat-empty">Send a message to begin</div>
-        )}
-        {messages.map((m) => (
-          <MessageBubble
-            key={m.id}
-            message={m}
-            isStreaming={isActive && m.id === lastAssistantId}
-            status={status}
-          />
-        ))}
-        {error && !errorDismissed && (
-          <div className="chat-error">
-            <span>Error: {error}</span>
-            <div className="chat-error-actions">
-              <button className="chat-error-retry" onClick={handleRetry} aria-label="Retry last message">
-                Retry
-              </button>
-              <button
-                className="chat-error-dismiss"
-                onClick={() => setErrorDismissed(true)}
-                aria-label="Dismiss error"
-              >
-                &times;
-              </button>
+  // ── Empty state: centered input with skill chips below ──
+  if (isEmpty && onPromptClick) {
+    return (
+      <div className="chat-panel chat-panel--welcome">
+        <div className="welcome-center">
+          <h2 className="welcome-title">What can I help you with?</h2>
+          <div className="welcome-input-area">
+            <textarea
+              ref={inputRef}
+              className="chat-input"
+              value={input}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              placeholder="Ask anything..."
+              rows={1}
+              disabled={isActive}
+            />
+            <div className="chat-actions">
+              {isActive ? (
+                <button className="btn-stop" onClick={onStop} aria-label="Stop generation">
+                  Stop
+                </button>
+              ) : (
+                <button
+                  className="btn-send"
+                  onClick={handleSubmit}
+                  disabled={!input.trim()}
+                  aria-label="Send message"
+                >
+                  Send
+                </button>
+              )}
             </div>
           </div>
-        )}
+          <WelcomeView onPromptClick={onPromptClick} />
+        </div>
+      </div>
+    );
+  }
+
+  // ── Normal chat state — everything inside one centered container ──
+  return (
+    <div className="chat-panel">
+      <div className="chat-messages" ref={listRef} onScroll={handleScroll}>
+        <div className="chat-container">
+          <div className="chat-header">
+            <span className="chat-title">Chat</span>
+            {threadId && (
+              <button
+                className={`thread-id ${threadCopied ? 'copied' : ''}`}
+                onClick={handleCopyThreadId}
+                title="Click to copy thread ID"
+                aria-label="Copy thread ID"
+              >
+                {threadCopied ? 'Copied!' : `Thread: ${threadId.slice(0, 8)}...`}
+              </button>
+            )}
+            {confirmingReset ? (
+              <span className="reset-confirm">
+                <span className="reset-confirm-text">Discard?</span>
+                <button className="btn-reset-yes" onClick={handleReset}>Yes</button>
+                <button className="btn-reset-no" onClick={cancelReset}>No</button>
+              </span>
+            ) : (
+              <button className="btn-reset" onClick={handleReset} disabled={isActive} aria-label="Start new thread">
+                New Thread
+              </button>
+            )}
+          </div>
+
+          {isEmpty && (
+            <div className="chat-empty">Send a message to begin</div>
+          )}
+          {messages.map((m) => (
+            <MessageBubble
+              key={m.id}
+              message={m}
+              isStreaming={isActive && m.id === lastAssistantId}
+              status={status}
+            />
+          ))}
+          {error && !errorDismissed && (
+            <div className="chat-error">
+              <span>Error: {error}</span>
+              <div className="chat-error-actions">
+                <button className="chat-error-retry" onClick={handleRetry} aria-label="Retry last message">
+                  Retry
+                </button>
+                <button
+                  className="chat-error-dismiss"
+                  onClick={() => setErrorDismissed(true)}
+                  aria-label="Dismiss error"
+                >
+                  &times;
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {!autoScroll && messages.length > 0 && (
@@ -194,32 +235,34 @@ export function ChatPanel({
         </button>
       )}
 
-      <div className="chat-input-area">
-        <textarea
-          ref={inputRef}
-          className="chat-input"
-          value={input}
-          onChange={handleInputChange}
-          onKeyDown={handleKeyDown}
-          placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
-          rows={1}
-          disabled={isActive}
-        />
-        <div className="chat-actions">
-          {isActive ? (
-            <button className="btn-stop" onClick={onStop} aria-label="Stop generation">
-              Stop
-            </button>
-          ) : (
-            <button
-              className="btn-send"
-              onClick={handleSubmit}
-              disabled={!input.trim()}
-              aria-label="Send message"
-            >
-              Send
-            </button>
-          )}
+      <div className="chat-container">
+        <div className="chat-input-area">
+          <textarea
+            ref={inputRef}
+            className="chat-input"
+            value={input}
+            onChange={handleInputChange}
+            onKeyDown={handleKeyDown}
+            placeholder="Type a message..."
+            rows={1}
+            disabled={isActive}
+          />
+          <div className="chat-actions">
+            {isActive ? (
+              <button className="btn-stop" onClick={onStop} aria-label="Stop generation">
+                Stop
+              </button>
+            ) : (
+              <button
+                className="btn-send"
+                onClick={handleSubmit}
+                disabled={!input.trim()}
+                aria-label="Send message"
+              >
+                Send
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
