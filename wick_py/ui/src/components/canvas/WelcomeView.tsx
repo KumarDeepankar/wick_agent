@@ -116,18 +116,8 @@ export function WelcomeView({ onPromptClick }: Props) {
     );
   }
 
-  // Collect all sample prompts with skill context for chips
-  const allPrompts = skills.flatMap((skill) =>
-    skill.samplePrompts.map((prompt) => ({
-      prompt,
-      skillName: skill.name,
-      icon: skill.icon,
-    })),
-  );
-
   return (
     <div className="welcome-skills">
-      {/* Skill chips row */}
       <div className="welcome-skill-chips">
         {skills.map((skill) => (
           <button
@@ -143,21 +133,6 @@ export function WelcomeView({ onPromptClick }: Props) {
           </button>
         ))}
       </div>
-      {/* Sample prompt suggestions */}
-      {allPrompts.length > 0 && (
-        <div className="welcome-prompts">
-          {allPrompts.slice(0, 6).map(({ prompt }) => (
-            <button
-              key={prompt}
-              className="prompt-pill"
-              onClick={() => onPromptClick(prompt)}
-              title={prompt}
-            >
-              {prompt.length > 55 ? prompt.slice(0, 52) + '...' : prompt}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

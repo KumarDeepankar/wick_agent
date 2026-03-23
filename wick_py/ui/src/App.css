@@ -1594,21 +1594,26 @@ body,
 
 /* ── Input Area ── */
 .chat-input-area {
-  display: flex;
-  gap: 10px;
   padding: 16px 0 20px;
-  background: transparent;
   flex-shrink: 0;
+  width: 100%;
+}
+
+/* Input wrapper — pill with button inside */
+.chat-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
   width: 100%;
 }
 
 .chat-input {
   flex: 1;
-  background: var(--bg-primary);
+  background: var(--bg-secondary);
   color: var(--text-primary);
   border: 1.5px solid var(--border);
   border-radius: 24px;
-  padding: 12px 20px;
+  padding: 12px 52px 12px 20px;
   font-family: var(--font-sans);
   font-size: 15px;
   font-weight: 400;
@@ -1618,12 +1623,11 @@ body,
   min-height: 48px;
   max-height: 40vh;
   overflow: hidden;
-  box-shadow: var(--shadow-sm);
 }
 .chat-input:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-md);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .chat-input:disabled {
   opacity: 0.5;
@@ -1633,52 +1637,48 @@ body,
   font-weight: 400;
 }
 
-.chat-actions {
-  display: flex;
-  align-items: flex-end;
-}
-
-.btn-send,
-.btn-stop {
-  padding: 12px 24px;
+/* Icon button inside input */
+.btn-input-action {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 34px;
+  height: 34px;
   border: none;
-  border-radius: 24px;
-  font-size: 14px;
-  font-weight: 600;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
   transition: all var(--transition);
-  letter-spacing: 0;
+  flex-shrink: 0;
 }
-
-.btn-send {
+.btn-send-icon {
   background: var(--accent);
   color: #fff;
-  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.25);
 }
-.btn-send:hover:not(:disabled) {
+.btn-send-icon:hover:not(:disabled) {
   background: var(--accent-hover);
-  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.3);
-  transform: translateY(-1px);
+  transform: scale(1.05);
 }
-.btn-send:active:not(:disabled) {
-  transform: translateY(0) scale(0.97);
+.btn-send-icon:active:not(:disabled) {
+  transform: scale(0.95);
 }
-.btn-send:disabled {
-  opacity: 0.35;
+.btn-send-icon:disabled {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
   cursor: not-allowed;
 }
-
-.btn-stop {
+.btn-stop-icon {
   background: var(--accent-red);
   color: #fff;
-  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.2);
 }
-.btn-stop:hover {
-  box-shadow: 0 4px 16px rgba(239, 68, 68, 0.3);
-  transform: translateY(-1px);
+.btn-stop-icon:hover {
+  background: #dc2626;
+  transform: scale(1.05);
 }
-.btn-stop:active {
-  transform: translateY(0) scale(0.97);
+.btn-stop-icon:active {
+  transform: scale(0.95);
 }
 
 /* ── Message Bubbles ── */
@@ -2711,14 +2711,8 @@ body,
   letter-spacing: -0.5px;
   text-align: center;
 }
-.welcome-input-area {
-  display: flex;
-  gap: 10px;
-  width: 100%;
+.welcome-center .chat-input-wrap {
   margin-bottom: 28px;
-}
-.welcome-input-area .chat-input {
-  flex: 1;
 }
 
 /* ── Skills Section (below input) ── */
@@ -3788,9 +3782,16 @@ body,
 }
 .chat-popup .chat-input {
   font-size: 14px;
-  padding: 10px 14px;
+  padding: 10px 44px 10px 14px;
   border-radius: 20px;
   min-width: 0;
+  min-height: 40px;
+}
+.chat-popup .btn-input-action {
+  width: 28px;
+  height: 28px;
+  right: 6px;
+  bottom: 6px;
 }
 .chat-popup .message-bubble {
   padding: 8px 12px;
