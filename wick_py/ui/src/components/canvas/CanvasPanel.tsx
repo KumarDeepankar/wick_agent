@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { CanvasArtifact, StreamStatus } from '../../types';
 import { getDisplayName, getFormatLabel } from '../../utils/canvasUtils';
-import { WelcomeView } from './WelcomeView';
 import { CodeViewer } from './CodeViewer';
 import { DataViewer } from './DataViewer';
 import { DocumentViewer } from './DocumentViewer';
@@ -11,7 +10,7 @@ import { DownloadButton } from './DownloadButton';
 
 interface Props {
   artifacts: CanvasArtifact[];
-  onPromptClick: (prompt: string) => void;
+  onPromptClick?: (prompt: string) => void;
   status: StreamStatus;
   onContentUpdate?: (filePath: string, content: string) => void;
   onRemoveArtifact?: (artifactId: string) => void;
@@ -19,7 +18,7 @@ interface Props {
   onToggleFullscreen?: () => void;
 }
 
-export function CanvasPanel({ artifacts, onPromptClick, onContentUpdate, onRemoveArtifact, isFullscreen, onToggleFullscreen }: Props) {
+export function CanvasPanel({ artifacts, onContentUpdate, onRemoveArtifact, isFullscreen, onToggleFullscreen }: Props) {
   const [activeIndex, setActiveIndex] = useState(0);
 
   // Auto-select latest artifact when new ones arrive
@@ -44,7 +43,13 @@ export function CanvasPanel({ artifacts, onPromptClick, onContentUpdate, onRemov
   if (artifacts.length === 0) {
     return (
       <div className="canvas-panel">
-        <WelcomeView onPromptClick={onPromptClick} />
+        <div className="canvas-empty">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.3 }}>
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <line x1="9" y1="3" x2="9" y2="21" />
+          </svg>
+          <span>Artifacts will appear here</span>
+        </div>
       </div>
     );
   }

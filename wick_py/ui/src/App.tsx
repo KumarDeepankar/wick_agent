@@ -30,7 +30,7 @@ export default function App() {
     setAgentIdRaw(id);
     localStorage.setItem('wick-agent', id);
   }, []);
-  const [healthy, setHealthy] = useState<boolean | null>(null);
+  const [, setHealthy] = useState<boolean | null>(null);
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -38,7 +38,7 @@ export default function App() {
   const [pendingPrompt, setPendingPrompt] = useState<string | undefined>();
   const [canvasWidth, setCanvasWidth] = useState(520);
   const [dragging, setDragging] = useState(false);
-  const [canvasCollapsed, setCanvasCollapsed] = useState(false);
+  const [canvasCollapsed, setCanvasCollapsed] = useState(true);
   const [canvasFullscreen, setCanvasFullscreen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -46,6 +46,7 @@ export default function App() {
   const [chatPopupOpen, setChatPopupOpen] = useState(false);
   const [popupPos, setPopupPos] = useState({ x: 0, y: 0 });
   const [popupSize, setPopupSize] = useState({ w: 380, h: 520 });
+  const [sidebarExpanded, setSidebarExpanded] = useState(false);
   const isDragging = useRef(false);
   const popupDragRef = useRef(false);
   const popupResizeRef = useRef(false);
@@ -55,18 +56,13 @@ export default function App() {
   // ── Auth: validate existing token on mount ──
   useEffect(() => {
     if (!getToken()) {
-      // Check if auth is even required by trying /auth/me
-      // If gateway is not configured, 501 → treat as no-auth mode
       fetch('/auth/me')
         .then((res) => {
           if (res.status === 501) {
-            // Auth not configured — skip login
             setUser({ username: 'local', role: 'admin' });
           }
-          // 401 or other → need login
         })
         .catch(() => {
-          // Network error calling /auth/me — assume auth not configured
           setUser({ username: 'local', role: 'admin' });
         })
         .finally(() => setAuthChecked(true));
@@ -78,7 +74,6 @@ export default function App() {
       .finally(() => setAuthChecked(true));
   }, []);
 
-  // Listen for 401 events dispatched by authFetch
   useEffect(() => {
     const handler = () => {
       setUser(null);
@@ -113,7 +108,6 @@ export default function App() {
     fetchHealth()
       .then(() => setHealthy(true))
       .catch(() => setHealthy(false));
-    // Only fetch agents once authenticated (avoids 401 before login)
     if (!user) return;
     const loadAgents = () => {
       fetchAgents()
@@ -127,7 +121,6 @@ export default function App() {
     };
     loadAgents();
 
-    // SSE listener for container_status changes
     const token = getToken();
     const url = token
       ? `/agents/events?token=${encodeURIComponent(token)}`
@@ -144,8 +137,6 @@ export default function App() {
   const currentAgent = agents.find((a) => a.agent_id === agentId);
   const isLocalBackend = currentAgent?.backend_type === 'local';
   const containerLaunched = isLocalBackend || currentAgent?.container_status === 'launched';
-
-  // Terminal is always available — local shell fallback when no container is running
 
   const handleOpenTerminal = useCallback(() => {
     setTerminalOpen(true);
@@ -235,7 +226,7 @@ export default function App() {
 
   const toggleCanvasFullscreen = useCallback(() => {
     setCanvasFullscreen((f) => {
-      if (!f) setChatPopupOpen(false); // close popup when entering fullscreen
+      if (!f) setChatPopupOpen(false);
       return !f;
     });
   }, []);
@@ -244,7 +235,6 @@ export default function App() {
     setChatPopupOpen((o) => !o);
   }, []);
 
-  // Reset popup position/size when it opens
   useEffect(() => {
     if (chatPopupOpen) {
       const w = 380;
@@ -336,41 +326,91 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="app-header">
-        <div className="app-brand">
-          <img src="/logo.png" alt="Wick Agent" className="app-logo" />
-          <h1 className="app-title">Wick Agent</h1>
-        </div>
-        <div className="app-controls">
+      {/* ── Left Sidebar ── */}
+      <aside
+        className={`app-sidebar ${sidebarExpanded || settingsOpen ? 'expanded' : ''}`}
+        onMouseEnter={() => setSidebarExpanded(true)}
+        onMouseLeave={() => { if (!settingsOpen) setSidebarExpanded(false); }}
+      >
+        <div className="sidebar-top">
+          <div className="sidebar-brand">
+            <img src="/logo.png" alt="Wick Agent" className="sidebar-logo" />
+            <span className="sidebar-brand-text">Wick Agent</span>
+          </div>
+
+          {/* Agent selector */}
           {agents.length > 1 && (
-            <select
-              className="agent-selector"
-              value={agentId}
-              onChange={(e) => setAgentId(e.target.value)}
-              disabled={isActive}
-            >
-              {agents.map((a) => (
-                <option key={a.agent_id} value={a.agent_id}>
-                  {a.name ?? a.agent_id}
-                </option>
-              ))}
-            </select>
+            <div className="sidebar-item sidebar-agent">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+              <select
+                className="sidebar-agent-select"
+                value={agentId}
+                onChange={(e) => setAgentId(e.target.value)}
+                disabled={isActive}
+              >
+                {agents.map((a) => (
+                  <option key={a.agent_id} value={a.agent_id}>
+                    {a.name ?? a.agent_id}
+                  </option>
+                ))}
+              </select>
+            </div>
           )}
-          <div className="settings-anchor">
+
+          {/* Container status */}
+          {currentAgent?.container_status === 'launching' && (
+            <div className="sidebar-item sidebar-status">
+              <span className="container-hint-dot" style={{ background: 'var(--accent-orange)', animation: 'container-pulse 1.2s ease-in-out infinite' }} />
+              <span className="sidebar-label">Launching...</span>
+            </div>
+          )}
+          {containerLaunched && (
+            <div className="sidebar-item sidebar-status">
+              <span className="container-hint-dot" style={{ background: 'var(--accent-green)' }} />
+              <span className="sidebar-label">Container running</span>
+            </div>
+          )}
+          {currentAgent?.container_status === 'error' && (
+            <div className="sidebar-item sidebar-status">
+              <span className="container-hint-dot" style={{ background: 'var(--accent-red)' }} />
+              <span className="sidebar-label">Container error</span>
+            </div>
+          )}
+        </div>
+
+        <div className="sidebar-bottom">
+          {/* Terminal */}
+          <button
+            className={`sidebar-btn ${terminalOpen ? 'active' : ''}`}
+            onClick={() => setTerminalOpen((o) => !o)}
+            title="Terminal"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="4 17 10 11 4 5" />
+              <line x1="12" y1="19" x2="20" y2="19" />
+            </svg>
+            <span className="sidebar-label">Terminal</span>
+          </button>
+
+          {/* Settings */}
+          <div className="sidebar-settings-anchor">
             <button
-              className={`settings-gear-btn ${settingsOpen ? 'active' : ''}`}
+              className={`sidebar-btn ${settingsOpen ? 'active' : ''}`}
               onClick={() => setSettingsOpen((o) => !o)}
               title="Settings"
-              aria-label="Open settings"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="3" />
                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
               </svg>
+              <span className="sidebar-label">Settings</span>
             </button>
             <SettingsPanel
               isOpen={settingsOpen}
-              onClose={() => setSettingsOpen(false)}
+              onClose={() => { setSettingsOpen(false); setSidebarExpanded(false); }}
               selectedAgent={agentId}
               onSelectAgent={setAgentId}
               theme={theme}
@@ -379,65 +419,44 @@ export default function App() {
               onOpenTerminal={handleOpenTerminal}
             />
           </div>
-          {currentAgent?.container_status === 'launching' && (
-            <span className="container-hint --launching" title="Launching container…">
-              <span className="container-hint-dot" />
-            </span>
-          )}
-          {containerLaunched && (
-            <span className="container-hint --running" title="Container running">
-              <span className="container-hint-dot" />
-            </span>
-          )}
+
+          {/* Theme toggle */}
           <button
-            className={`terminal-toggle-btn ${terminalOpen ? 'active' : ''}`}
-            onClick={() => setTerminalOpen((o) => !o)}
-            title={terminalOpen ? 'Close terminal' : 'Open terminal'}
-            aria-label={terminalOpen ? 'Close terminal' : 'Open terminal'}
+            className="sidebar-btn"
+            onClick={toggleTheme}
+            title={theme === 'light' ? 'Dark mode' : 'Light mode'}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="4 17 10 11 4 5" />
-              <line x1="12" y1="19" x2="20" y2="19" />
-            </svg>
-            Terminal
+            {theme === 'light' ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              </svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="5" />
+                <line x1="12" y1="1" x2="12" y2="3" />
+                <line x1="12" y1="21" x2="12" y2="23" />
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                <line x1="1" y1="12" x2="3" y2="12" />
+                <line x1="21" y1="12" x2="23" y2="12" />
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+              </svg>
+            )}
+            <span className="sidebar-label">{theme === 'light' ? 'Dark mode' : 'Light mode'}</span>
           </button>
-          {currentAgent?.container_status === 'error' && (
-            <span className="container-hint --error" title="Container error">
-              <span className="container-hint-dot" />
-            </span>
-          )}
-          <button
-            className={`canvas-collapse-toggle ${canvasCollapsed ? 'collapsed' : ''}`}
-            onClick={toggleCanvas}
-            title={canvasCollapsed ? 'Show canvas' : 'Hide canvas'}
-            aria-label={canvasCollapsed ? 'Show canvas panel' : 'Hide canvas panel'}
-          >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="2" y="2" width="12" height="12" rx="2" />
-              <line x1="9" y1="2" x2="9" y2="14" />
-            </svg>
-          </button>
-          <TraceToggleButton
-            eventCount={traceEvents.length}
-            isStreaming={isActive}
-            isOpen={traceOpen}
-            onClick={() => setTraceOpen((o) => !o)}
-          />
-          <span
-            className={`health-dot ${healthy === true ? 'ok' : healthy === false ? 'err' : 'loading'}`}
-            title={
-              healthy === true
-                ? 'Backend connected'
-                : healthy === false
-                  ? 'Backend unreachable'
-                  : 'Checking...'
-            }
-          />
+
+          {/* User badge */}
           {user && user.username !== 'local' && (
-            <div className="user-badge">
-              <span className="user-badge-name">{user.username}</span>
-              <span className="user-badge-role">{user.role}</span>
-              <button className="user-badge-logout" onClick={handleLogout} title="Logout">
+            <div className="sidebar-user">
+              <div className="sidebar-user-avatar">
+                {user.username.charAt(0).toUpperCase()}
+              </div>
+              <div className="sidebar-user-info">
+                <span className="sidebar-user-name">{user.username}</span>
+                <span className="sidebar-user-role">{user.role}</span>
+              </div>
+              <button className="sidebar-user-logout" onClick={handleLogout} title="Logout">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
                   <polyline points="16 17 21 12 16 7" />
@@ -447,37 +466,61 @@ export default function App() {
             </div>
           )}
         </div>
-      </header>
+      </aside>
 
-      <main className={`app-main ${canvasFullscreen ? 'canvas-fullscreen' : ''}`}>
-        {!canvasFullscreen && (
-          <ChatPanel
-            messages={messages}
-            status={status}
-            error={error}
-            threadId={threadId}
-            onSend={handleSend}
-            onStop={stop}
-            onReset={handleReset}
-            pendingPrompt={pendingPrompt}
-            onPromptConsumed={handlePromptConsumed}
-          />
-        )}
-        {!canvasCollapsed && !canvasFullscreen && (
+      {/* ── Main Content ── */}
+      <div className="app-body">
+        <header className="app-header">
+          <div className="app-controls">
+            <button
+              className={`canvas-collapse-toggle ${canvasCollapsed ? 'collapsed' : ''}`}
+              onClick={toggleCanvas}
+              title={canvasCollapsed ? 'Show canvas' : 'Hide canvas'}
+              aria-label={canvasCollapsed ? 'Show canvas panel' : 'Hide canvas panel'}
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="2" width="12" height="12" rx="2" />
+                <line x1="9" y1="2" x2="9" y2="14" />
+              </svg>
+            </button>
+            <TraceToggleButton
+              eventCount={traceEvents.length}
+              isStreaming={isActive}
+              isOpen={traceOpen}
+              onClick={() => setTraceOpen((o) => !o)}
+            />
+          </div>
+        </header>
+
+        <main className={`app-main ${canvasFullscreen ? 'canvas-fullscreen' : ''}`}>
+          {!canvasFullscreen && (
+            <ChatPanel
+              messages={messages}
+              status={status}
+              error={error}
+              threadId={threadId}
+              onSend={handleSend}
+              onStop={stop}
+              onReset={handleReset}
+              pendingPrompt={pendingPrompt}
+              onPromptConsumed={handlePromptConsumed}
+              onPromptClick={handlePromptClick}
+            />
+          )}
+          {!canvasCollapsed && !canvasFullscreen && (
+            <div
+              className={`resize-handle${dragging ? ' dragging' : ''}`}
+              onMouseDown={handleMouseDown}
+              onKeyDown={handleResizeKeyDown}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize panels"
+              tabIndex={0}
+            />
+          )}
           <div
-            className={`resize-handle${dragging ? ' dragging' : ''}`}
-            onMouseDown={handleMouseDown}
-            onKeyDown={handleResizeKeyDown}
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize panels"
-            tabIndex={0}
-          />
-        )}
-        {!canvasCollapsed && (
-          <div
-            className="canvas-panel-wrapper"
-            style={canvasFullscreen ? undefined : { width: canvasWidth }}
+            className={`canvas-panel-wrapper${canvasCollapsed ? ' canvas-collapsed' : ''}`}
+            style={canvasFullscreen ? undefined : canvasCollapsed ? undefined : { width: canvasWidth }}
           >
             <CanvasPanel
               artifacts={canvasArtifacts}
@@ -489,16 +532,16 @@ export default function App() {
               onToggleFullscreen={toggleCanvasFullscreen}
             />
           </div>
-        )}
-      </main>
+        </main>
 
-      {terminalOpen && agentId && (
-        <TerminalPanel
-          agentId={agentId}
-          onClose={handleCloseTerminal}
-          theme={theme}
-        />
-      )}
+        {terminalOpen && agentId && (
+          <TerminalPanel
+            agentId={agentId}
+            onClose={handleCloseTerminal}
+            theme={theme}
+          />
+        )}
+      </div>
 
       {/* Floating chat in fullscreen canvas mode */}
       {canvasFullscreen && (

@@ -174,12 +174,12 @@ export function MessageBubble({ message, isStreaming, status }: Props) {
 
   return (
     <div className="message-row assistant">
-      <div className="message-avatar">
-        <img src="/logo.png" alt="Wick" width="20" height="20" />
-      </div>
       <div className={`message-bubble assistant ${isActiveStream ? 'streaming' : ''}`}>
         <div className="message-meta">
-          <span className="message-role">Assistant</span>
+          <span className="message-role">
+            <img src="/logo.png" alt="" className="message-role-icon" />
+            Assistant
+          </span>
           <span className="message-time">{formatTime(message.timestamp)}</span>
           {message.content && (
             <button
