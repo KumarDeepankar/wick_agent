@@ -1,6 +1,20 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import type { ChatMessage, StreamStatus } from '../types';
 import { MessageBubble } from './MessageBubble';
+import { WelcomeView } from './canvas/WelcomeView';
+
+const SendIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M5 12h14" />
+    <path d="M12 5l7 7-7 7" />
+  </svg>
+);
+
+const StopIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+    <rect x="4" y="4" width="16" height="16" rx="3" />
+  </svg>
+);
 
 interface Props {
   messages: ChatMessage[];
@@ -12,6 +26,7 @@ interface Props {
   onReset: () => void;
   pendingPrompt?: string;
   onPromptConsumed?: () => void;
+  onPromptClick?: (prompt: string) => void;
 }
 
 export function ChatPanel({
@@ -24,6 +39,7 @@ export function ChatPanel({
   onReset,
   pendingPrompt,
   onPromptConsumed,
+  onPromptClick,
 }: Props) {
   const [input, setInput] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
@@ -120,6 +136,51 @@ export function ChatPanel({
   const lastAssistantId =
     [...messages].reverse().find((m) => m.role === 'assistant')?.id ?? null;
 
+  const isEmpty = messages.length === 0;
+
+  // Shared input widget
+  const inputWidget = (
+    <div className="chat-input-wrap">
+      <textarea
+        ref={inputRef}
+        className="chat-input"
+        value={input}
+        onChange={handleInputChange}
+        onKeyDown={handleKeyDown}
+        placeholder={isEmpty ? 'Ask anything...' : 'Type a message...'}
+        rows={1}
+        disabled={isActive}
+      />
+      {isActive ? (
+        <button className="btn-input-action btn-stop-icon" onClick={onStop} aria-label="Stop generation">
+          <StopIcon />
+        </button>
+      ) : (
+        <button
+          className="btn-input-action btn-send-icon"
+          onClick={handleSubmit}
+          disabled={!input.trim()}
+          aria-label="Send message"
+        >
+          <SendIcon />
+        </button>
+      )}
+    </div>
+  );
+
+  // ── Empty state: centered input with skill chips below ──
+  if (isEmpty && onPromptClick) {
+    return (
+      <div className="chat-panel chat-panel--welcome">
+        <div className="welcome-center">
+          <h2 className="welcome-title">What can I help you with?</h2>
+          {inputWidget}
+          <WelcomeView onPromptClick={onPromptClick} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="chat-panel">
       <div className="chat-header">
@@ -148,9 +209,6 @@ export function ChatPanel({
       </div>
 
       <div className="chat-messages" ref={listRef} onScroll={handleScroll}>
-        {messages.length === 0 && (
-          <div className="chat-empty">Send a message to begin</div>
-        )}
         {messages.map((m) => (
           <MessageBubble
             key={m.id}
@@ -195,32 +253,7 @@ export function ChatPanel({
       )}
 
       <div className="chat-input-area">
-        <textarea
-          ref={inputRef}
-          className="chat-input"
-          value={input}
-          onChange={handleInputChange}
-          onKeyDown={handleKeyDown}
-          placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
-          rows={1}
-          disabled={isActive}
-        />
-        <div className="chat-actions">
-          {isActive ? (
-            <button className="btn-stop" onClick={onStop} aria-label="Stop generation">
-              Stop
-            </button>
-          ) : (
-            <button
-              className="btn-send"
-              onClick={handleSubmit}
-              disabled={!input.trim()}
-              aria-label="Send message"
-            >
-              Send
-            </button>
-          )}
-        </div>
+        {inputWidget}
       </div>
     </div>
   );
