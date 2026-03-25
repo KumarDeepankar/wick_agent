@@ -50,7 +50,6 @@ def search_docs(query: str, limit: int = 5) -> str:
 if __name__ == "__main__":
     # Dev mode: starts Go binary + FastAPI sidecar automatically
     agent.run(
-        go_binary="../wick_deep_agent/server/bin/wick_go",
         go_port=8000,
         sidecar_port=9100,
     )

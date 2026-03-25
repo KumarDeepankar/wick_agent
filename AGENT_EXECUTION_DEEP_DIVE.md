@@ -167,16 +167,14 @@ if b != nil {
 if hasSkills && b != nil {
     agentHooks = append(agentHooks, hooks.NewLazySkillsHook(...)) // 4. lazy skill catalog (default)
 }
-agentHooks = append(agentHooks, hooks.NewPhasedHook(...))        // 5. phased tool gating
 if hasMemory && b != nil {
-    agentHooks = append(agentHooks, hooks.NewMemoryHook(...))      // 6. agent memory
+    agentHooks = append(agentHooks, hooks.NewMemoryHook(...))      // 5. agent memory
 }
-agentHooks = append(agentHooks, hooks.NewSummarizationHook(...)) // 7. innermost
+agentHooks = append(agentHooks, hooks.NewSummarizationHook(...)) // 6. innermost
 ```
-`LazySkillsHook` replaces the eager `SkillsHook` as the default. `PhasedHook` is new — it gates which tools
-the LLM can see based on the current execution phase. `createHookByName` handles both `"lazy_skills"` and
-`"phased"` names for override configuration. The skills listing endpoint handles both `*SkillsHook` and
-`*LazySkillsHook` via type switch.
+`LazySkillsHook` replaces the eager `SkillsHook` as the default. All tools are always available — no phased
+gating. `createHookByName` handles `"lazy_skills"` for override configuration. The skills listing endpoint
+handles both `*SkillsHook` and `*LazySkillsHook` via type switch.
 
 Then hook overrides are applied if the user has customized them (line 2217).
 
@@ -184,7 +182,7 @@ Then hook overrides are applied if the user has customized them (line 2217).
 ```go
 var tools []agent.Tool
 if h.deps.ExternalTools != nil {
-    tools = append(tools, h.deps.ExternalTools.All()...)   // HTTP callback tools
+    tools = append(tools, h.deps.ExternalTools.ForAgent(inst.AgentID)...)   // agent-scoped + global tools
 }
 a := agent.NewAgent(inst.AgentID, cfg, llmClient, tools, agentHooks)
 inst.Agent = a    // cache for future requests
@@ -273,7 +271,6 @@ for _, hook := range a.Hooks {
 ```
 What each hook does:
 - **LazySkillsHook**: appends active skill prompt (if any) + "Call list_skills to discover skills. Call activate_skill to load one."
-- **PhasedHook**: sets `state.ToolFilter` based on current phase (plan/execute/verify). Auto-transitions phase based on todo state.
 - **MemoryHook**: appends agent memory to the system prompt
 - **TodoListHook**: injects current todo list into the system prompt
 - **SummarizationHook**: if messages exceed 85% of context window, compresses
@@ -294,21 +291,11 @@ if state.toolRegistry != nil {
     }
 }
 
-// Apply ToolFilter (set by PhasedHook in ModifyRequest)
-if state.ToolFilter != nil {
-    for name := range toolMap {
-        if !state.ToolFilter[name] {
-            delete(toolMap, name)
-        }
-    }
-}
-
 // Convert to JSON Schema for the LLM
 toolSchemas := buildToolSchemas(toolMap)
 ```
-The tool map is rebuilt **every iteration** (not once before the loop). This is because
-`ModifyRequest` hooks (like `PhasedHook`) can set `state.ToolFilter` to change which tools
-are visible to the LLM on each iteration. The LLM only sees schemas for tools that pass the filter.
+The tool map is rebuilt **every iteration** (not once before the loop). All tools are always
+available — there is no filtering. The LLM sees all registered tool schemas on every iteration.
 
 #### Step 2: Build model call chain — onion ring (line 212)
 ```go
@@ -514,7 +501,7 @@ Browser                    Handler (main goroutine)          Agent (background g
   |                              |                                    |
   |                              |                          === ITERATION 0 ===
   |                              |                          ModifyRequest hooks
-  |                              |                          build toolMap + apply ToolFilter + schemas
+  |                              |                          build toolMap + schemas
   |                              |                          buildModelChain (onion ring)
   |                              |                                    |
   |                              |                          eventCh <- on_chat_model_start

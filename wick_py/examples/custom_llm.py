@@ -11,21 +11,21 @@ Users can switch to Remote Docker in settings for full isolation.
 import asyncio
 import json
 import logging
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from wick import Agent, LLMRequest, LLMResponse, StreamChunk, ToolCallResult, tool
-from wick._client import WickClient
+from wick import Agent, LLMRequest, StreamChunk, ToolCallResult, tool
 from gateway_auth import fetch_token
 
 logger = logging.getLogger("wick.gateway")
 
 # ── Paths ────────────────────────────────────────────────────────────────
-import os
+
 repo_root = Path(__file__).resolve().parent.parent.parent
-skills_dir = os.environ.get("WICK_SKILLS_DIR") or str(repo_root / "wick_go" / "skills")
+skills_dir = os.environ.get("WICK_SKILLS_DIR") or str(repo_root / "wick_py" / "skills")
 
 # ── Tools (global pool — agents select via builtin_tools) ─────────────────
 
@@ -42,26 +42,49 @@ def calculate(expression: str) -> str:
     return str(eval(expression))
 
 
-# ── System prompt ─────────────────────────────────────────────────────────
+# ── Shared config ────────────────────────────────────────────────────────
 
-system_prompt = """You are a helpful AI assistant. Use your available tools and skills to complete tasks. Write output files to /workspace/."""
+system_prompt = """You are a helpful AI assistant. Use your available tools and skills to complete tasks. Write output files to the workspace directory."""
 
-# Shared config — local backend, per-user workspace folders
-agent_config = {
-    "builtin_tools": ["calculate", "current_datetime"],
+shared_config = {
     "backend": {"type": "local", "workdir": "/workspace"},
     "skills": {"paths": [skills_dir]},
     "debug": True,
 }
 
-# ── Agent: gateway-claude (Anthropic via Python) ────────────────────────
+# ── Sub-agents ───────────────────────────────────────────────────────────
+
+math_agent = Agent(
+    "math",
+    name="Math Assistant",
+    system_prompt="You are a math assistant. Use the calculate tool to evaluate expressions. Show your work step by step.",
+    builtin_tools=["calculate"],
+)
+
+# ── Agent: gateway-claude (Anthropic via Python LLM proxy) ───────────────
+
 claude_agent = Agent(
     "gateway-claude",
     name="Claude",
     system_prompt=system_prompt,
-    **agent_config,
+    builtin_tools=["calculate", "current_datetime"],
+    **shared_config,
 )
 
+# ── Agent: default (Ollama, Go-native LLM) ──────────────────────────────
+
+ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+
+ollama_agent = Agent(
+    "default",
+    name="Ollama Local",
+    model={"provider": "ollama", "model": "llama3.1:8b", "base_url": f"{ollama_host}/v1"},
+    system_prompt=system_prompt,
+    subagents=[math_agent],
+    **shared_config,
+)
+
+# ── Gateway LLM provider for Claude ─────────────────────────────────────
 
 GATEWAY_URL = os.environ.get("GATEWAY_URL", "https://xyz-abc")
 GATEWAY_MODEL = os.environ.get("GATEWAY_MODEL", "anthropic.claude-4-5-sonnet-v1:0")
@@ -207,44 +230,12 @@ async def gateway_llm(request: LLMRequest):
     yield StreamChunk(done=True)
 
 
-def register_ollama_agent(go_url: str):
-    """Register the default Ollama agent with the Go server."""
-    ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-    client = WickClient(go_url)
-    client.register_agent("default", {
-        "name": "Ollama Local",
-        "model": {"provider": "ollama", "model": "llama3.1:8b", "base_url": f"{ollama_host}/v1"},
-        "system_prompt": system_prompt,
-        "skills": {"paths": [skills_dir]},
-        "backend": {"type": "local", "workdir": "/workspace"},
-        "debug": True,
-        "subagents": [{
-            "name": "researcher",
-            "description": "Research a topic using web search and return a summary with sources.",
-            "system_prompt": "You are a research assistant. Search the web, verify facts, and provide a concise summary with sources.",
-        }],
-    })
-    client.close()
-    print("  registered agent 'default' (Ollama Local)")
-
+# ── Main ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import os
-    go_binary = os.environ.get("WICK_SERVER_BINARY") or str(repo_root / "wick_deep_agent" / "server" / "bin" / "wick_go")
-    go_port = 8000
-    sidecar_port = 9100
-
-    # Register both agents: Claude (via Python LLM proxy) + Ollama (Go-native)
-    original_register = claude_agent._register
-
-    def register_both(client, sidecar_url):
-        original_register(client, sidecar_url)
-        register_ollama_agent(f"http://127.0.0.1:{go_port}")
-
-    claude_agent._register = register_both
-
     claude_agent.run(
-        go_binary=go_binary,
-        go_port=go_port,
-        sidecar_port=sidecar_port,
+        go_binary=os.environ.get("WICK_SERVER_BINARY"),
+        go_port=8000,
+        sidecar_port=9100,
+        extra_agents=[ollama_agent],
     )

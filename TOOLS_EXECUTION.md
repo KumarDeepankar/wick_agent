@@ -143,7 +143,7 @@ loop.go:runLoop()
 ### Merge point (inside the loop, per iteration)
 
 ```go
-// Agent-level tools (Path A — from ExternalTools store)
+// Agent-level tools (Path A — from per-agent ExternalTools store)
 toolMap := make(map[string]Tool)
 for _, t := range a.Tools {
     toolMap[t.Name()] = t
@@ -156,21 +156,11 @@ if state.toolRegistry != nil {
     }
 }
 
-// Apply ToolFilter (set by PhasedHook via ModifyRequest)
-if state.ToolFilter != nil {
-    for name := range toolMap {
-        if !state.ToolFilter[name] {
-            delete(toolMap, name)
-        }
-    }
-}
 ```
 
 **Important:** The tool map is rebuilt **every iteration inside the loop**, not once before it.
-This happens *after* `ModifyRequest` hooks run, because hooks like `PhasedHook` set
-`state.ToolFilter` during `ModifyRequest` to control which tools the LLM sees per phase.
-If `state.ToolFilter` is non-nil, tools not in the filter are deleted from `toolMap` before
-building schemas. This means the LLM only sees tool schemas for the currently allowed tools.
+All tools are always available — there is no tool gating or filtering. The LLM sees all
+registered tool schemas on every iteration.
 
 ---
 
@@ -178,7 +168,7 @@ building schemas. This means the LLM only sees tool schemas for the currently al
 
 Tools are converted to JSON Schema and sent to the LLM in the API request.
 
-### Step 1: Build schemas (per iteration, after ToolFilter application)
+### Step 1: Build schemas (per iteration)
 
 ```go
 toolSchemas := buildToolSchemas(toolMap)
@@ -588,7 +578,7 @@ Each tool call gets its own goroutine. Results are collected in a fixed-size sli
 
 | Tool | Parameters | What it does |
 |------|-----------|--------------|
-| `write_todos` | `todos: array` | Set the full todo list. Each item: id, title, status (pending\|in_progress\|done), optional tool_hint. |
+| `write_todos` | `todos: array` | Set the full todo list. Each item: id, title, status (pending\|in_progress\|done). |
 | `update_todo` | `id: string, status: string` | Update a single todo item |
 
 ### Hook-registered tools (from `hooks/lazy_skills.go`)
@@ -598,20 +588,6 @@ Each tool call gets its own goroutine. Results are collected in a fixed-size sli
 | `list_skills` | (none) | Returns the catalog of available skills (name + description) |
 | `activate_skill` | `name: string` | Loads a skill's SKILL.md prompt into context (sets `state.ActiveSkill`) |
 | `deactivate_skill` | (none) | Removes the active skill's prompt from context (clears `state.ActiveSkill`) |
-
-### Tool gating by PhasedHook (`hooks/phased.go`)
-
-`PhasedHook` does not register tools — it controls **which tools the LLM can see** per phase via `state.ToolFilter`:
-
-| Phase | Visible Tools |
-|-------|--------------|
-| `plan` | `write_todos`, `update_todo`, `list_skills`, `activate_skill`, `deactivate_skill` |
-| `execute` | Tools matching `todo.ToolHint` + category-based matching from the tool catalog |
-| `verify` | Verification-related tools only |
-
-Tools not in the filter are removed from `toolMap` before building schemas, so the LLM does not see them.
-If the LLM somehow calls a filtered-out tool (e.g., via hallucination), `PhasedHook.AfterModel` rejects the call
-with a pre-built error result.
 
 ---
 
@@ -630,11 +606,10 @@ with a pre-built error result.
    A `strings.Builder` accumulates chunks until the tool call block is complete, then the
    full JSON is parsed once.
 
-5. **Three sources merge into one toolMap, then ToolFilter applies** — App-level tools (registered at startup),
+5. **Three sources merge into one toolMap** — App-level tools (registered at startup),
    external HTTP tools (registered via API), and hook-registered tools (per-session) all
-   merge into a single `map[string]Tool`. If `state.ToolFilter` is non-nil (set by `PhasedHook`),
-   tools not in the filter are removed before building schemas. The tool map is rebuilt
-   every iteration inside the loop (after `ModifyRequest`), not once before it.
+   merge into a single `map[string]Tool`. All tools are always visible — no filtering.
+   The tool map is rebuilt every iteration inside the loop (after `ModifyRequest`).
 
 6. **Onion ring wraps execution** — Every tool call passes through the hook chain. Hooks
    can observe, modify, or block tool calls. Most are pass-through for most tools.

@@ -56,19 +56,22 @@ class WickClient:
         description: str,
         parameters: dict[str, Any],
         callback_url: str,
+        agent_id: str | None = None,
     ) -> dict[str, Any]:
         """POST /agents/tools/register — register an external HTTP tool.
 
         Contract: handlers.go registerTool
-        Body: {name, description, parameters, callback_url}
-        Response: {status: "registered", name: str}
+        Body: {name, description, parameters, callback_url, agent_id?}
+        Response: {status: "registered", name: str, agent_id: str}
         """
-        payload = {
+        payload: dict[str, Any] = {
             "name": name,
             "description": description,
             "parameters": parameters,
             "callback_url": callback_url,
         }
+        if agent_id:
+            payload["agent_id"] = agent_id
         resp = self._http.post(f"{self._base}/agents/tools/register", json=payload)
         resp.raise_for_status()
         return resp.json()

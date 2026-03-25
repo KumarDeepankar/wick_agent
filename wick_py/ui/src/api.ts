@@ -122,8 +122,9 @@ export interface ToolInfo {
   source: string; // "builtin" or hook name e.g. "filesystem", "todolist"
 }
 
-export async function fetchTools(): Promise<ToolInfo[]> {
-  const res = await authFetch('/agents/tools/available');
+export async function fetchTools(agentId?: string): Promise<ToolInfo[]> {
+  const params = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
+  const res = await authFetch(`/agents/tools/available${params}`);
   if (!res.ok) throw new Error(`Failed to fetch tools: ${res.status}`);
   const data = await res.json();
   return data.tools ?? [];

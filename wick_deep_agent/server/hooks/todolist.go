@@ -11,10 +11,10 @@ import (
 )
 
 // System prompt injected on every LLM call to guide todo usage.
-var defaultTodoSystemPrompt = `Use write_todos for 3+ step tasks. Use update_todo to change one task's status. Mark done immediately.`
+var defaultTodoSystemPrompt = `For multi-step tasks, use write_todos to plan and track progress. Use update_todo to change one task's status. Mark done immediately. For simple questions, respond directly.`
 
 // Tool description for write_todos.
-var defaultTodoToolDescription = `Replace the full todo list. Each item: id, title, status (pending|in_progress|done), optional tool_hint.`
+var defaultTodoToolDescription = `Replace the full todo list. Each item: id, title, status (pending|in_progress|done).`
 
 // TodoListOption configures a TodoListHook.
 type TodoListOption func(*TodoListHook)
@@ -80,7 +80,6 @@ func (h *TodoListHook) BeforeAgent(ctx context.Context, state *agent.AgentState)
 							"id":        map[string]any{"type": "string"},
 							"title":     map[string]any{"type": "string"},
 							"status":    map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "done"}},
-							"tool_hint": map[string]any{"type": "string", "description": "Optional tool name hint for phased execution"},
 						},
 					},
 				},
