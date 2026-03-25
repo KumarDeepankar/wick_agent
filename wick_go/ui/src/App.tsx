@@ -386,8 +386,9 @@ export default function App() {
               aria-label={terminalOpen ? 'Close terminal' : 'Open terminal'}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="4 17 10 11 4 5" />
-                <line x1="12" y1="19" x2="20" y2="19" />
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                <line x1="8" y1="21" x2="16" y2="21" />
+                <line x1="12" y1="17" x2="12" y2="21" />
               </svg>
               Terminal
             </button>
@@ -453,6 +454,7 @@ export default function App() {
             onReset={handleReset}
             pendingPrompt={pendingPrompt}
             onPromptConsumed={handlePromptConsumed}
+            onPromptClick={handlePromptClick}
           />
         )}
         {!canvasCollapsed && !canvasFullscreen && (

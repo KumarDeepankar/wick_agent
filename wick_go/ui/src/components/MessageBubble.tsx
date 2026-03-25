@@ -27,34 +27,57 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function truncateArgs(args: Record<string, unknown> | null, maxLen = 120): string {
+function ToolIcon({ status }: { status: string }) {
+  if (status === 'running') {
+    return <span className="tool-spinner" />;
+  }
+  if (status === 'error') {
+    return (
+      <span className="tool-status-icon error">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5" />
+          <path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+      </span>
+    );
+  }
+  return (
+    <span className="tool-status-icon success">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+        <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5" />
+        <path d="M5 8.5l2 2 4-4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </span>
+  );
+}
+
+function formatArgs(args: Record<string, unknown> | null): string {
   if (!args) return '';
   const str = JSON.stringify(args);
-  return str.length > maxLen ? str.slice(0, maxLen) + '...' : str;
+  return str.length > 120 ? str.slice(0, 120) + '\u2026' : str;
 }
 
 function ToolCallCard({ tool }: { tool: ToolCallInfo }) {
   const [expanded, setExpanded] = useState(false);
   const isRunning = tool.status === 'running';
+  const canExpand = !isRunning && !!tool.output;
 
   return (
-    <div className={`tool-call-card ${isRunning ? 'running' : ''}`}>
-      <div className="tool-call-header" onClick={() => !isRunning && tool.output && setExpanded(!expanded)}>
-        <span className="tool-call-name">
-          {isRunning ? <span className="tool-spinner" /> : <span className="tool-check">&#10003;</span>}
-          {tool.name}
-        </span>
-        {tool.args && <span className="tool-call-args">{truncateArgs(tool.args)}</span>}
-        {tool.output && (
-          <button className="tool-call-toggle" aria-label={expanded ? 'Collapse' : 'Expand'}>
-            {expanded ? '\u25B4' : '\u25BE'}
-          </button>
+    <div className={`tool-call-card ${tool.status}`}>
+      <div className="tool-call-header" onClick={() => canExpand && setExpanded(!expanded)}>
+        <ToolIcon status={tool.status} />
+        <span className="tool-call-name">{tool.name}</span>
+        {tool.args && <span className="tool-call-args">{formatArgs(tool.args)}</span>}
+        {canExpand && (
+          <span className={`tool-call-chevron ${expanded ? 'open' : ''}`}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </span>
         )}
       </div>
       {expanded && tool.output && (
-        <div className="tool-output-content">
-          {tool.output}
-        </div>
+        <pre className="tool-output-content">{tool.output}</pre>
       )}
     </div>
   );
@@ -90,6 +113,7 @@ function IterationGroup({ iteration, isFinal, isLast, isStreaming }: {
   isLast: boolean;
   isStreaming: boolean;
 }) {
+  const [reasoningExpanded, setReasoningExpanded] = useState(false);
   const html = useMemo(() => {
     if (!iteration.content) return '';
     return renderMarkdown(iteration.content);
@@ -100,17 +124,33 @@ function IterationGroup({ iteration, isFinal, isLast, isStreaming }: {
 
   return (
     <div className={`iteration-group ${isIntermediate ? 'intermediate' : 'final'}`}>
-      {iteration.content && (
-        <div className={`iteration-text ${isIntermediate && hasTools ? 'has-reasoning' : ''}`}>
-          {isIntermediate && hasTools && (
+      {iteration.content && isIntermediate && hasTools ? (
+        <div className="iteration-reasoning-block">
+          <button
+            className="iteration-reasoning-toggle"
+            onClick={() => setReasoningExpanded(!reasoningExpanded)}
+          >
+            <span className={`iteration-reasoning-chevron ${reasoningExpanded ? 'open' : ''}`}>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path d="M4.5 3l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </span>
             <span className="iteration-reasoning-label">Reasoning</span>
-          )}
+          </button>
+          <div className={`iteration-reasoning-content ${reasoningExpanded ? 'expanded' : ''}`}>
+            <div className="iteration-text has-reasoning">
+              <span dangerouslySetInnerHTML={{ __html: html }} />
+            </div>
+          </div>
+        </div>
+      ) : iteration.content ? (
+        <div className="iteration-text">
           <span dangerouslySetInnerHTML={{ __html: html }} />
           {isLast && isStreaming && iteration.status === 'streaming' && (
             <span className="streaming-cursor" />
           )}
         </div>
-      )}
+      ) : null}
       {hasTools && (
         <div className="tool-cards">
           {iteration.toolCalls.map((tc) => (
