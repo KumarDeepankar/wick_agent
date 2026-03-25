@@ -112,7 +112,7 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 		default:
 		}
 
-		// Apply ModifyRequest hooks first — they may set ToolFilter
+		// Apply ModifyRequest hooks first
 		msgs := make([]Message, len(state.Messages))
 		copy(msgs, state.Messages)
 		systemPrompt := a.Config.SystemPrompt
@@ -137,7 +137,7 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 			}
 		}
 
-		// Build tool map AFTER ModifyRequest (hooks may have set ToolFilter)
+		// Build tool map from agent-level + state-registered tools
 		toolMap := make(map[string]Tool)
 		for _, t := range a.Tools {
 			toolMap[t.Name()] = t
@@ -145,15 +145,6 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 		if state.toolRegistry != nil {
 			for name, t := range state.toolRegistry {
 				toolMap[name] = t
-			}
-		}
-
-		// Apply tool visibility filter (set by hooks like PhasedHook)
-		if state.ToolFilter != nil {
-			for name := range toolMap {
-				if !state.ToolFilter[name] {
-					delete(toolMap, name)
-				}
 			}
 		}
 

@@ -87,6 +87,12 @@ func (h *SummarizationHook) WrapModelCall(ctx context.Context, msgs []agent.Mess
 	}
 
 	compressed := append([]agent.Message{summaryMsg}, recentMsgs...)
+
+	// Persist compression so we don't re-summarize every turn
+	if state := agent.StateFromContext(ctx); state != nil {
+		state.Messages = compressed
+	}
+
 	return next(ctx, compressed)
 }
 

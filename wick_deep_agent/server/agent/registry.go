@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -63,6 +64,13 @@ func (r *Registry) RegisterTemplate(agentID string, cfg *AgentConfig) {
 		AgentID: agentID,
 		Config:  cfg,
 	}
+}
+
+// GetTemplate returns a template by ID, or nil if not found.
+func (r *Registry) GetTemplate(agentID string) *Template {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.templates[agentID]
 }
 
 // ListTemplates returns all template IDs.
@@ -214,12 +222,24 @@ func (r *Registry) UpdateSkillPrefs(agentID, username string, prefs *SkillPrefs)
 }
 
 // InvalidateAllAgents forces all cached agent instances to rebuild on next use.
-// Called when external tools are registered/deregistered so agents pick up the changes.
+// Called when global external tools are registered/deregistered.
 func (r *Registry) InvalidateAllAgents() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, inst := range r.instances {
 		inst.Agent = nil
+	}
+}
+
+// InvalidateAgent forces instances of a specific agent to rebuild on next use.
+// Called when agent-scoped external tools are registered/deregistered.
+func (r *Registry) InvalidateAgent(agentID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, inst := range r.instances {
+		if inst.AgentID == agentID || strings.HasPrefix(key, agentID+":") {
+			inst.Agent = nil
+		}
 	}
 }
 

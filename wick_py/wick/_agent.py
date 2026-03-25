@@ -62,6 +62,27 @@ class _ToolDef:
         self.fn = fn
 
 
+def _to_subagent_dict(s: Any) -> dict[str, Any]:
+    """Convert an Agent, SubAgentConfig, or dict to a subagent config dict."""
+    if isinstance(s, dict):
+        return s
+    # Agent instance → extract SubAgentCfg fields
+    if hasattr(s, "agent_id") and hasattr(s, "system_prompt"):
+        d: dict[str, Any] = {
+            "name": s.agent_id,
+            "description": getattr(s, "name", "") or s.agent_id,
+            "system_prompt": s.system_prompt,
+        }
+        if hasattr(s, "builtin_tools") and s.builtin_tools:
+            d["tools"] = s.builtin_tools
+        if hasattr(s, "_model") and s._model:
+            model = s._model
+            d["model"] = model if isinstance(model, str) else json.dumps(model)
+        return d
+    # SubAgentConfig (Pydantic)
+    return s.model_dump()
+
+
 class Agent:
     """Define and run a wick agent with Python tools and LLM providers."""
 
@@ -76,7 +97,7 @@ class Agent:
         backend: BackendConfig | dict[str, Any] | None = None,
         skills: SkillsConfig | dict[str, Any] | None = None,
         memory: MemoryConfig | dict[str, Any] | None = None,
-        subagents: list[SubAgentConfig | dict[str, Any]] | None = None,
+        subagents: list["Agent | SubAgentConfig | dict[str, Any]"] | None = None,
         debug: bool = False,
         context_window: int = 0,
     ) -> None:
@@ -102,8 +123,7 @@ class Agent:
             memory.model_dump() if memory else None
         )
         self._subagents = [
-            s if isinstance(s, dict) else s.model_dump()
-            for s in (subagents or [])
+            _to_subagent_dict(s) for s in (subagents or [])
         ]
 
         # Registries (populated by decorators)
@@ -162,6 +182,7 @@ class Agent:
         sidecar_port: int = 9100,
         sidecar_host: str = "127.0.0.1",
         ui: bool = True,
+        extra_agents: list["Agent"] | None = None,
     ) -> None:
         """Dev mode: start Go binary + sidecar, register agent, block until SIGINT.
 
@@ -171,15 +192,21 @@ class Agent:
             sidecar_port: port for the Python sidecar (only if tools/LLM registered)
             sidecar_host: host for the sidecar
             ui: serve the bundled UI (default True)
+            extra_agents: additional Agent instances to register with the same server
         """
-        builtin_resolved = self._resolve_builtin_tools()
-        needs_sidecar = bool(self._tools or builtin_resolved or self._llm_providers)
+        all_agents = [self] + (extra_agents or [])
+
+        # Check if any agent needs a sidecar (has Python tools or LLM providers)
+        needs_sidecar = any(
+            bool(a._tools or a._resolve_builtin_tools() or a._llm_providers)
+            for a in all_agents
+        )
         sidecar_url = f"http://{sidecar_host}:{sidecar_port}"
 
-        # Start sidecar if needed
+        # Start sidecar if needed — serves tools from all agents
         sidecar_thread = None
         if needs_sidecar:
-            sidecar_thread = self._start_sidecar(sidecar_host, sidecar_port)
+            sidecar_thread = self._start_sidecar(sidecar_host, sidecar_port, all_agents)
 
         # Resolve cwd for Go binary so it finds static/ for UI serving
         go_cwd = None
@@ -196,13 +223,16 @@ class Agent:
             runtime.stop()
             raise
 
-        # Register agent and tools
+        # Register all agents and their tools
         try:
             client = WickClient(runtime.base_url)
-            self._register(client, sidecar_url if needs_sidecar else None)
+            for a in all_agents:
+                a_needs_sidecar = bool(a._tools or a._resolve_builtin_tools() or a._llm_providers)
+                a._register(client, sidecar_url if a_needs_sidecar else None)
+                print(f"  registered agent '{a.agent_id}'")
 
-            logger.info("Agent '%s' ready at %s", self.agent_id, runtime.base_url)
-            print(f"\n  wick agent '{self.agent_id}' running at {runtime.base_url}\n")
+            logger.info("All agents ready at %s", runtime.base_url)
+            print(f"\n  wick server running at {runtime.base_url}\n")
 
             # Block until SIGINT/SIGTERM
             stop = threading.Event()
@@ -276,11 +306,18 @@ class Agent:
             fns[name] = td.fn  # @agent.tool overrides globals
         return fns
 
-    def _start_sidecar(self, host: str, port: int) -> threading.Thread:
+    def _start_sidecar(self, host: str, port: int, all_agents: list["Agent"] | None = None) -> threading.Thread:
         """Start the FastAPI sidecar in a background thread."""
+        # Merge tools and LLM providers from all agents
+        agents = all_agents or [self]
+        merged_tools: dict[str, Callable] = {}
+        merged_llm: dict[str, Callable] = {}
+        for a in agents:
+            merged_tools.update(a._all_tool_fns())
+            merged_llm.update(a._llm_providers)
         app = build_app(
-            tools=self._all_tool_fns(),
-            llm_providers=self._llm_providers,
+            tools=merged_tools,
+            llm_providers=merged_llm,
         )
         config = uvicorn.Config(app, host=host, port=port, log_level="warning")
         server = uvicorn.Server(config)
@@ -354,7 +391,7 @@ class Agent:
         all_tools.update(self._resolve_builtin_tools())
         all_tools.update(self._tools)  # @agent.tool overrides globals if name clashes
 
-        # Register tools as HTTPTools
+        # Register tools as HTTPTools (scoped to this agent)
         if all_tools and sidecar_url:
             for td in all_tools.values():
                 result = client.register_tool(
@@ -362,6 +399,7 @@ class Agent:
                     description=td.description,
                     parameters=td.parameters,
                     callback_url=sidecar_url,
+                    agent_id=self.agent_id,
                 )
                 logger.info("Tool registered: %s", result)
 

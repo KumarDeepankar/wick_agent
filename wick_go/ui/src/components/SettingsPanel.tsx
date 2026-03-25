@@ -47,11 +47,22 @@ export function SettingsPanel({
 
   const loadData = useCallback(() => {
     setLoading(true);
-    Promise.all([fetchAgents(), fetchTools(), fetchHooks()])
-      .then(([agentsData, toolsData, hooksData]) => {
+    const fetches: [Promise<any>, Promise<any>, Promise<any>, Promise<any>] = [
+      fetchAgents(),
+      fetchTools(selectedAgent || undefined),
+      fetchHooks(),
+      selectedAgent ? fetchAgentSkills(selectedAgent) : Promise.resolve(null),
+    ];
+    Promise.all(fetches)
+      .then(([agentsData, toolsData, hooksData, skillsData]) => {
         setAgents(agentsData);
         setAllTools(toolsData);
         setAllHooks(hooksData);
+        if (skillsData) {
+          setSkillsList(skillsData.skills);
+          setSkillPaths(skillsData.paths);
+          setSkillExtraPaths(skillsData.extra_paths);
+        }
         if (agentsData.length > 0 && !selectedAgent) {
           onSelectAgent(agentsData[0]!.agent_id);
         }
@@ -85,7 +96,7 @@ export function SettingsPanel({
     fetchAgents()
       .then((agentsData) => setAgents(agentsData))
       .catch(() => {});
-    fetchTools()
+    fetchTools(selectedAgent || undefined)
       .then((toolsData) => setAllTools(toolsData))
       .catch(() => {});
     fetchHooks()
@@ -143,10 +154,13 @@ export function SettingsPanel({
     return () => document.removeEventListener('keydown', handler);
   }, [isOpen, onClose]);
 
-  // Reload skills when selected agent changes
+  // Reload skills and tools when selected agent changes
   useEffect(() => {
     if (isOpen && selectedAgent) {
       loadSkills(selectedAgent);
+      fetchTools(selectedAgent)
+        .then((toolsData) => setAllTools(toolsData))
+        .catch(() => {});
     }
   }, [isOpen, selectedAgent, loadSkills]);
 
@@ -691,13 +705,10 @@ export function SettingsPanel({
                   <div key={skill.name} className="settings-hook-entry">
                     <label
                       className={`settings-tool-row ${skill.enabled ? 'active' : 'inactive'}`}
-                      title={skill.path}
+                      title={skill.description || skill.path}
                     >
                       <div className="settings-tool-info">
                         <span className="settings-tool-name">{skill.name}</span>
-                        {skill.description && (
-                          <span className="settings-hint" style={{ margin: 0 }}>{skill.description}</span>
-                        )}
                       </div>
                       <button
                         className={`settings-tool-toggle ${skill.enabled ? 'on' : 'off'}`}

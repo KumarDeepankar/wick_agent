@@ -50,7 +50,6 @@ wick_deep_agent/server/           <- The core library (package wickserver)
     todolist.go                   <- Todo management tools
     skills.go                     <- SKILL.md discovery, eager catalog injection
     lazy_skills.go                <- LazySkillsHook: 3 meta-tools (list/activate/deactivate), default
-    phased.go                     <- PhasedHook: Plan→Execute→Verify tool gating via ToolFilter
     memory.go                     <- AGENTS.md memory loading
     summarization.go              <- Context compression at 85% capacity
 
@@ -164,7 +163,6 @@ buildAgent(inst, username)
   |       TodoListHook,       <- todo management
   |       FilesystemHook,     <- registers file tools
   |       LazySkillsHook,    <- SKILL.md discovery + 3 meta-tools (default, replaces SkillsHook)
-  |       PhasedHook,         <- Plan→Execute→Verify tool gating
   |       MemoryHook,         <- AGENTS.md loading
   |       SummarizationHook,  <- context compression
   |     }
@@ -225,7 +223,6 @@ RunStream(ctx, messages, threadID, eventCh)
   |     hook.BeforeAgent(ctx, state)
   |     * FilesystemHook: registers file tools onto state.toolRegistry
   |     * LazySkillsHook: scans for SKILL.md files, registers 3 meta-tools (list_skills, activate_skill, deactivate_skill)
-  |     * PhasedHook: initializes state.Phase = PhasePlan, builds tool catalog
   |     * MemoryHook: reads AGENTS.md memory files
   |     * TodoListHook: initializes todo state
   |
@@ -235,15 +232,13 @@ RunStream(ctx, messages, threadID, eventCh)
      |   for each hook:
      |     systemPrompt, msgs = hook.ModifyRequest(ctx, sysPrompt, msgs)
      |     * LazySkillsHook: appends active skill prompt + "Call list_skills to discover skills."
-     |     * PhasedHook: sets state.ToolFilter based on current phase, auto-transitions
      |     * MemoryHook: appends memory to system prompt
      |     * SummarizationHook: compresses old messages if >85% context
      |     * TodoListHook: injects current todo state into prompt
      |
      +- -- BUILD TOOL MAP (per iteration, after ModifyRequest) --
      |   toolMap = agent.Tools UNION state.toolRegistry
-     |   if state.ToolFilter != nil: remove tools not in filter from toolMap
-     |   Build toolSchemas (JSON Schema for filtered tools -> sent to LLM)
+     |   Build toolSchemas (all tools always available -> sent to LLM)
      |
      +- -- WRAP_MODEL_CALL (onion ring) --
      |   fn = baseLLMCall
@@ -265,7 +260,6 @@ RunStream(ctx, messages, threadID, eventCh)
      |   for each hook:
      |     hook.AfterModel(ctx, state, toolCalls)
      |     * TodoListHook: can intercept/deduplicate todo updates
-     |     * PhasedHook: rejects tool calls outside current phase's ToolFilter
      |
      +- -- EXECUTE TOOLS (parallel via WaitGroup) --
      |   for each toolCall:

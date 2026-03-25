@@ -753,7 +753,6 @@ func (h *agentHandler) availableHooks(w http.ResponseWriter, r *http.Request) {
 		{Name: "filesystem", Description: "Registers file-operation tools (ls, read, write, edit, glob, grep, execute)", Phases: []string{"before_agent", "wrap_tool_call"}, Configurable: false, Tools: []string{"ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute"}},
 		{Name: "skills", Description: "Discovers SKILL.md files and injects catalog into system prompt (eager)", Phases: []string{"before_agent", "modify_request"}, Configurable: true, Tools: []string{}},
 		{Name: "lazy_skills", Description: "Discovers SKILL.md files but loads only on-demand via activate_skill tool", Phases: []string{"before_agent", "modify_request"}, Configurable: true, Tools: []string{"list_skills", "activate_skill", "deactivate_skill"}},
-		{Name: "phased", Description: "Plan→Execute→Verify phased tool gating with progressive tool revelation", Phases: []string{"before_agent", "modify_request", "after_model"}, Configurable: true, Tools: []string{}},
 		{Name: "memory", Description: "Loads AGENTS.md memory files and injects into system prompt", Phases: []string{"before_agent", "modify_request"}, Configurable: true, Tools: []string{}},
 		{Name: "summarization", Description: "Compresses conversation when context window nears capacity", Phases: []string{"wrap_model_call"}, Configurable: false, Tools: []string{}},
 	}
@@ -766,6 +765,8 @@ func (h *agentHandler) availableTools(w http.ResponseWriter, r *http.Request) {
 		Name   string `json:"name"`
 		Source string `json:"source"` // "builtin", or hook name e.g. "filesystem", "todolist"
 	}
+
+	agentID := r.URL.Query().Get("agent_id")
 
 	var tools []toolEntry
 
@@ -782,14 +783,27 @@ func (h *agentHandler) availableTools(w http.ResponseWriter, r *http.Request) {
 		toolEntry{Name: "update_todo", Source: "todolist"},
 	)
 
-	// Registered tools (app-level + external HTTP)
+	// Registered tools — scoped to agent if agent_id provided, otherwise all
 	if h.deps.ExternalTools != nil {
-		for _, t := range h.deps.ExternalTools.All() {
+		var externalTools []agent.Tool
+		if agentID != "" {
+			externalTools = h.deps.ExternalTools.ForAgent(agentID)
+		} else {
+			externalTools = h.deps.ExternalTools.All()
+		}
+		for _, t := range externalTools {
 			source := "registered"
 			if _, ok := t.(*agent.HTTPTool); ok {
 				source = "external"
 			}
 			tools = append(tools, toolEntry{Name: t.Name(), Source: source})
+		}
+	}
+
+	// Sub-agent tool (if agent has subagents configured)
+	if agentID != "" {
+		if tpl := h.deps.Registry.GetTemplate(agentID); tpl != nil && len(tpl.Config.Subagents) > 0 {
+			tools = append(tools, toolEntry{Name: "delegate_to_agent", Source: "subagent"})
 		}
 	}
 
@@ -803,6 +817,7 @@ func (h *agentHandler) registerTool(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
+		AgentID     string         `json:"agent_id"`
 		Name        string         `json:"name"`
 		Description string         `json:"description"`
 		Parameters  map[string]any `json:"parameters"`
@@ -822,13 +837,19 @@ func (h *agentHandler) registerTool(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tool := agent.NewHTTPTool(req.Name, req.Description, req.Parameters, req.CallbackURL)
-	h.deps.ExternalTools.Register(tool)
-	h.deps.Registry.InvalidateAllAgents()
+	h.deps.ExternalTools.RegisterForAgent(req.AgentID, tool)
 
-	log.Printf("Registered external tool %q (callback: %s)", req.Name, req.CallbackURL)
+	if req.AgentID != "" {
+		h.deps.Registry.InvalidateAgent(req.AgentID)
+	} else {
+		h.deps.Registry.InvalidateAllAgents()
+	}
+
+	log.Printf("Registered external tool %q for agent %q (callback: %s)", req.Name, req.AgentID, req.CallbackURL)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status": "registered",
-		"name":   req.Name,
+		"status":   "registered",
+		"name":     req.Name,
+		"agent_id": req.AgentID,
 	})
 }
 
@@ -838,13 +859,19 @@ func (h *agentHandler) deregisterTool(w http.ResponseWriter, r *http.Request, na
 		return
 	}
 
-	if !h.deps.ExternalTools.Remove(name) {
+	agentID := r.URL.Query().Get("agent_id")
+	if !h.deps.ExternalTools.RemoveForAgent(agentID, name) {
 		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("tool %q not found", name))
 		return
 	}
-	h.deps.Registry.InvalidateAllAgents()
 
-	log.Printf("Deregistered external tool %q", name)
+	if agentID != "" {
+		h.deps.Registry.InvalidateAgent(agentID)
+	} else {
+		h.deps.Registry.InvalidateAllAgents()
+	}
+
+	log.Printf("Deregistered external tool %q for agent %q", name, agentID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "deregistered",
 		"name":   name,
@@ -2077,8 +2104,6 @@ func createHookByName(name string, b backend.Backend, llmClient llm.Client, cfg 
 		if len(paths) > 0 && b != nil {
 			return hooks.NewLazySkillsHook(b, paths, nil)
 		}
-	case "phased":
-		return hooks.NewPhasedHook()
 	case "memory":
 		paths := getConfigPaths(hookConfig, "memory")
 		if len(paths) == 0 && cfg.Memory != nil {
@@ -2216,32 +2241,21 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) (*agent
 		agentHooks = append(agentHooks, hooks.NewLazySkillsHook(b, cfg.Skills.Paths, inst.SkillPrefs))
 	}
 
-	// Phased hook — plan → execute → verify tool gating.
-	// Categories group tools so hinting one tool unlocks related ones.
-	agentHooks = append(agentHooks, hooks.NewPhasedHook(
-		hooks.WithToolCategories([]hooks.ToolCategory{
-			{Name: "file_read", Tools: []string{"read_file", "ls", "glob", "grep"}},
-			{Name: "file_write", Tools: []string{"write_file", "edit_file"}},
-			{Name: "exec", Tools: []string{"execute"}},
-			{Name: "utility", Tools: []string{"calculate", "current_datetime"}},
-		}),
-		hooks.WithToolCatalog([]string{
-			"read_file: read a file's contents",
-			"write_file: create or overwrite a file",
-			"edit_file: replace text in a file",
-			"ls: list files in a directory",
-			"glob: find files matching a pattern",
-			"grep: search file contents for a pattern",
-			"execute: run a shell command",
-			"calculate: evaluate a math expression",
-			"current_datetime: get current date and time",
-		}),
-		hooks.WithVerifyTools([]string{"execute", "read_file", "ls", "update_todo"}),
-	))
 
 	// Memory hook
 	if cfg.Memory != nil && len(cfg.Memory.Paths) > 0 && b != nil {
 		agentHooks = append(agentHooks, hooks.NewMemoryHook(b, cfg.Memory.Paths))
+	}
+
+	// Sub-agent hook — registers delegate_to_agent tool
+	if len(cfg.Subagents) > 0 {
+		var toolLookup hooks.ToolLookup
+		if h.deps.ExternalTools != nil {
+			toolLookup = func(agentID string) []agent.Tool {
+				return h.deps.ExternalTools.ForAgent(agentID)
+			}
+		}
+		agentHooks = append(agentHooks, hooks.NewSubAgentHook(cfg.Subagents, cfg.Model, b, toolLookup))
 	}
 
 	// Summarization hook — use agent's ContextWindow (default 128k)
@@ -2256,10 +2270,10 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) (*agent
 		agentHooks = applyHookOverrides(agentHooks, inst.HookOverrides, b, llmClient, cfg)
 	}
 
-	// Build tools from registered tool store (app-level + external HTTP)
+	// Build tools from registered tool store (agent-scoped + global)
 	var tools []agent.Tool
 	if h.deps.ExternalTools != nil {
-		tools = append(tools, h.deps.ExternalTools.All()...)
+		tools = append(tools, h.deps.ExternalTools.ForAgent(inst.AgentID)...)
 	}
 
 	a := agent.NewAgent(inst.AgentID, cfg, llmClient, tools, agentHooks)

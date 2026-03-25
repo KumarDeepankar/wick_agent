@@ -49,11 +49,11 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 	// ls
 	agent.RegisterToolOnState(state, &agent.FuncTool{
 		ToolName: "ls",
-		ToolDesc: "List files and directories at a given path. Returns names, types, and sizes.",
+		ToolDesc: "List files and directories.",
 		ToolParams: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path": map[string]any{"type": "string", "description": fmt.Sprintf("Directory path to list (default: %s)", workdir)},
+				"path": map[string]any{"type": "string", "description": fmt.Sprintf("Directory path (default: %s)", workdir)},
 			},
 		},
 		Fn: func(ctx context.Context, args map[string]any) (string, error) {
@@ -74,11 +74,11 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 	// read_file
 	agent.RegisterToolOnState(state, &agent.FuncTool{
 		ToolName: "read_file",
-		ToolDesc: "Read the contents of a file at the given path.",
+		ToolDesc: "Read a file.",
 		ToolParams: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string", "description": fmt.Sprintf("Path to the file to read (relative to %s, or absolute within it)", workdir)},
+				"file_path": map[string]any{"type": "string", "description": "File path"},
 			},
 			"required": []string{"file_path"},
 		},
@@ -102,12 +102,12 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 	// write_file
 	agent.RegisterToolOnState(state, &agent.FuncTool{
 		ToolName: "write_file",
-		ToolDesc: "Write content to a file at the given path. Creates the file and parent directories if they don't exist.",
+		ToolDesc: "Write or create a file. Creates parent directories if needed.",
 		ToolParams: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string", "description": fmt.Sprintf("Path to write the file (relative to %s, or absolute within it)", workdir)},
-				"content":   map[string]any{"type": "string", "description": "Content to write"},
+				"file_path": map[string]any{"type": "string", "description": "File path"},
+				"content":   map[string]any{"type": "string", "description": "File content"},
 			},
 			"required": []string{"file_path", "content"},
 		},
@@ -136,13 +136,13 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 	// edit_file
 	agent.RegisterToolOnState(state, &agent.FuncTool{
 		ToolName: "edit_file",
-		ToolDesc: "Edit a file by replacing old_text with new_text. The old_text must be an exact match.",
+		ToolDesc: "Replace exact text in a file.",
 		ToolParams: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string", "description": fmt.Sprintf("Path to the file to edit (relative to %s, or absolute within it)", workdir)},
-				"old_text":  map[string]any{"type": "string", "description": "Exact text to find and replace"},
-				"new_text":  map[string]any{"type": "string", "description": "Text to replace old_text with"},
+				"file_path": map[string]any{"type": "string", "description": "File path"},
+				"old_text":  map[string]any{"type": "string", "description": "Exact text to find"},
+				"new_text":  map[string]any{"type": "string", "description": "Replacement text"},
 			},
 			"required": []string{"file_path", "old_text", "new_text"},
 		},
@@ -176,12 +176,12 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 	// glob
 	agent.RegisterToolOnState(state, &agent.FuncTool{
 		ToolName: "glob",
-		ToolDesc: "Find files matching a glob pattern. Returns matching file paths.",
+		ToolDesc: "Find files by glob pattern.",
 		ToolParams: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"pattern": map[string]any{"type": "string", "description": "Glob pattern (e.g., '*.py', '**/*.js')"},
-				"path":    map[string]any{"type": "string", "description": fmt.Sprintf("Directory to search in (default: %s)", workdir)},
+				"pattern": map[string]any{"type": "string", "description": "Glob pattern (e.g. '*.py', '**/*.js')"},
+				"path":    map[string]any{"type": "string", "description": fmt.Sprintf("Search directory (default: %s)", workdir)},
 			},
 			"required": []string{"pattern"},
 		},
@@ -204,12 +204,12 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 	// grep
 	agent.RegisterToolOnState(state, &agent.FuncTool{
 		ToolName: "grep",
-		ToolDesc: "Search file contents for a pattern. Returns matching lines with file paths and line numbers.",
+		ToolDesc: "Search file contents by pattern.",
 		ToolParams: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"pattern": map[string]any{"type": "string", "description": "Search pattern (regex supported)"},
-				"path":    map[string]any{"type": "string", "description": fmt.Sprintf("File or directory to search in (default: %s)", workdir)},
+				"pattern": map[string]any{"type": "string", "description": "Search pattern (regex)"},
+				"path":    map[string]any{"type": "string", "description": fmt.Sprintf("Search path (default: %s)", workdir)},
 			},
 			"required": []string{"pattern"},
 		},
@@ -232,11 +232,11 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 	// execute
 	agent.RegisterToolOnState(state, &agent.FuncTool{
 		ToolName: "execute",
-		ToolDesc: "Execute an arbitrary shell command in the workspace.",
+		ToolDesc: "Run a shell command.",
 		ToolParams: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"command": map[string]any{"type": "string", "description": "Shell command to execute"},
+				"command": map[string]any{"type": "string", "description": "Command to run"},
 			},
 			"required": []string{"command"},
 		},

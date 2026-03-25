@@ -101,13 +101,25 @@ func (h *LazySkillsHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 	return nil
 }
 
-// ModifyRequest injects only the active skill's prompt (if any).
+// ModifyRequest injects the skill catalog and the active skill's prompt (if any).
 func (h *LazySkillsHook) ModifyRequest(ctx context.Context, systemPrompt string, msgs []agent.Message) (string, []agent.Message, error) {
+	state := agent.StateFromContext(ctx)
+
+	// Inject skill names so the LLM knows what's available (descriptions load on activate)
 	if len(h.skills) > 0 {
-		systemPrompt += "\n\nCall list_skills to discover skills. Call activate_skill to load one."
+		var names []string
+		for _, skill := range h.skills {
+			if h.prefs != nil && h.prefs.Disabled[skill.Name] {
+				continue
+			}
+			names = append(names, skill.Name)
+		}
+		if len(names) > 0 {
+			systemPrompt += "\n\nAvailable skills: " + strings.Join(names, ", ") + ". Call activate_skill by name to load instructions."
+		}
 	}
 
-	state := agent.StateFromContext(ctx)
+	// Inject the active skill's full prompt
 	if state != nil && state.ActiveSkillPrompt != "" {
 		systemPrompt += "\n\n## Active Skill\n" + state.ActiveSkillPrompt
 	}
@@ -175,25 +187,24 @@ func (h *LazySkillsHook) discoverSkills() {
 	}
 }
 
-// listSkills returns a formatted catalog of available skills.
+// listSkills returns a compact list of available skill names.
 func (h *LazySkillsHook) listSkills(state *agent.AgentState) string {
 	if len(h.skills) == 0 {
 		return "No skills available."
 	}
 
-	var sb strings.Builder
-	sb.WriteString("Available skills:\n")
+	var names []string
 	for _, skill := range h.skills {
 		if h.prefs != nil && h.prefs.Disabled[skill.Name] {
 			continue
 		}
-		active := ""
+		name := skill.Name
 		if state.ActiveSkill == skill.Name {
-			active = " (ACTIVE)"
+			name += " (ACTIVE)"
 		}
-		sb.WriteString(fmt.Sprintf("- %s: %s%s\n", skill.Name, skill.Description, active))
+		names = append(names, name)
 	}
-	return sb.String()
+	return "Available skills: " + strings.Join(names, ", ") + ". Call activate_skill to load one."
 }
 
 // activateSkill loads a skill's full prompt and deactivates the previous one.

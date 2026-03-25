@@ -24,7 +24,7 @@ func main() {
 	// Container-side path — this is what the backend.Execute() sees
 	containerSkillsDir := "/workspace/skills"
 
-	systemPrompt := `You are a helpful AI assistant. Use your available tools and skills to complete tasks. Write output files to /workspace/.`
+	systemPrompt := `You are a helpful AI assistant. Use your available tools and skills to complete tasks. Write output files to the workspace directory.`
 
 	opts := []wickserver.Option{
 		wickserver.WithPort(8000),

@@ -43,7 +43,7 @@ COPY wick_py/pyproject.toml /app/
 
 # Copy examples and skills
 COPY wick_py/examples/ /app/examples/
-COPY wick_go/skills/ /app/skills/
+COPY wick_py/skills/ /app/skills/
 
 # Install Python deps
 COPY wick_py/requirements.txt /app/requirements.txt
