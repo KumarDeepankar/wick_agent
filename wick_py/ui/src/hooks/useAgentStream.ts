@@ -415,6 +415,127 @@ export function useAgentStream() {
             }
           }
 
+          // --- Sub-agent streaming events ---
+          if (sse.event.startsWith('on_subagent_')) {
+            const parentToolId = parsed.run_id as string;
+            const agentName = (parsed.name as string) ?? (parsed.data as Record<string, unknown>)?.agent as string ?? '';
+
+            // Find the parent delegate_to_agent tool call across all iterations
+            let parentTc: ToolCallInfo | undefined;
+            for (const iter of iterationsRef.current) {
+              parentTc = iter.toolCalls.find((tc) => tc.id === parentToolId);
+              if (parentTc) break;
+            }
+
+            if (parentTc) {
+              // Initialize sub-agent state on first event
+              if (!parentTc.subIterations) {
+                parentTc.subAgentName = agentName;
+                parentTc.subIterations = [];
+                parentTc.subStatus = 'running';
+              }
+
+              const subIters = parentTc.subIterations!;
+              const currentSubIter = () => subIters[subIters.length - 1] as Iteration | undefined;
+
+              switch (sse.event) {
+                case 'on_subagent_model_start': {
+                  // Finalize previous sub-iteration
+                  const prev = currentSubIter();
+                  if (prev && prev.status !== 'done') prev.status = 'done';
+                  subIters.push({
+                    index: subIters.length,
+                    content: '',
+                    toolCalls: [],
+                    status: 'streaming',
+                  });
+                  flushIterationsToMessage();
+                  break;
+                }
+
+                case 'on_subagent_stream': {
+                  const chunk = (parsed.data as Record<string, unknown>)?.chunk as Record<string, unknown> | undefined;
+                  const token = (chunk?.content as string) ?? '';
+                  if (token) {
+                    if (!currentSubIter()) {
+                      subIters.push({ index: 0, content: '', toolCalls: [], status: 'streaming' });
+                    }
+                    const iter = currentSubIter()!;
+                    iter.content += token;
+                    // Batch via rAF — reuse pending mechanism
+                    pendingTokensRef.current += token;
+                    if (!rafRef.current) {
+                      rafRef.current = requestAnimationFrame(() => {
+                        pendingTokensRef.current = '';
+                        rafRef.current = 0;
+                        flushIterationsToMessage();
+                      });
+                    }
+                  }
+                  break;
+                }
+
+                case 'on_subagent_tool_start': {
+                  const data = parsed.data as Record<string, unknown>;
+                  if (!currentSubIter()) {
+                    subIters.push({ index: 0, content: '', toolCalls: [], status: 'tool_running' });
+                  }
+                  const iter = currentSubIter()!;
+                  iter.status = 'tool_running';
+                  iter.toolCalls.push({
+                    id: (data?.sub_run_id as string) ?? `sub-tool-${Date.now()}`,
+                    name: (parsed.name as string) ?? 'unknown',
+                    args: (data?.input as Record<string, unknown>) ?? null,
+                    output: null,
+                    status: 'running',
+                  });
+                  flushIterationsToMessage();
+                  break;
+                }
+
+                case 'on_subagent_tool_end': {
+                  const data = parsed.data as Record<string, unknown>;
+                  const subRunId = data?.sub_run_id as string;
+                  const output = data?.output;
+                  const outputStr = typeof output === 'string' ? output : (output != null ? JSON.stringify(output) : null);
+                  const iter = currentSubIter();
+                  if (iter) {
+                    const tc = iter.toolCalls.find((t) => t.id === subRunId);
+                    if (tc) {
+                      tc.status = 'done';
+                      tc.output = outputStr;
+                    }
+                    if (iter.toolCalls.every((t) => t.status !== 'running')) {
+                      iter.status = 'done';
+                    }
+                  }
+                  flushIterationsToMessage();
+                  break;
+                }
+
+                case 'on_subagent_done': {
+                  const last = currentSubIter();
+                  if (last && last.status !== 'done') last.status = 'done';
+                  parentTc.subStatus = 'done';
+                  parentTc.status = 'done';
+                  // Set output to the final sub-iteration content
+                  if (last && last.content) {
+                    parentTc.output = last.content;
+                  }
+                  flushIterationsToMessage();
+                  break;
+                }
+
+                case 'on_subagent_error': {
+                  parentTc.subStatus = 'error';
+                  parentTc.status = 'error';
+                  flushIterationsToMessage();
+                  break;
+                }
+              }
+            }
+          }
+
           // Handle specific event types for chat assembly
           switch (sse.event) {
             case 'on_chat_model_stream': {

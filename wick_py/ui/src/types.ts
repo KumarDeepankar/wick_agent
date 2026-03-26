@@ -26,6 +26,10 @@ export interface ToolCallInfo {
   args: Record<string, unknown> | null;    // from on_tool_start data.input
   output: string | null;                   // from on_tool_end data.output
   status: 'running' | 'done' | 'error';
+  // Sub-agent streaming state (only for delegate_to_agent tool calls)
+  subAgentName?: string;
+  subIterations?: Iteration[];
+  subStatus?: 'running' | 'done' | 'error';
 }
 
 export interface Iteration {

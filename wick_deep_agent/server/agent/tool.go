@@ -2,6 +2,36 @@ package agent
 
 import "context"
 
+// --- Tool call ID context helpers ---
+
+type toolCallIDKey struct{}
+
+// WithToolCallID stores the current tool call ID in the context.
+func WithToolCallID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, toolCallIDKey{}, id)
+}
+
+// ToolCallIDFromContext extracts the tool call ID, or empty string.
+func ToolCallIDFromContext(ctx context.Context) string {
+	s, _ := ctx.Value(toolCallIDKey{}).(string)
+	return s
+}
+
+// --- Parent event channel context helpers ---
+
+type eventChKey struct{}
+
+// WithEventCh stores the parent event channel in the context.
+func WithEventCh(ctx context.Context, ch chan<- StreamEvent) context.Context {
+	return context.WithValue(ctx, eventChKey{}, ch)
+}
+
+// EventChFromContext extracts the parent event channel, or nil.
+func EventChFromContext(ctx context.Context) chan<- StreamEvent {
+	ch, _ := ctx.Value(eventChKey{}).(chan<- StreamEvent)
+	return ch
+}
+
 // Tool defines the interface for agent tools.
 type Tool interface {
 	Name() string
