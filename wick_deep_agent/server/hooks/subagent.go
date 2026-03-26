@@ -18,6 +18,8 @@ type ToolLookup func(agentID string) []agent.Tool
 // SubAgentHook registers a delegate_to_agent tool that invokes configured
 // sub-agents as tools. Each sub-agent runs its own LLM+tool loop with an
 // isolated thread and returns the result to the parent agent.
+// When the parent event channel is available in context, sub-agent streaming
+// events are forwarded to the parent SSE connection for real-time UI rendering.
 type SubAgentHook struct {
 	agent.BaseHook
 	subagents   []agent.SubAgentCfg
@@ -100,14 +102,19 @@ func (h *SubAgentHook) BeforeAgent(ctx context.Context, state *agent.AgentState)
 				return fmt.Sprintf("Error: unknown sub-agent %q", agentName), nil
 			}
 
-			return runSubAgent(ctx, sa, task, parentModel, b, state.ThreadID, toolLookup)
+			// Resolve the parent tool call ID and event channel from context
+			// so the UI can associate sub-agent events with the delegate_to_agent card.
+			parentToolID := agent.ToolCallIDFromContext(ctx)
+			parentEventCh := agent.EventChFromContext(ctx)
+
+			return runSubAgent(ctx, sa, task, parentModel, b, state.ThreadID, toolLookup, parentEventCh, parentToolID)
 		},
 	})
 
 	return nil
 }
 
-// runSubAgent builds and executes a sub-agent synchronously.
+// runSubAgent builds and executes a sub-agent, streaming events when parentEventCh is set.
 func runSubAgent(
 	ctx context.Context,
 	sa agent.SubAgentCfg,
@@ -116,6 +123,8 @@ func runSubAgent(
 	b backend.Backend,
 	parentThreadID string,
 	toolLookup ToolLookup,
+	parentEventCh chan<- agent.StreamEvent,
+	parentToolID string,
 ) (string, error) {
 	// Resolve model — inherit from parent if not specified
 	modelSpec := any(sa.Model)
@@ -157,18 +166,140 @@ func runSubAgent(
 
 	log.Printf("[subagent] delegating to %q (thread: %s, tools: %d)", sa.Name, subThreadID, len(tools))
 
+	// Use streaming path when parent event channel is available
+	if parentEventCh != nil {
+		return runSubAgentStreaming(ctx, subAgent, sa.Name, task, subThreadID, parentEventCh, parentToolID)
+	}
+
+	// Fallback: synchronous execution (no streaming)
 	result, err := subAgent.Run(ctx, agent.Messages{}.Human(task), subThreadID)
 	if err != nil {
 		return fmt.Sprintf("Error: sub-agent %q failed: %v", sa.Name, err), nil
 	}
 
-	// Extract the final assistant message
-	for i := len(result.Messages) - 1; i >= 0; i-- {
-		if result.Messages[i].Role == "assistant" && result.Messages[i].Content != "" {
-			log.Printf("[subagent] %q completed (%d messages)", sa.Name, len(result.Messages))
-			return result.Messages[i].Content, nil
+	return extractFinalResponse(result, sa.Name)
+}
+
+// runSubAgentStreaming runs the sub-agent with RunStream and forwards events to the parent.
+func runSubAgentStreaming(
+	ctx context.Context,
+	subAgent *agent.Agent,
+	agentName string,
+	task string,
+	subThreadID string,
+	parentEventCh chan<- agent.StreamEvent,
+	parentToolID string,
+) (string, error) {
+	subCh := make(chan agent.StreamEvent, 64)
+	go subAgent.RunStream(ctx, agent.Messages{}.Human(task), subThreadID, subCh)
+
+	var finalContent string
+
+	for evt := range subCh {
+		// Map sub-agent events to on_subagent_* events with parent context
+		switch evt.Event {
+		case "on_chat_model_stream":
+			parentEventCh <- agent.StreamEvent{
+				Event: "on_subagent_stream",
+				Name:  agentName,
+				RunID: parentToolID,
+				Data:  evt.Data,
+			}
+			// Accumulate content for the final return value
+			if data, ok := evt.Data.(map[string]any); ok {
+				if chunk, ok := data["chunk"].(map[string]any); ok {
+					if content, ok := chunk["content"].(string); ok {
+						finalContent += content
+					}
+				}
+			}
+
+		case "on_tool_start":
+			parentEventCh <- agent.StreamEvent{
+				Event: "on_subagent_tool_start",
+				Name:  evt.Name,
+				RunID: parentToolID,
+				Data: map[string]any{
+					"agent":        agentName,
+					"sub_run_id":   evt.RunID,
+					"input":        extractInput(evt.Data),
+				},
+			}
+
+		case "on_tool_end":
+			parentEventCh <- agent.StreamEvent{
+				Event: "on_subagent_tool_end",
+				Name:  evt.Name,
+				RunID: parentToolID,
+				Data: map[string]any{
+					"agent":      agentName,
+					"sub_run_id": evt.RunID,
+					"output":     extractOutput(evt.Data),
+				},
+			}
+
+		case "on_chat_model_start":
+			parentEventCh <- agent.StreamEvent{
+				Event: "on_subagent_model_start",
+				Name:  agentName,
+				RunID: parentToolID,
+			}
+
+		case "on_chat_model_end":
+			parentEventCh <- agent.StreamEvent{
+				Event: "on_subagent_model_end",
+				Name:  agentName,
+				RunID: parentToolID,
+			}
+
+		case "done":
+			parentEventCh <- agent.StreamEvent{
+				Event: "on_subagent_done",
+				Name:  agentName,
+				RunID: parentToolID,
+			}
+
+		case "error":
+			parentEventCh <- agent.StreamEvent{
+				Event: "on_subagent_error",
+				Name:  agentName,
+				RunID: parentToolID,
+				Data:  evt.Data,
+			}
 		}
 	}
 
-	return fmt.Sprintf("Sub-agent %q completed but produced no response.", sa.Name), nil
+	log.Printf("[subagent] %q completed (streaming)", agentName)
+
+	if finalContent != "" {
+		return finalContent, nil
+	}
+	return fmt.Sprintf("Sub-agent %q completed but produced no response.", agentName), nil
+}
+
+// extractFinalResponse extracts the last assistant message from an agent result.
+func extractFinalResponse(result *agent.AgentState, agentName string) (string, error) {
+	for i := len(result.Messages) - 1; i >= 0; i-- {
+		if result.Messages[i].Role == "assistant" && result.Messages[i].Content != "" {
+			log.Printf("[subagent] %q completed (%d messages)", agentName, len(result.Messages))
+			return result.Messages[i].Content, nil
+		}
+	}
+	return fmt.Sprintf("Sub-agent %q completed but produced no response.", agentName), nil
+}
+
+// extractInput extracts the "input" field from event data.
+func extractInput(data any) any {
+	if m, ok := data.(map[string]any); ok {
+		return m["input"]
+	}
+	return nil
+}
+
+// extractOutput extracts the "output" field from event data.
+func extractOutput(data any) any {
+	if m, ok := data.(map[string]any); ok {
+		return m["output"]
+	}
+	return nil
 }

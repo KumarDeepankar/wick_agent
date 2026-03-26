@@ -57,26 +57,82 @@ function formatArgs(args: Record<string, unknown> | null): string {
   return str.length > 120 ? str.slice(0, 120) + '\u2026' : str;
 }
 
-function ToolCallCard({ tool }: { tool: ToolCallInfo }) {
-  const [expanded, setExpanded] = useState(false);
-  const isRunning = tool.status === 'running';
-  const canExpand = !isRunning && !!tool.output;
+function SubAgentIterations({ tool }: { tool: ToolCallInfo }) {
+  const subIters = tool.subIterations ?? [];
+  if (!subIters.length && tool.subStatus === 'running') {
+    return (
+      <div className="subagent-activity">
+        <span className="subagent-spinner">
+          <span className="subagent-dot" />
+          <span className="subagent-dot" />
+          <span className="subagent-dot" />
+        </span>
+        <span className="subagent-activity-label">Starting {tool.subAgentName ?? 'sub-agent'}...</span>
+      </div>
+    );
+  }
 
   return (
-    <div className={`tool-call-card ${tool.status}`}>
-      <div className="tool-call-header" onClick={() => canExpand && setExpanded(!expanded)}>
-        <ToolIcon status={tool.status} />
+    <div className="subagent-iterations">
+      {subIters.map((iter, i) => {
+        const isFinal = i === subIters.length - 1 && !iter.toolCalls.length;
+        const isStreaming = iter.status === 'streaming' && i === subIters.length - 1;
+
+        return (
+          <div key={i} className={`subagent-iteration ${isFinal ? 'final' : 'intermediate'}`}>
+            {iter.content && !isFinal && iter.toolCalls.length > 0 ? (
+              <div className="subagent-reasoning">{iter.content}</div>
+            ) : iter.content ? (
+              <div className="subagent-text">
+                <span dangerouslySetInnerHTML={{ __html: renderMarkdown(iter.content) }} />
+                {isStreaming && <span className="streaming-cursor" />}
+              </div>
+            ) : null}
+            {iter.toolCalls.length > 0 && (
+              <div className="subagent-tools">
+                {iter.toolCalls.map((tc) => (
+                  <ToolCallCard key={tc.id} tool={tc} />
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {tool.subStatus === 'running' && (
+        <div className="subagent-activity">
+          <span className="subagent-spinner">
+            <span className="subagent-dot" />
+            <span className="subagent-dot" />
+            <span className="subagent-dot" />
+          </span>
+          <span className="subagent-activity-label">
+            {subIters[subIters.length - 1]?.status === 'tool_running' ? 'Running tools...' : 'Thinking...'}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToolCallCard({ tool }: { tool: ToolCallInfo }) {
+  const isSubAgent = tool.name === 'delegate_to_agent' && (tool.subIterations || tool.subStatus);
+  const [expanded, setExpanded] = useState(!!isSubAgent);
+  const hasContent = isSubAgent || !!tool.output;
+
+  return (
+    <div className={`tool-call-card ${tool.status} ${isSubAgent ? 'subagent-card' : ''}`}>
+      <div className="tool-call-header" onClick={() => setExpanded(!expanded)}>
+        <ToolIcon status={isSubAgent ? (tool.subStatus ?? 'running') : tool.status} />
         <span className="tool-call-name">{tool.name}</span>
         {tool.args && <span className="tool-call-args">{formatArgs(tool.args)}</span>}
-        {canExpand && (
-          <span className={`tool-call-chevron ${expanded ? 'open' : ''}`}>
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-              <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </span>
-        )}
+        <span className={`tool-call-chevron ${expanded ? 'open' : ''}`}>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </span>
       </div>
-      {expanded && tool.output && (
+      {expanded && isSubAgent && <SubAgentIterations tool={tool} />}
+      {expanded && !isSubAgent && hasContent && tool.output && (
         <pre className="tool-output-content">{tool.output}</pre>
       )}
     </div>

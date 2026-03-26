@@ -83,6 +83,7 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 	state := a.threadStore.LoadOrCreate(threadID)
 	state.Messages = append(state.Messages, messages...)
 	ctx = WithState(ctx, state)
+	ctx = WithEventCh(ctx, eventCh)
 
 	// Trace recorder (nil-safe — all checks below handle nil)
 	tr := TraceFromContext(ctx)
@@ -311,9 +312,12 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 					},
 				}
 
+				// Inject tool call ID into context so tools can identify themselves
+				toolCtx := WithToolCallID(ctx, tc.ID)
+
 				// Build tool call chain (onion ring wrapping actual execution)
 				toolCallFn := a.buildToolCallChain(toolMap)
-				wrapped, err := toolCallFn(ctx, tc)
+				wrapped, err := toolCallFn(toolCtx, tc)
 				var result ToolResult
 				if err != nil {
 					result = ToolResult{

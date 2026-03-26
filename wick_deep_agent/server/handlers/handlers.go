@@ -578,6 +578,20 @@ func (h *agentHandler) stream(w http.ResponseWriter, r *http.Request, agentID *s
 				"data":   evt.Data,
 			})
 
+		case "on_subagent_stream",
+			"on_subagent_tool_start",
+			"on_subagent_tool_end",
+			"on_subagent_model_start",
+			"on_subagent_model_end",
+			"on_subagent_done",
+			"on_subagent_error":
+			sseWriter.SendEvent(evt.Event, map[string]any{
+				"event":  evt.Event,
+				"name":   evt.Name,
+				"run_id": evt.RunID,
+				"data":   evt.Data,
+			})
+
 		case "done":
 			trace.Finish(nil)
 			h.deps.TraceStore.Put(trace)
