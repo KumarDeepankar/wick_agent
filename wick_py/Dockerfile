@@ -45,9 +45,13 @@ COPY wick_py/pyproject.toml /app/
 COPY wick_py/examples/ /app/examples/
 COPY wick_py/skills/ /app/skills/
 
-# Install Python deps
+# Copy OpenSearch CLI
+COPY opensearch_cli/ /app/opensearch_cli/
+
+# Install Python deps + OpenSearch CLI
 COPY wick_py/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt \
+    && pip install --no-cache-dir /app/opensearch_cli/
 
 # Create workspace directory
 RUN mkdir -p /workspace
@@ -58,6 +62,9 @@ ENV WICK_SERVER_BINARY=/app/bin/wick_server
 ENV WICK_SKILLS_DIR=/app/skills
 ENV WICK_GO_HOST=0.0.0.0
 ENV OLLAMA_HOST=http://host.docker.internal:11434
+ENV OPENSEARCH_URL=http://host.docker.internal:9200
+ENV OPENSEARCH_USER=
+ENV OPENSEARCH_PASSWORD=
 ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000 9100

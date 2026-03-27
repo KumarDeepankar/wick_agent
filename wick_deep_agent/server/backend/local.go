@@ -63,7 +63,7 @@ func (b *LocalBackend) ResolvePath(path string) (string, error) {
 }
 
 func (b *LocalBackend) TerminalCmd() []string {
-	return []string{"sh"}
+	return []string{"bash", "--login"}
 }
 
 // ContainerStatus returns "" — local backend has no container.

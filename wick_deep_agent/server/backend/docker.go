@@ -107,11 +107,11 @@ func (b *DockerBackend) ResolvePath(path string) (string, error) {
 }
 
 func (b *DockerBackend) TerminalCmd() []string {
-	return b.dockerCmd("exec", "-it",
+	return b.dockerCmd("exec",
 		"-e", "TERM=xterm-256color",
 		"-w", b.workdir,
 		b.containerName,
-		"sh", "-c", "exec bash --login 2>/dev/null || exec sh",
+		"bash", "--login",
 	)
 }
 
