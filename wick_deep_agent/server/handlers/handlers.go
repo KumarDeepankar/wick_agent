@@ -1174,6 +1174,7 @@ func (h *agentHandler) terminal(w http.ResponseWriter, r *http.Request, agentID 
 	defer conn.Close()
 
 	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
 	// Allocate a PTY so the shell runs interactively (prompt, line editing, etc.)
 	ptmx, err := pty.Start(cmd)
