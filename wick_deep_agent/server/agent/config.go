@@ -26,13 +26,14 @@ type SubAgentCfg struct {
 
 // BackendCfg holds backend configuration.
 type BackendCfg struct {
-	Type           string `yaml:"type" json:"type"`                       // "local", "docker", "state"
-	Workdir        string `yaml:"workdir" json:"workdir"`
-	Timeout        float64 `yaml:"timeout" json:"timeout"`
-	MaxOutputBytes int    `yaml:"max_output_bytes" json:"max_output_bytes"`
-	DockerHost     string `yaml:"docker_host" json:"docker_host"`
-	Image          string `yaml:"image" json:"image"`
-	ContainerName  string `yaml:"container_name" json:"container_name"`
+	Type               string  `yaml:"type" json:"type"` // "local", "docker", "state"
+	Workdir            string  `yaml:"workdir" json:"workdir"`
+	Timeout            float64 `yaml:"timeout" json:"timeout"`
+	MaxOutputBytes     int     `yaml:"max_output_bytes" json:"max_output_bytes"`
+	MaxToolOutputChars int     `yaml:"max_tool_output_chars" json:"max_tool_output_chars"` // 0 = default 80000; -1 = disable truncation
+	DockerHost         string  `yaml:"docker_host" json:"docker_host"`
+	Image              string  `yaml:"image" json:"image"`
+	ContainerName      string  `yaml:"container_name" json:"container_name"`
 }
 
 // SkillsCfg holds skills configuration.
@@ -65,9 +66,10 @@ type AgentInfo struct {
 	Memory          []string `json:"memory"`
 	HasResponseFmt  bool     `json:"has_response_format"`
 	CacheEnabled    bool     `json:"cache_enabled"`
-	Debug           bool     `json:"debug"`
-	ContainerStatus *string  `json:"container_status"`
-	ContainerError  *string  `json:"container_error"`
+	Debug              bool     `json:"debug"`
+	MaxToolOutputChars int      `json:"max_tool_output_chars"`
+	ContainerStatus    *string  `json:"container_status"`
+	ContainerError     *string  `json:"container_error"`
 }
 
 // ModelStr extracts a display string from the Model field (string or map).

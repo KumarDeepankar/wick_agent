@@ -18,8 +18,7 @@ import (
 // For local mode: direct Go stdlib calls via wickfs.LocalFS (zero overhead).
 // For remote mode: wickfs CLI commands via wickfs.RemoteFS (docker exec).
 //
-// Also implements large result eviction: if a tool result exceeds 80,000 chars (~20k tokens),
-// the output is truncated with a head+tail reference.
+// Tool result truncation is handled by TruncationHook (see truncation.go).
 type FilesystemHook struct {
 	agent.BaseHook
 	fs          wickfs.FileSystem
@@ -257,31 +256,9 @@ func (h *FilesystemHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 	return nil
 }
 
-// WrapToolCall implements large result eviction.
-// If a tool result exceeds 80,000 chars, truncate with head+tail.
+// WrapToolCall passes through — truncation is handled by TruncationHook.
 func (h *FilesystemHook) WrapToolCall(ctx context.Context, call agent.ToolCall, next agent.ToolCallFunc) (*agent.ToolResult, error) {
-	result, err := next(ctx, call)
-	if err != nil || result == nil {
-		return result, err
-	}
-
-	const maxChars = 80_000
-	// Excluded tools (small results that shouldn't be evicted)
-	excluded := map[string]bool{
-		"ls": true, "glob": true, "grep": true,
-		"read_file": true, "edit_file": true, "write_file": true,
-	}
-
-	if len(result.Output) > maxChars && !excluded[call.Name] {
-		head := result.Output[:2000]
-		tail := result.Output[len(result.Output)-2000:]
-		result.Output = fmt.Sprintf(
-			"%s\n\n... [Output truncated: %d chars total. Showing first and last 2000 chars] ...\n\n%s",
-			head, len(result.Output), tail,
-		)
-	}
-
-	return result, nil
+	return next(ctx, call)
 }
 
 // ModifyRequest is a no-op for FilesystemHook.

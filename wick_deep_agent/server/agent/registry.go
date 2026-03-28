@@ -293,6 +293,7 @@ func instanceToInfo(inst *Instance) AgentInfo {
 		if cfg.Backend.DockerHost != "" {
 			info.SandboxURL = &cfg.Backend.DockerHost
 		}
+		info.MaxToolOutputChars = cfg.Backend.MaxToolOutputChars
 	}
 	if cfg.Skills != nil {
 		info.Skills = cfg.Skills.Paths
@@ -330,6 +331,7 @@ func templateToInfo(tmpl *Template) AgentInfo {
 		if cfg.Backend.DockerHost != "" {
 			info.SandboxURL = &cfg.Backend.DockerHost
 		}
+		info.MaxToolOutputChars = cfg.Backend.MaxToolOutputChars
 	}
 	if cfg.Skills != nil {
 		info.Skills = cfg.Skills.Paths

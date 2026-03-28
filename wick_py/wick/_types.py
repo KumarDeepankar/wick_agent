@@ -97,6 +97,7 @@ class BackendConfig(BaseModel):
     workdir: str = "/workspace"
     image: str | None = None
     container_name: str | None = None
+    max_tool_output_chars: int | None = None  # 0/None = default 80000; -1 = disable truncation
 
 
 class SkillsConfig(BaseModel):

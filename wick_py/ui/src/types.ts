@@ -16,6 +16,7 @@ export interface AgentInfo {
   has_response_format: boolean;
   cache_enabled: boolean;
   debug: boolean;
+  max_tool_output_chars: number;
   container_status: 'idle' | 'launching' | 'launched' | 'error' | null;
   container_error: string | null;
 }

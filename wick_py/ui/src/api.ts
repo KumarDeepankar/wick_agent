@@ -143,6 +143,19 @@ export async function updateAgentBackend(
   return res.json();
 }
 
+export async function updateAgentSettings(
+  agentId: string,
+  payload: { max_tool_output_chars?: number },
+): Promise<AgentInfo> {
+  const res = await authFetch(`/agents/${agentId}/settings`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`Failed to update settings: ${res.status}`);
+  return res.json();
+}
+
 export async function controlContainer(
   agentId: string,
   action: 'stop' | 'restart',
