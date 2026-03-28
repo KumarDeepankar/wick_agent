@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import type { AgentInfo } from '../types';
-import { fetchAgents, fetchTools, updateAgentBackend, controlContainer, getToken, fetchHooks, updateAgentHooks, fetchAgentSkills, toggleAgentSkills, updateSkillPaths, uploadSkillZip } from '../api';
+import { fetchAgents, fetchTools, updateAgentBackend, updateAgentSettings, controlContainer, getToken, fetchHooks, updateAgentHooks, fetchAgentSkills, toggleAgentSkills, updateSkillPaths, uploadSkillZip } from '../api';
 import type { HookInfo, ToolInfo, AgentSkillEntry } from '../api';
 
 type Theme = 'light' | 'dark';
@@ -383,6 +383,41 @@ export function SettingsPanel({
     [currentAgent, disabled, loadSkills],
   );
 
+  // ── Tool output truncation ───────────────────────────────────────────
+  const [truncationInput, setTruncationInput] = useState('');
+
+  // Sync from server state
+  useEffect(() => {
+    if (!currentAgent) return;
+    const v = currentAgent.max_tool_output_chars;
+    setTruncationInput(v === 0 ? '' : String(v));
+  }, [currentAgent?.max_tool_output_chars]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleSaveTruncation = useCallback(async () => {
+    if (!currentAgent || disabled) return;
+    const raw = truncationInput.trim();
+    // empty → 0 (default 80k)
+    const value = raw === '' ? 0 : parseInt(raw, 10);
+    if (isNaN(value)) return;
+    // Skip if unchanged
+    if (value === currentAgent.max_tool_output_chars) return;
+    setUpdating(true);
+    try {
+      const result = await updateAgentSettings(currentAgent.agent_id, {
+        max_tool_output_chars: value,
+      });
+      setAgents((prev) =>
+        prev.map((a) => (a.agent_id === currentAgent.agent_id ? { ...a, ...result } : a)),
+      );
+    } catch {
+      setTruncationInput(
+        currentAgent.max_tool_output_chars === 0 ? '' : String(currentAgent.max_tool_output_chars),
+      );
+    } finally {
+      setUpdating(false);
+    }
+  }, [currentAgent, truncationInput, disabled]);
+
   if (!isOpen) return null;
 
   return (
@@ -548,6 +583,27 @@ export function SettingsPanel({
               )}
             </section>
           )}
+
+          {/* Tool Output Truncation */}
+          <section className="settings-section">
+            <label className="settings-label">Tool Output Truncation</label>
+            <span className="settings-hint">
+              Max characters for non-filesystem tool results. Empty = default (80,000). Set to -1 to disable.
+            </span>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '6px' }}>
+              <input
+                className="settings-filter"
+                type="number"
+                placeholder="80000"
+                value={truncationInput}
+                onChange={(e) => setTruncationInput(e.target.value)}
+                onBlur={handleSaveTruncation}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleSaveTruncation(); }}
+                disabled={disabled || updating}
+                style={{ flex: 1, margin: 0 }}
+              />
+            </div>
+          </section>
 
           {/* Tools (read-only — controlled via hooks) */}
           <section className="settings-section">

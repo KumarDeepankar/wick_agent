@@ -177,6 +177,8 @@ func RegisterRoutes(mux *http.ServeMux, deps *Deps) {
 			h.patchHooks(w, r, agentID)
 		case "backend":
 			h.patchBackend(w, r, agentID)
+		case "settings":
+			h.patchSettings(w, r, agentID)
 		case "container":
 			h.containerControl(w, r, agentID)
 		case "terminal":
@@ -1070,6 +1072,49 @@ func (h *agentHandler) patchBackend(w http.ResponseWriter, r *http.Request, agen
 		"container_error":  nil,
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// --- Agent Settings (lightweight config updates, no backend rebuild) ---
+
+func (h *agentHandler) patchSettings(w http.ResponseWriter, r *http.Request, agentID string) {
+	if r.Method != http.MethodPatch {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !h.requireAdmin(w, r) {
+		return
+	}
+
+	var body struct {
+		MaxToolOutputChars *int `json:"max_tool_output_chars"` // 0 = default 80000; -1 = disable
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	username := h.resolveUsername(r)
+	inst, err := h.deps.Registry.GetOrClone(agentID, username)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	if body.MaxToolOutputChars != nil {
+		if inst.Config.Backend == nil {
+			inst.Config.Backend = &agent.BackendCfg{}
+		}
+		inst.Config.Backend.MaxToolOutputChars = *body.MaxToolOutputChars
+
+		// Eager rebuild so the new TruncationHook threshold takes effect immediately
+		if _, buildErr := h.buildAgent(inst, username); buildErr != nil {
+			writeJSONError(w, http.StatusInternalServerError, buildErr.Error())
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, buildAgentInfo(inst, h.deps.Backends))
 }
 
 // --- Container Control (stop / restart) ---
@@ -2095,6 +2140,12 @@ func applyHookOverrides(
 // createHookByName creates a hook instance by its name.
 func createHookByName(name string, b backend.Backend, llmClient llm.Client, cfg *agent.AgentConfig, hookConfig map[string]any) agent.Hook {
 	switch name {
+	case "truncation":
+		var maxChars int
+		if cfg.Backend != nil {
+			maxChars = cfg.Backend.MaxToolOutputChars
+		}
+		return hooks.NewTruncationHook(maxChars)
 	case "tracing":
 		return tracing.NewTracingHook()
 	case "todolist":
@@ -2239,7 +2290,14 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) (*agent
 	// Build hooks
 	var agentHooks []agent.Hook
 
-	// Tracing hook (outermost — index 0 becomes outermost wrapper)
+	// Truncation hook (outermost — index 0 becomes outermost wrapper for tool calls)
+	var maxToolOutputChars int
+	if cfg.Backend != nil {
+		maxToolOutputChars = cfg.Backend.MaxToolOutputChars
+	}
+	agentHooks = append(agentHooks, hooks.NewTruncationHook(maxToolOutputChars))
+
+	// Tracing hook
 	agentHooks = append(agentHooks, tracing.NewTracingHook())
 
 	// TodoList hook (always active)
@@ -2334,6 +2392,7 @@ func buildAgentInfo(inst *agent.Instance, backends *BackendStore) agent.AgentInf
 		if cfg.Backend.DockerHost != "" {
 			info.SandboxURL = &cfg.Backend.DockerHost
 		}
+		info.MaxToolOutputChars = cfg.Backend.MaxToolOutputChars
 	}
 	if cfg.Skills != nil {
 		info.Skills = cfg.Skills.Paths
