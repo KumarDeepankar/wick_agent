@@ -1595,7 +1595,7 @@ a {
 .chat-messages .chat-container {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 16px;
   padding-top: 24px;
   padding-bottom: 24px;
   min-height: 100%;
@@ -1970,10 +1970,10 @@ a {
   justify-content: flex-end;
 }
 .message-row.assistant + .message-row.user {
-  margin-top: 8px;
+  margin-top: 12px;
 }
 .message-row.user + .message-row.assistant {
-  margin-top: 4px;
+  margin-top: 8px;
 }
 .message-row.assistant {
   justify-content: flex-start;
@@ -4148,6 +4148,9 @@ a {
   padding: 0;
   animation: iter-in 0.2s ease both;
 }
+.iteration-group + .iteration-group {
+  margin-top: 12px;
+}
 @keyframes iter-in {
   from { opacity: 0; transform: translateY(3px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -4158,7 +4161,7 @@ a {
 }
 
 .iteration-group.final {
-  /* Final iteration — renders like a plain answer */
+  margin-top: 16px;
 }
 
 .iteration-text {
@@ -4184,8 +4187,8 @@ a {
 .tool-calls-flow {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin: 6px 0;
+  gap: 6px;
+  margin: 8px 0 4px;
 }
 
 /* Pill-style tool call */
