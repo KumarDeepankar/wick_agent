@@ -358,6 +358,7 @@ a {
   border: none;
   color: var(--text-primary);
   font-size: var(--text-base);
+  display: none;
   font-weight: 500;
   font-family: var(--font-sans);
   cursor: pointer;
@@ -371,6 +372,7 @@ a {
   pointer-events: none;
 }
 .app-sidebar.expanded .sidebar-agent-select {
+  display: block;
   opacity: 1;
   width: auto;
   pointer-events: auto;
