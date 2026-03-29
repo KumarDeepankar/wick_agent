@@ -242,12 +242,12 @@ a {
   width: 100%;
   margin-left: 0;
   margin-right: 0;
-  padding: 8px 6px;
+  padding: 8px 10px;
   height: auto;
 }
 .sidebar-logo {
-  width: 24px;
-  height: 24px;
+  width: 18px;
+  height: 18px;
   object-fit: contain;
   flex-shrink: 0;
 }
