@@ -53,8 +53,7 @@ function ToolIcon({ status }: { status: string }) {
 
 function formatArgs(args: Record<string, unknown> | null): string {
   if (!args) return '';
-  const str = JSON.stringify(args);
-  return str.length > 120 ? str.slice(0, 120) + '\u2026' : str;
+  return JSON.stringify(args);
 }
 
 function SubAgentIterations({ tool }: { tool: ToolCallInfo }) {
@@ -117,22 +116,28 @@ function SubAgentIterations({ tool }: { tool: ToolCallInfo }) {
 function ToolCallCard({ tool }: { tool: ToolCallInfo }) {
   const isSubAgent = tool.name === 'delegate_to_agent' && (tool.subIterations || tool.subStatus);
   const [expanded, setExpanded] = useState(!!isSubAgent);
-  const hasContent = isSubAgent || !!tool.output;
+  const hasOutput = !!tool.output;
 
   return (
-    <div className={`tool-call-card ${tool.status} ${isSubAgent ? 'subagent-card' : ''}`}>
-      <div className="tool-call-header" onClick={() => setExpanded(!expanded)}>
+    <div className={`tool-call-pill ${tool.status} ${isSubAgent ? 'subagent-card' : ''}`}>
+      <div
+        className="tool-call-header"
+        onClick={() => { if (hasOutput || isSubAgent) setExpanded(!expanded); }}
+        role={hasOutput ? 'button' : undefined}
+      >
         <ToolIcon status={isSubAgent ? (tool.subStatus ?? 'running') : tool.status} />
         <span className="tool-call-name">{tool.name}</span>
         {tool.args && <span className="tool-call-args">{formatArgs(tool.args)}</span>}
-        <span className={`tool-call-chevron ${expanded ? 'open' : ''}`}>
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </span>
+        {hasOutput && (
+          <span className={`tool-call-chevron ${expanded ? 'open' : ''}`}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </span>
+        )}
       </div>
       {expanded && isSubAgent && <SubAgentIterations tool={tool} />}
-      {expanded && !isSubAgent && hasContent && tool.output && (
+      {expanded && !isSubAgent && hasOutput && (
         <pre className="tool-output-content">{tool.output}</pre>
       )}
     </div>
@@ -163,52 +168,30 @@ function AgentActivityIndicator({ iteration }: { iteration: Iteration | undefine
   );
 }
 
-function IterationGroup({ iteration, isFinal, isLast, isStreaming }: {
+function IterationGroup({ iteration, isFinal, isStreaming }: {
   iteration: Iteration;
   isFinal: boolean;
-  isLast: boolean;
   isStreaming: boolean;
 }) {
-  const [reasoningExpanded, setReasoningExpanded] = useState(false);
   const html = useMemo(() => {
     if (!iteration.content) return '';
     return renderMarkdown(iteration.content);
   }, [iteration.content]);
 
   const hasTools = iteration.toolCalls.length > 0;
-  const isIntermediate = !isFinal;
 
   return (
-    <div className={`iteration-group ${isIntermediate ? 'intermediate' : 'final'}`}>
-      {iteration.content && isIntermediate && hasTools ? (
-        <div className="iteration-reasoning-block">
-          <button
-            className="iteration-reasoning-toggle"
-            onClick={() => setReasoningExpanded(!reasoningExpanded)}
-          >
-            <span className={`iteration-reasoning-chevron ${reasoningExpanded ? 'open' : ''}`}>
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                <path d="M4.5 3l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </span>
-            <span className="iteration-reasoning-label">Reasoning</span>
-          </button>
-          <div className={`iteration-reasoning-content ${reasoningExpanded ? 'expanded' : ''}`}>
-            <div className="iteration-text has-reasoning">
-              <span dangerouslySetInnerHTML={{ __html: html }} />
-            </div>
-          </div>
-        </div>
-      ) : iteration.content ? (
-        <div className="iteration-text">
+    <div className={`iteration-group ${isFinal ? 'final' : 'intermediate'}`}>
+      {iteration.content && (
+        <div className={`iteration-text ${!isFinal && hasTools ? 'reasoning-inline' : ''}`}>
           <span dangerouslySetInnerHTML={{ __html: html }} />
-          {isLast && isStreaming && iteration.status === 'streaming' && (
+          {isStreaming && iteration.status === 'streaming' && (
             <span className="streaming-cursor" />
           )}
         </div>
-      ) : null}
+      )}
       {hasTools && (
-        <div className="tool-cards">
+        <div className="tool-calls-flow">
           {iteration.toolCalls.map((tc) => (
             <ToolCallCard key={tc.id} tool={tc} />
           ))}
@@ -297,7 +280,6 @@ export function MessageBubble({ message, isStreaming, status }: Props) {
                     key={iter.index}
                     iteration={iter}
                     isFinal={isFinal}
-                    isLast={i === iterations.length - 1}
                     isStreaming={isActiveStream}
                   />
                 );
