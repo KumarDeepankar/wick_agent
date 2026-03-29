@@ -10,7 +10,7 @@ interface Props {
   threadId: string | null;
   onSend: (content: string) => void;
   onStop: () => void;
-  onReset: () => void;
+  onReset?: () => void;
   pendingPrompt?: string;
   onPromptConsumed?: () => void;
   onPromptClick?: (prompt: string) => void;
@@ -36,7 +36,6 @@ export function ChatPanel({
   threadId,
   onSend,
   onStop,
-  onReset,
   pendingPrompt,
   onPromptConsumed,
   onPromptClick,
@@ -44,7 +43,6 @@ export function ChatPanel({
   const [input, setInput] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
   const [errorDismissed, setErrorDismissed] = useState(false);
-  const [confirmingReset, setConfirmingReset] = useState(false);
   const [threadCopied, setThreadCopied] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -101,16 +99,6 @@ export function ChatPanel({
     }
   };
 
-  const handleReset = useCallback(() => {
-    if (messages.length > 0 && !confirmingReset) {
-      setConfirmingReset(true);
-      return;
-    }
-    setConfirmingReset(false);
-    onReset();
-  }, [messages.length, onReset, confirmingReset]);
-
-  const cancelReset = useCallback(() => setConfirmingReset(false), []);
 
   const handleCopyThreadId = useCallback(() => {
     if (!threadId) return;
@@ -189,17 +177,6 @@ export function ChatPanel({
                 aria-label="Copy thread ID"
               >
                 {threadCopied ? 'Copied!' : `Thread: ${threadId.slice(0, 8)}...`}
-              </button>
-            )}
-            {confirmingReset ? (
-              <span className="reset-confirm">
-                <span className="reset-confirm-text">Discard?</span>
-                <button className="btn-reset-yes" onClick={handleReset}>Yes</button>
-                <button className="btn-reset-no" onClick={cancelReset}>No</button>
-              </span>
-            ) : (
-              <button className="btn-reset" onClick={handleReset} disabled={isActive} aria-label="Start new thread">
-                New Thread
               </button>
             )}
           </div>
