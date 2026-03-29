@@ -157,6 +157,34 @@ body,
   scrollbar-color: var(--border) transparent;
 }
 
+/* ── Global Micro-interactions ── */
+
+/* Press feedback for all clickable elements */
+button:active:not(:disabled),
+[role="button"]:active {
+  transform: scale(0.97);
+}
+
+/* Smooth focus ring for keyboard navigation */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Disabled state — explicit color, not just opacity */
+button:disabled,
+select:disabled,
+input:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* Links — underline on hover */
+a {
+  transition: color var(--transition);
+}
+
 /* ── App Layout ── */
 .app {
   display: flex;
@@ -288,6 +316,9 @@ body,
 .sidebar-btn:hover {
   background: var(--sidebar-hover);
   color: var(--text-primary);
+}
+.sidebar-btn:active {
+  transform: scale(0.93);
 }
 .sidebar-btn.active {
   background: var(--accent-soft);
@@ -1770,7 +1801,7 @@ body,
 @keyframes msg-appear {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(4px);
   }
   to {
     opacity: 1;
@@ -1954,17 +1985,19 @@ body,
 .thinking-skeleton {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  min-width: 180px;
+  gap: 12px;
+  min-width: 200px;
+  padding: 4px 0;
 }
 .thinking-skeleton-label {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: var(--text-base);
+  gap: 10px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-muted);
-  letter-spacing: 0.3px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
 }
 .thinking-skeleton-dot {
   width: 6px;
@@ -1972,10 +2005,11 @@ body,
   border-radius: 50%;
   background: var(--accent);
   animation: skeleton-dot-pulse 1.4s ease-in-out infinite;
+  box-shadow: 0 0 8px var(--accent-soft);
 }
 @keyframes skeleton-dot-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.3; transform: scale(0.8); }
+  0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 8px var(--accent-soft); }
+  50% { opacity: 0.3; transform: scale(0.6); box-shadow: none; }
 }
 .thinking-skeleton-lines {
   display: flex;
@@ -1983,12 +2017,15 @@ body,
   gap: 8px;
 }
 .thinking-skeleton-line {
-  height: 10px;
-  border-radius: 5px;
-  background: var(--bg-hover);
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
   position: relative;
   overflow: hidden;
 }
+.thinking-skeleton-line:nth-child(1) { width: 85%; }
+.thinking-skeleton-line:nth-child(2) { width: 65%; animation-delay: 0.15s; }
+.thinking-skeleton-line:nth-child(3) { width: 45%; animation-delay: 0.3s; }
 .thinking-skeleton-line::after {
   content: '';
   position: absolute;
@@ -1996,10 +2033,10 @@ body,
   background: linear-gradient(
     90deg,
     transparent,
-    var(--border) 50%,
+    var(--bg-hover) 50%,
     transparent
   );
-  animation: skeleton-shimmer 1.6s ease-in-out infinite;
+  animation: skeleton-shimmer 1.8s ease-in-out infinite;
 }
 @keyframes skeleton-shimmer {
   0% { transform: translateX(-100%); }
@@ -2009,18 +2046,18 @@ body,
 /* ── Streaming cursor ── */
 .streaming-cursor {
   display: inline-block;
-  width: 2px;
-  height: 1em;
+  width: 7px;
+  height: 7px;
   background: var(--accent);
-  margin-left: 4px;
-  vertical-align: text-bottom;
-  border-radius: 1px;
-  animation: cursor-blink 1s steps(2) infinite;
+  margin-left: 6px;
+  vertical-align: middle;
+  border-radius: 50%;
+  animation: cursor-pulse 1.2s ease-in-out infinite;
 }
 
-@keyframes cursor-blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
+@keyframes cursor-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.3; transform: scale(0.7); }
 }
 
 /* ── Markdown tables inside messages ── */
@@ -4112,8 +4149,8 @@ body,
   animation: iter-in 0.2s ease both;
 }
 @keyframes iter-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 .iteration-group.intermediate {
@@ -4163,7 +4200,12 @@ body,
 }
 
 .tool-call-pill:hover {
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.07);
+  background: var(--bg-tertiary);
+}
+.tool-call-pill:active {
+  transform: scale(0.99);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
 .tool-call-pill.running {
@@ -4201,8 +4243,9 @@ body,
 }
 
 @keyframes status-appear {
-  from { opacity: 0; transform: scale(0.6); }
-  to { opacity: 1; transform: scale(1); }
+  0% { opacity: 0; transform: scale(0.4); }
+  60% { opacity: 1; transform: scale(1.15); }
+  100% { opacity: 1; transform: scale(1); }
 }
 
 .tool-status-icon.error {
@@ -4273,7 +4316,7 @@ body,
   border-radius: 50%;
   border: 2px solid var(--border-light);
   border-top-color: var(--accent);
-  animation: tool-spin 0.7s linear infinite;
+  animation: tool-spin 0.8s cubic-bezier(0.5, 0, 0.5, 1) infinite;
 }
 
 .tool-spinner::after {
@@ -4282,6 +4325,11 @@ body,
 
 @keyframes tool-spin {
   to { transform: rotate(360deg); }
+}
+
+/* Glow hint while tool is running */
+.tool-call-pill.running .tool-spinner::before {
+  box-shadow: 0 0 6px var(--accent-soft);
 }
 
 /* ── Tool Output (collapsed by default, expanded on click) ── */
