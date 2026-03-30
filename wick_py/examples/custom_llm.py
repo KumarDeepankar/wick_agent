@@ -68,7 +68,12 @@ report_agent = Agent(
     "The task message contains the source directory path and focus area. "
     "Read the artifacts, extract real data, and write a <!-- slides --> markdown file "
     "with charts (using the chart DSL) and detailed analysis. "
-    "Never fabricate numbers — every data point must come from the artifacts.",
+    "Never fabricate numbers — every data point must come from the artifacts. "
+    "Work efficiently: read all needed files, then generate the complete report in a "
+    "single write_file call. After writing, review the report against your planned "
+    "tasks — if any tasks are not covered, rewrite the report to address them. "
+    "Only mark tasks as done using write_todos once you are satisfied the report "
+    "covers all planned items.",
     builtin_tools=["read_file", "write_file", "ls", "glob"],
 )
 
