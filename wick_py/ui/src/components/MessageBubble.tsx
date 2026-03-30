@@ -53,7 +53,12 @@ function ToolIcon({ status }: { status: string }) {
 
 function formatArgs(args: Record<string, unknown> | null): string {
   if (!args) return '';
-  return JSON.stringify(args);
+  const filtered: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value === 'string' && value.length > 200) continue;
+    filtered[key] = value;
+  }
+  return JSON.stringify(filtered);
 }
 
 function SubAgentIterations({ tool }: { tool: ToolCallInfo }) {

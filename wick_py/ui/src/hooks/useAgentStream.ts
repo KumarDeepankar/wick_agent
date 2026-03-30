@@ -395,24 +395,6 @@ export function useAgentStream() {
               }
             }
 
-            // Detect execute tool output that looks like a document
-            if (toolName === 'execute') {
-              const output = (parsed.data as Record<string, unknown>)?.output;
-              const outputStr = typeof output === 'string' ? output : '';
-              if (outputStr.length > 200 && (outputStr.includes('# ') || outputStr.includes('| '))) {
-                const artifact: CanvasArtifact = {
-                  id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                  filePath: '/output/result.md',
-                  fileName: 'Result',
-                  contentType: 'document',
-                  content: outputStr,
-                  extension: '.md',
-                  timestamp: Date.now(),
-                  isBinary: false,
-                };
-                setCanvasArtifacts((prev) => [...prev, artifact]);
-              }
-            }
           }
 
           // --- Sub-agent streaming events ---
