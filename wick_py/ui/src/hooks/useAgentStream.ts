@@ -472,6 +472,66 @@ export function useAgentStream() {
                     status: 'running',
                   });
                   flushIterationsToMessage();
+
+                  // Canvas artifact creation for sub-agent file tools
+                  const subToolName = parsed.name as string;
+                  const subInput = data?.input as Record<string, unknown> | undefined;
+                  const subRawPath = (subInput?.file_path ?? subInput?.path) as string | undefined;
+
+                  if (subToolName === 'write_file' && subRawPath && subInput?.content) {
+                    const filePath = subRawPath;
+                    const content = subInput.content as string;
+                    const fileName = extractFileName(filePath);
+                    const ext = extractExtension(filePath);
+                    let contentType = resolveContentType(ext);
+                    if (contentType === 'document' && isSlideContent(content)) {
+                      contentType = 'slides';
+                    }
+                    const artifact: CanvasArtifact = {
+                      id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                      filePath,
+                      fileName,
+                      contentType,
+                      content: isBinaryExtension(ext) ? null : content,
+                      extension: ext,
+                      timestamp: Date.now(),
+                      isBinary: isBinaryExtension(ext),
+                      language: resolveLanguage(ext),
+                      status: 'pending',
+                    };
+                    const subRunId = data?.sub_run_id as string;
+                    if (subRunId) pendingWritesRef.current.set(subRunId, filePath);
+                    setCanvasArtifacts((prev) => {
+                      const idx = prev.findIndex((a) => a.filePath === filePath);
+                      if (idx >= 0) {
+                        const updated = [...prev];
+                        updated[idx] = artifact;
+                        return updated;
+                      }
+                      const errIdx = prev.findIndex((a) => a.fileName === fileName && a.status === 'error');
+                      if (errIdx >= 0) {
+                        const updated = [...prev];
+                        updated[errIdx] = artifact;
+                        return updated;
+                      }
+                      if (turnFileNamesRef.current.has(fileName)) {
+                        const pendIdx = prev.findIndex((a) => a.fileName === fileName && a.status === 'pending');
+                        if (pendIdx >= 0) {
+                          const updated = [...prev];
+                          updated[pendIdx] = artifact;
+                          return updated;
+                        }
+                      }
+                      turnFileNamesRef.current.add(fileName);
+                      return [...prev, artifact];
+                    });
+                  }
+
+                  if ((subToolName === 'edit_file' || subToolName === 'read_file') && subRawPath) {
+                    const subRunId = data?.sub_run_id as string;
+                    if (subRunId) pendingEditsRef.current.set(subRunId, subRawPath);
+                  }
+
                   break;
                 }
 
@@ -492,6 +552,85 @@ export function useAgentStream() {
                     }
                   }
                   flushIterationsToMessage();
+
+                  // Canvas artifact updates for sub-agent file tools
+                  const subEndToolName = parsed.name as string;
+
+                  if (subEndToolName === 'write_file' && subRunId && pendingWritesRef.current.has(subRunId)) {
+                    const writePath = pendingWritesRef.current.get(subRunId)!;
+                    pendingWritesRef.current.delete(subRunId);
+                    const writeOutput = typeof output === 'string' ? output : '';
+                    const isError = writeOutput.toLowerCase().startsWith('error');
+                    setCanvasArtifacts((prev) => prev.map((a) =>
+                      a.filePath === writePath ? { ...a, status: isError ? 'error' : 'ok' } : a
+                    ));
+                  }
+
+                  if ((subEndToolName === 'edit_file' || subEndToolName === 'read_file') && subRunId && pendingEditsRef.current.has(subRunId)) {
+                    const filePath = pendingEditsRef.current.get(subRunId)!;
+                    pendingEditsRef.current.delete(subRunId);
+                    const ext = extractExtension(filePath);
+
+                    if (subEndToolName === 'read_file') {
+                      const content = typeof output === 'string' ? output : '';
+                      if (content) {
+                        let readContentType = resolveContentType(ext);
+                        if (readContentType === 'document' && isSlideContent(content)) {
+                          readContentType = 'slides';
+                        }
+                        const artifact: CanvasArtifact = {
+                          id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                          filePath,
+                          fileName: extractFileName(filePath),
+                          contentType: readContentType,
+                          content,
+                          extension: ext,
+                          timestamp: Date.now(),
+                          isBinary: false,
+                          language: resolveLanguage(ext),
+                        };
+                        setCanvasArtifacts((prev) => {
+                          const idx = prev.findIndex((a) => a.filePath === filePath);
+                          if (idx >= 0) {
+                            const updated = [...prev];
+                            updated[idx] = artifact;
+                            return updated;
+                          }
+                          return [...prev, artifact];
+                        });
+                      }
+                    } else {
+                      fetchFileDownload(filePath).then((blob) =>
+                        blob.text().then((content) => {
+                          let editContentType = resolveContentType(ext);
+                          if (editContentType === 'document' && isSlideContent(content)) {
+                            editContentType = 'slides';
+                          }
+                          const artifact: CanvasArtifact = {
+                            id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                            filePath,
+                            fileName: extractFileName(filePath),
+                            contentType: editContentType,
+                            content,
+                            extension: ext,
+                            timestamp: Date.now(),
+                            isBinary: false,
+                            language: resolveLanguage(ext),
+                          };
+                          setCanvasArtifacts((prev) => {
+                            const idx = prev.findIndex((a) => a.filePath === filePath);
+                            if (idx >= 0) {
+                              const updated = [...prev];
+                              updated[idx] = artifact;
+                              return updated;
+                            }
+                            return [...prev, artifact];
+                          });
+                        }),
+                      ).catch(() => {});
+                    }
+                  }
+
                   break;
                 }
 

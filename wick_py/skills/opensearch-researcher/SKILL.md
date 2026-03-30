@@ -23,6 +23,7 @@ allowed-tools:
   - execute
   - ls
   - glob
+  - delegate_to_agent
 ---
 
 # OpenSearch Researcher Skill
@@ -204,11 +205,22 @@ The comparison report MUST include:
 
 5. **Insights** — meaningful observations from the comparison
 
-### Step 5: Notify user
+### Step 5: Visual Report
+
+Delegate to report-generator to create an interactive slide-deck with
+comparison charts:
+```
+delegate_to_agent: report-generator
+task: "Generate a visual comparison report from /workspace/research/<index_name>/ comparing <group A> vs <group B>, focusing on <user's original query>"
+```
+
+### Step 6: Notify user
 
 Tell the user the comparison is complete. Include:
 - Groups compared and their document counts
-- Path to the report
+- Path to the comparison report (`comparison_report.md`)
+- Path to the visual report (`report.md`) — viewable as an interactive
+  presentation in the canvas panel with PPTX export
 - Top 3-5 most significant differences found
 
 ---
@@ -387,12 +399,26 @@ Now reduce the batch files into a single final report by reading **10 files at a
     - Statistical highlights
     - Recommendations or areas for deeper investigation
 
-18. **Notify the user** that research is complete. Include:
+### Phase 6: Visual Report
+
+18. **Delegate to report-generator** to create an interactive slide-deck report
+    with charts and visualizations from the research artifacts:
+    ```
+    delegate_to_agent: report-generator
+    task: "Generate a visual report from /workspace/research/<index_name>/ focusing on <user's original query/focus>"
+    ```
+    The report-generator reads the final report, summaries, and batch files,
+    extracts real data, and writes a `<!-- slides -->` presentation to
+    `/workspace/research/<index_name>/report.md` with interactive charts.
+
+19. **Notify the user** that research is complete. Include:
     - The index name and filters applied
     - Total documents analyzed (scoped count, not full index count)
     - Number of batches processed
     - Number of summarization rounds performed
-    - Path to the final report
+    - Path to the final report (`final_report.md`)
+    - Path to the visual report (`report.md`) — viewable as an interactive
+      presentation in the canvas panel with PPTX export
     - A brief (3-5 bullet) highlight of the most important findings
 
 ## Output Structure
@@ -410,7 +436,9 @@ Now reduce the batch files into a single final report by reading **10 files at a
     round2/
       round2_summary_001.md
       ...
-  final_report.md
+  final_report.md           # text report (Research workflow)
+  comparison_report.md      # text report (Comparison workflow)
+  report.md                 # visual slide-deck with charts (both workflows)
 ```
 
 ## Notes

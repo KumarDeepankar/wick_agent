@@ -61,6 +61,17 @@ math_agent = Agent(
     builtin_tools=["calculate"],
 )
 
+report_agent = Agent(
+    "report-generator",
+    name="Report Generator",
+    system_prompt="You generate visual slide-deck reports from research artifacts on disk. "
+    "The task message contains the source directory path and focus area. "
+    "Read the artifacts, extract real data, and write a <!-- slides --> markdown file "
+    "with charts (using the chart DSL) and detailed analysis. "
+    "Never fabricate numbers — every data point must come from the artifacts.",
+    builtin_tools=["read_file", "write_file", "ls", "glob"],
+)
+
 # ── Agent: gateway-claude (Anthropic via Python LLM proxy) ───────────────
 
 claude_agent = Agent(
@@ -68,6 +79,7 @@ claude_agent = Agent(
     name="Claude",
     system_prompt=system_prompt,
     builtin_tools=["calculate", "current_datetime"],
+    subagents=[report_agent],
     **shared_config,
 )
 
@@ -80,7 +92,7 @@ ollama_agent = Agent(
     name="Ollama Local",
     model={"provider": "ollama", "model": "llama3.1:8b", "base_url": f"{ollama_host}/v1"},
     system_prompt=system_prompt,
-    subagents=[math_agent],
+    subagents=[math_agent, report_agent],
     **shared_config,
 )
 
