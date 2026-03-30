@@ -118,12 +118,6 @@ export function getFormatLabel(contentType: CanvasContentType): string {
  *  - Content has 1+ `\n---\n` separators and starts with a `#` heading
  */
 export function isSlideContent(content: string): boolean {
-  const trimmed = content.trimStart();
-  // Explicit marker — always treat as slides regardless of separator count
-  if (trimmed.startsWith('<!-- slides -->')) return true;
-  // Heuristic — at least one separator + heading on first line
-  const separatorCount = (content.match(/\n---\n/g) || []).length;
-  if (separatorCount < 1) return false;
-  const firstLine = trimmed.split('\n')[0]?.trim() ?? '';
-  return firstLine.startsWith('#');
+  // Only treat as slides when explicitly marked — no heuristics
+  return content.trimStart().startsWith('<!-- slides -->');
 }
