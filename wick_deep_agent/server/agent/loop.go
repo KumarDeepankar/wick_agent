@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,6 +13,10 @@ import (
 
 // MaxIterations is the maximum number of LLM-tool loop iterations.
 const MaxIterations = 25
+
+// maxTodoNudges is the maximum number of times the agent will be nudged
+// to continue working when it tries to exit with pending todos.
+const maxTodoNudges = 2
 
 // Agent is a configured agent instance ready to run.
 type Agent struct {
@@ -106,6 +111,7 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 	}
 
 	// 2. LLM-Tool loop
+	todoNudges := 0
 	for iter := 0; iter < MaxIterations; iter++ {
 		select {
 		case <-ctx.Done():
@@ -241,8 +247,23 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, threadID string
 		// Add assistant message
 		state.Messages = append(state.Messages, AI(response.Content, response.ToolCalls...))
 
-		// No tool calls → done
+		// No tool calls → check for incomplete todos before exiting
 		if len(response.ToolCalls) == 0 {
+			if len(state.Todos) > 0 && todoNudges < maxTodoNudges {
+				var pending []string
+				for _, t := range state.Todos {
+					if t.Status != "done" {
+						pending = append(pending, fmt.Sprintf("- [%s] %s: %s", t.Status, t.ID, t.Title))
+					}
+				}
+				if len(pending) > 0 {
+					todoNudges++
+					nudge := fmt.Sprintf("[system] You have %d incomplete tasks:\n%s\nIf these tasks are still relevant, continue working on them. If they are no longer needed or cannot be completed, mark them as done and respond to the user.",
+						len(pending), strings.Join(pending, "\n"))
+					state.Messages = append(state.Messages, Human(nudge))
+					continue
+				}
+			}
 			break
 		}
 
