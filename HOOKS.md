@@ -37,9 +37,42 @@ The agent loop calls hooks at 5 distinct points. The execution order follows the
 | 4 | `AfterModel` | After LLM responds, before tool dispatch | `(ctx, *AgentState, []ToolCall) → (map[id]ToolResult, error)` | Inspect tool calls; return pre-built results to intercept/reject specific calls |
 | 5 | `WrapToolCall` | Around each tool execution | `(ctx, ToolCall, next) → (*ToolResult, error)` | Wrap individual tool calls (onion ring — call `next()` to proceed) |
 
-## The 7 Hooks
+## The 9 Hooks
 
-### 1. FilesystemHook (`hooks/filesystem.go`)
+### 1. TruncationHook (`hooks/truncation.go`)
+
+Truncates large tool results with head+tail formatting. Filesystem tools are excluded (their output is already bounded). Configurable via `BackendCfg.MaxToolOutputChars`.
+
+| Phase | Active | Operation |
+|-------|--------|-----------|
+| BeforeAgent | No | No-op (via BaseHook) |
+| ModifyRequest | No | No-op (via BaseHook) |
+| WrapModelCall | No | Pass-through |
+| AfterModel | No | No-op (via BaseHook) |
+| WrapToolCall | Yes | **Large result truncation** — if a non-filesystem tool result exceeds `maxChars`, truncates to first 2,000 + last 2,000 chars. Excluded tools: `ls`, `glob`, `grep`, `read_file`, `edit_file`, `write_file`. |
+
+**Configuration:**
+- `BackendCfg.MaxToolOutputChars = 0` → default (80,000 chars)
+- `BackendCfg.MaxToolOutputChars = -1` → disable truncation entirely
+- `BackendCfg.MaxToolOutputChars = N` → custom threshold
+
+**Declared active phases:** `wrap_tool_call`
+
+### 2. TracingHook (`tracing/hook.go`)
+
+Records spans for LLM calls and tool executions for observability.
+
+| Phase | Active | Operation |
+|-------|--------|-----------|
+| BeforeAgent | No | No-op (via BaseHook) |
+| ModifyRequest | No | No-op (via BaseHook) |
+| WrapModelCall | Yes | **Records LLM span** — timing, token count, response content (truncated to 500 chars for diagnostics) |
+| AfterModel | No | No-op (via BaseHook) |
+| WrapToolCall | Yes | **Records tool span** — timing, input args, output (truncated to 500 chars for diagnostics) |
+
+**Declared active phases:** `wrap_model_call`, `wrap_tool_call`
+
+### 3. FilesystemHook (`hooks/filesystem.go`)
 
 Provides 7 file-operation tools backed by `wickfs.FileSystem` (LocalFS or RemoteFS).
 
@@ -49,11 +82,11 @@ Provides 7 file-operation tools backed by `wickfs.FileSystem` (LocalFS or Remote
 | ModifyRequest | No | No-op |
 | WrapModelCall | No | Pass-through |
 | AfterModel | No | No-op (via BaseHook) |
-| WrapToolCall | Yes | **Large result eviction** — if a non-file tool result exceeds 80,000 chars, truncates to first + last 2,000 chars |
+| WrapToolCall | No | Pass-through (truncation moved to TruncationHook) |
 
-**Declared active phases:** `before_agent`, `wrap_tool_call`
+**Declared active phases:** `before_agent`
 
-### 2. SkillsHook (`hooks/skills.go`)
+### 4. SkillsHook (`hooks/skills.go`)
 
 Discovers skill definitions (SKILL.md files) and exposes them to the LLM via system prompt injection.
 
@@ -67,7 +100,7 @@ Discovers skill definitions (SKILL.md files) and exposes them to the LLM via sys
 
 **Declared active phases:** `before_agent`, `modify_request`
 
-### 3. LazySkillsHook (`hooks/lazy_skills.go`)
+### 5. LazySkillsHook (`hooks/lazy_skills.go`)
 
 Replaces `SkillsHook` as the **default** skill hook. Instead of injecting all skill prompts eagerly, it registers 3 meta-tools and only injects the active skill's prompt on demand.
 
@@ -83,7 +116,7 @@ Replaces `SkillsHook` as the **default** skill hook. Instead of injecting all sk
 
 Note: `SkillsHook` still exists for backward compatibility but `LazySkillsHook` is now the default in `buildAgent()`.
 
-### 4. MemoryHook (`hooks/memory.go`)
+### 6. MemoryHook (`hooks/memory.go`)
 
 Loads persistent memory files (AGENTS.md) and injects them into the system prompt.
 
@@ -97,7 +130,7 @@ Loads persistent memory files (AGENTS.md) and injects them into the system promp
 
 **Declared active phases:** `before_agent`, `modify_request`
 
-### 5. TodoListHook (`hooks/todolist.go`)
+### 7. TodoListHook (`hooks/todolist.go`)
 
 Tracks task progress via `write_todos` and `update_todo` tools. The most active hook — uses 3 phases.
 
@@ -111,7 +144,7 @@ Tracks task progress via `write_todos` and `update_todo` tools. The most active 
 
 **Declared active phases:** `before_agent`, `modify_request`, `after_model`
 
-### 6. SubAgentHook (`hooks/subagent.go`)
+### 8. SubAgentHook (`hooks/subagent.go`)
 
 Enables multi-agent orchestration by registering a `delegate_to_agent` tool that invokes configured sub-agents.
 
@@ -131,7 +164,7 @@ Enables multi-agent orchestration by registering a `delegate_to_agent` tool that
 - Model inherited from parent if not specified
 - No nested sub-agents (prevents infinite recursion)
 
-### 7. SummarizationHook (`hooks/summarization.go`)
+### 9. SummarizationHook (`hooks/summarization.go`)
 
 Compresses conversation context when it approaches the model's context window limit.
 
@@ -169,13 +202,13 @@ Note: All tools are always available — no phased gating or ToolFilter. The age
 
 ## Phase × Hook Matrix
 
-| Phase | Filesystem | Skills (eager) | LazySkills (default) | Memory | TodoList | SubAgent | Summarization |
-|-------|:----------:|:--------------:|:--------------------:|:------:|:--------:|:--------:|:-------------:|
-| **BeforeAgent** | Register 7 tools | Discover SKILL.md | Discover SKILL.md, register 3 meta-tools | Load AGENTS.md | Init todos, register 2 tools | Register delegate_to_agent | — |
-| **ModifyRequest** | — | Inject skills catalog | Inject active skill prompt | Inject `<agent_memory>` | Inject todo prompt + progress | — | — |
-| **WrapModelCall** | — | — | — | — | — | — | Context compression |
-| **AfterModel** | — | — | — | — | Reject conflicting todo calls | — | — |
-| **WrapToolCall** | Large result eviction | — | — | — | — | — | — |
+| Phase | Truncation | Tracing | Filesystem | Skills (eager) | LazySkills (default) | Memory | TodoList | SubAgent | Summarization |
+|-------|:----------:|:-------:|:----------:|:--------------:|:--------------------:|:------:|:--------:|:--------:|:-------------:|
+| **BeforeAgent** | — | — | Register 7 tools | Discover SKILL.md | Discover SKILL.md, register 3 meta-tools | Load AGENTS.md | Init todos, register 2 tools | Register delegate_to_agent | — |
+| **ModifyRequest** | — | — | — | Inject skills catalog | Inject active skill prompt | Inject `<agent_memory>` | Inject todo prompt + progress | — | — |
+| **WrapModelCall** | — | Record LLM span | — | — | — | — | — | — | Context compression |
+| **AfterModel** | — | — | — | — | — | — | Reject conflicting todo calls | — | — |
+| **WrapToolCall** | Truncate large output | Record tool span | — | — | — | — | — | — | — |
 
 `—` = no-op or pass-through (delegates to `BaseHook` defaults)
 
