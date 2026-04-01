@@ -1106,6 +1106,7 @@ func (h *agentHandler) patchSettings(w http.ResponseWriter, r *http.Request, age
 			inst.Config.Backend = &agent.BackendCfg{}
 		}
 		inst.Config.Backend.MaxToolOutputChars = *body.MaxToolOutputChars
+		inst.Agent = nil // invalidate so buildAgent creates a new agent with the updated config
 
 		// Eager rebuild so the new TruncationHook threshold takes effect immediately
 		if _, buildErr := h.buildAgent(inst, username); buildErr != nil {

@@ -54,11 +54,17 @@ func (h *TruncationHook) WrapToolCall(ctx context.Context, call agent.ToolCall, 
 	}
 
 	if len(result.Output) > h.maxChars && !excluded[call.Name] {
-		head := result.Output[:2000]
-		tail := result.Output[len(result.Output)-2000:]
+		// Reserve ~100 chars for the truncation notice, split the rest 50/50 between head and tail.
+		// Minimum 200 chars per side to keep output useful.
+		half := (h.maxChars - 100) / 2
+		if half < 200 {
+			half = 200
+		}
+		head := result.Output[:half]
+		tail := result.Output[len(result.Output)-half:]
 		result.Output = fmt.Sprintf(
-			"%s\n\n... [Output truncated: %d chars total. Showing first and last 2000 chars] ...\n\n%s",
-			head, len(result.Output), tail,
+			"%s\n\n... [Output truncated: %d chars total. Showing first and last %d chars] ...\n\n%s",
+			head, len(result.Output), half, tail,
 		)
 	}
 
