@@ -4444,6 +4444,69 @@ a {
   font-style: italic;
 }
 
+/* ── Parallel Fork View ── */
+.parallel-fork {
+  margin: 8px 0 4px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  animation: iter-in 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.parallel-fork.running {
+  border-color: var(--accent);
+  border-style: solid;
+}
+.parallel-fork.done {
+  border-color: var(--border-light);
+}
+.parallel-fork-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-light);
+}
+.fork-icon {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.parallel-fork.done .fork-icon {
+  color: var(--accent-green);
+}
+.parallel-fork-label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  letter-spacing: -0.01em;
+}
+.parallel-fork-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.parallel-fork-lane {
+  position: relative;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-light);
+}
+.parallel-fork-lane:last-child {
+  border-bottom: none;
+}
+.parallel-fork-lane > .tool-call-pill {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+.parallel-fork-lane > .tool-call-pill:hover {
+  background: var(--bg-secondary);
+  box-shadow: none;
+}
+.parallel-fork-lane > .tool-call-pill.subagent-card {
+  border: none;
+}
+
 /* ── Agent Activity Spinner ── */
 .agent-activity {
   display: flex;

@@ -173,6 +173,43 @@ function AgentActivityIndicator({ iteration }: { iteration: Iteration | undefine
   );
 }
 
+function ForkIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="fork-icon">
+      <path d="M8 2v4M8 6L4 10M8 6l4 4M4 10v2M12 10v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="8" cy="2" r="1" fill="currentColor" />
+      <circle cx="4" cy="13" r="1" fill="currentColor" />
+      <circle cx="12" cy="13" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+function ParallelAgentFork({ tools }: { tools: ToolCallInfo[] }) {
+  const runningCount = tools.filter(t => (t.subStatus ?? t.status) === 'running').length;
+  const doneCount = tools.filter(t => (t.subStatus ?? t.status) === 'done').length;
+  const allDone = doneCount === tools.length;
+
+  return (
+    <div className={`parallel-fork ${allDone ? 'done' : 'running'}`}>
+      <div className="parallel-fork-header">
+        <ForkIcon />
+        <span className="parallel-fork-label">
+          {allDone
+            ? `${tools.length} parallel agents completed`
+            : `${runningCount} of ${tools.length} agents running`}
+        </span>
+      </div>
+      <div className="parallel-fork-lanes">
+        {tools.map((tc) => (
+          <div key={tc.id} className="parallel-fork-lane">
+            <ToolCallCard tool={tc} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function IterationGroup({ iteration, isFinal, isStreaming }: {
   iteration: Iteration;
   isFinal: boolean;
@@ -185,6 +222,28 @@ function IterationGroup({ iteration, isFinal, isStreaming }: {
 
   const hasTools = iteration.toolCalls.length > 0;
 
+  // Separate parallel sub-agent calls from regular tool calls
+  const parallelSubAgents: ToolCallInfo[] = [];
+  const regularTools: ToolCallInfo[] = [];
+
+  if (hasTools) {
+    const subAgentCalls = iteration.toolCalls.filter(
+      tc => tc.name === 'delegate_to_agent' && (tc.subIterations || tc.subStatus)
+    );
+    if (subAgentCalls.length > 1) {
+      // Multiple sub-agents in same iteration = parallel fork
+      for (const tc of iteration.toolCalls) {
+        if (tc.name === 'delegate_to_agent' && (tc.subIterations || tc.subStatus)) {
+          parallelSubAgents.push(tc);
+        } else {
+          regularTools.push(tc);
+        }
+      }
+    } else {
+      regularTools.push(...iteration.toolCalls);
+    }
+  }
+
   return (
     <div className={`iteration-group ${isFinal ? 'final' : 'intermediate'}`}>
       {iteration.content && (
@@ -195,12 +254,15 @@ function IterationGroup({ iteration, isFinal, isStreaming }: {
           )}
         </div>
       )}
-      {hasTools && (
+      {regularTools.length > 0 && (
         <div className="tool-calls-flow">
-          {iteration.toolCalls.map((tc) => (
+          {regularTools.map((tc) => (
             <ToolCallCard key={tc.id} tool={tc} />
           ))}
         </div>
+      )}
+      {parallelSubAgents.length > 0 && (
+        <ParallelAgentFork tools={parallelSubAgents} />
       )}
     </div>
   );
