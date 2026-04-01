@@ -3,11 +3,12 @@ name: opensearch-researcher
 description: >
   Research, analyze, and compare documents stored in an OpenSearch index. Uses
   aggregations to understand data distribution, applies filters to scope queries
-  precisely, supports comparison mode for side-by-side analysis (e.g. 2023 vs 2024),
-  batches large result sets (50 docs per batch), processes each batch with LLM
-  analysis, writes findings to disk, then progressively summarizes batch files
-  (10 at a time) until a single final report remains. Use this skill when the
-  user asks to research, analyze, compare, or summarize data in an OpenSearch index.
+  precisely, supports comparison mode for side-by-side analysis (e.g. 2023 vs 2024).
+  Fans out large result sets to parallel batch-processor sub-agents (50 docs per batch,
+  up to 10 in parallel), then uses parallel summarizer sub-agents for map-reduce
+  synthesis until a single final report remains. Delegates to report-generator for
+  visual slides. Use this skill when the user asks to research, analyze, compare,
+  or summarize data in an OpenSearch index.
 icon: search
 sample-prompts:
   - Research the events_analytics_v4 index
@@ -290,118 +291,102 @@ Follow these steps precisely. Do NOT skip any step.
    mkdir -p /workspace/research/<index_name>/summaries
    ```
 
-### Phase 2: Batched Reading & Analysis
+### Phase 2: Parallel Batch Processing
 
-If the document count is **100 or fewer**, fetch all in a single batch and
-skip to Phase 3 with one batch file.
+Always delegate batch reading and analysis to **batch-processor** sub-agents.
+This keeps the main agent's context clean regardless of document count.
 
-If the document count is **more than 100**, batch the reads at **50 documents per batch**:
+8. **Calculate batches**: `total_batches = ceil(count / 50)`.
+   If `count ≤ 50`, that's 1 batch — still delegate it.
 
-8. **Calculate batches**: `total_batches = ceil(count / 50)`
+9. **Build the filter string** for the CLI command. For example, if filters are
+   `year=2024` and `country=India`, the filter string is `-f year=2024 -f country=India`.
 
-9. **For each batch** (i = 0, 1, 2, ...):
+10. **Fan out in rounds of up to 10 parallel sub-agents**. For each round, emit
+    multiple `delegate_to_agent` calls **in the same response** (this is critical —
+    the harness runs tool calls from the same response in parallel).
 
-   a. Fetch the batch (use `query` with filters, not `fetch`):
-      ```bash
-      opensearch-cli query --index <index_name> -f <filter1> -f <filter2> --batch-size 50 --offset <i * 50>
-      ```
-      The `query` command returns `total` (total matching docs) and `fetched` (docs in this batch).
-      Use `total` to verify your batch count is correct.
+    If there is only 1 batch, emit a single `delegate_to_agent` call.
 
-   b. Analyze the batch output. For each batch, identify:
-      - Key themes and patterns in the documents
-      - Notable data points, outliers, or anomalies
-      - Common values and distributions across fields
-      - Relationships between fields
-      - Any data quality issues (missing fields, duplicates)
-      - How this batch relates to the aggregation context from Phase 1
+    For each batch `i` in the current round:
+    ```
+    delegate_to_agent: batch-processor
+    task: "Execute: `opensearch-cli query --index <index_name> <filter_string> --batch-size 50 --offset <i * 50>`
+    Analyze the output for: key themes and patterns, notable data points and outliers, common value distributions across fields, field relationships, data quality issues.
+    Write structured findings to: /workspace/research/<index_name>/batches/batch_<NNN>.md
+    Include in the file: batch number (<NNN>), document range (<offset>-<offset+49>), filters applied, document count, key findings."
+    ```
+    Where `<NNN>` is zero-padded (001, 002, 003, ...).
 
-   c. Write your findings to a batch file:
-      ```
-      write_file: /workspace/research/<index_name>/batches/batch_<NNN>.md
-      ```
-      Where `<NNN>` is zero-padded (001, 002, 003, ...).
+    **Examples**:
+    - 80 docs → 2 batches → 2 parallel `delegate_to_agent` calls (one round)
+    - 25 batches → Round 1: 10 parallel, Round 2: 10 parallel, Round 3: 5 parallel
+    - 3 docs → 1 batch → 1 `delegate_to_agent` call
 
-      Each batch file MUST contain:
-      - Batch number and document range (e.g., "Batch 1: documents 0-49")
-      - Filters applied
-      - Number of documents in this batch
-      - Key findings and patterns
-      - Notable individual documents (if any)
-      - Field-level observations
-
-   **Important:** Process each batch fully before moving to the next. Do NOT
-   fetch all batches first and analyze later.
+    Wait for each round to complete before starting the next.
 
 ### Phase 3: Verify Batch Files
 
-10. **Count the batch files on disk**:
+11. **Count the batch files on disk**:
     ```bash
     ls /workspace/research/<index_name>/batches/
     ```
     Verify the count matches the expected `total_batches`.
 
-### Phase 4: Progressive Summarization (Map-Reduce)
+### Phase 4: Parallel Summarization (Map-Reduce)
 
-Now reduce the batch files into a single final report by reading **10 files at a time**.
+Now reduce the batch files into a single final report using **summarizer** sub-agents.
 
-11. **Set up reduction loop**:
+12. **Set up reduction loop**:
     - `input_dir` = `/workspace/research/<index_name>/batches/`
     - `output_dir` = `/workspace/research/<index_name>/summaries/`
     - `round` = 1
 
-12. **List files** in `input_dir` and count them.
+13. **List files** in `input_dir` and count them.
 
-13. **If only 1 file remains**: This is the final report. Skip to Phase 5.
+14. **If only 1 file remains**: This is the final report. Skip to Phase 5.
 
-14. **If more than 1 file**: Process in groups of 10:
+15. **If more than 1 file**: Fan out to summarizer sub-agents, one per group of
+    up to 10 files. Emit multiple `delegate_to_agent` calls **in the same response**:
 
-    a. Read up to 10 files from `input_dir` using `read_file`.
+    For each group of up to 10 files:
+    ```
+    delegate_to_agent: summarizer
+    task: "Read files matching: /workspace/research/<index_name>/<input_dir>/batch_0{01..10}.md (or list exact paths)
+    Summarization query: Merge common themes across these batch findings. Identify the most significant patterns. Highlight key statistics (counts, distributions, top values). Note contradictions or variations between batches. Preserve important specific findings with evidence.
+    Write summary to: /workspace/research/<index_name>/summaries/round<R>_summary_<NNN>.md"
+    ```
+    Where `<R>` is the round number and `<NNN>` is zero-padded.
 
-    b. Synthesize a summary that:
-       - Merges common themes across the batch findings
-       - Identifies the most significant patterns across all batches in this group
-       - Highlights key statistics (counts, distributions, top values)
-       - Notes contradictions or variations between batches
-       - Preserves important specific findings
-       - References the aggregation context from Phase 1
-
-    c. Write the summary to `output_dir`:
-       ```
-       write_file: /workspace/research/<index_name>/summaries/round<R>_summary_<NNN>.md
-       ```
-       Where `<R>` is the round number and `<NNN>` is zero-padded.
-
-    d. Repeat for the next group of 10 files until all files in `input_dir` are processed.
-
-15. **Prepare next round**:
+16. **Prepare next round**:
     - Set `input_dir` = current `output_dir`
     - Set `output_dir` = `/workspace/research/<index_name>/summaries/round<R+1>/`
     - Create the new output directory
     - Increment `round`
-    - Go back to step 12.
+    - Go back to step 13.
 
 ### Phase 5: Final Report
 
-16. **Read the single remaining file** — this is the consolidated research.
+17. **Read the single remaining summary file** — this is the consolidated research.
 
-17. **Write the final report**:
+18. **Delegate to summarizer** to produce the final report:
     ```
-    write_file: /workspace/research/<index_name>/final_report.md
-    ```
-    The final report should include:
+    delegate_to_agent: summarizer
+    task: "Read: /workspace/research/<index_name>/summaries/<last_remaining_file>
+    Summarization query: Produce a comprehensive final research report including:
     - Executive summary (2-3 sentences)
-    - Index overview (name, total documents, schema)
-    - Filters applied and scoped document count
-    - Aggregation context (data distribution highlights from Phase 1)
+    - Index overview (<index_name>, <total_docs> documents)
+    - Filters applied: <filters> (scoped count: <count>)
     - Key findings organized by theme
     - Data quality assessment
     - Statistical highlights
     - Recommendations or areas for deeper investigation
+    Write to: /workspace/research/<index_name>/final_report.md"
+    ```
 
 ### Phase 6: Visual Report
 
-18. **Delegate to report-generator** to create an interactive slide-deck report
+19. **Delegate to report-generator** to create an interactive slide-deck report
     with charts and visualizations from the research artifacts:
     ```
     delegate_to_agent: report-generator
@@ -411,10 +396,10 @@ Now reduce the batch files into a single final report by reading **10 files at a
     extracts real data, and writes a `<!-- slides -->` presentation to
     `/workspace/research/<index_name>/report.md` with interactive charts.
 
-19. **Notify the user** that research is complete. Include:
+20. **Notify the user** that research is complete. Include:
     - The index name and filters applied
     - Total documents analyzed (scoped count, not full index count)
-    - Number of batches processed
+    - Number of batches processed (and how many ran in parallel)
     - Number of summarization rounds performed
     - Path to the final report (`final_report.md`)
     - Path to the visual report (`report.md`) — viewable as an interactive
@@ -447,7 +432,8 @@ Now reduce the batch files into a single final report by reading **10 files at a
 - Always run `aggs` before fetching — it gives you context that makes analysis better.
 - Always use `query` with filters when the user specifies criteria — do NOT use `fetch` and filter client-side.
 - Use `count` with the same filters before batching to know exactly how many docs to expect.
-- Process batches sequentially — do not skip ahead.
+- **Parallel sub-agents**: Always emit multiple `delegate_to_agent` calls in the **same response** to run them in parallel. Do NOT emit them one at a time across separate responses.
+- **Max parallelism**: Up to 10 sub-agent calls per response to avoid rate limits. If more batches are needed, process in rounds of 10.
 - Each batch analysis should be substantive (not just restating raw data).
 - During summarization, focus on synthesis — find patterns across batches, not just concatenation.
 - If `opensearch-cli` returns an error, report it to the user and stop.

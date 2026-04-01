@@ -161,8 +161,12 @@ func runSubAgent(
 	// Create and run sub-agent
 	subAgent := agent.NewAgent(sa.Name, cfg, llmClient, tools, subHooks)
 
-	// Isolated thread ID
+	// Isolated thread ID — include parentToolID so parallel invocations of the
+	// same sub-agent each get their own thread and don't stomp on each other's state.
 	subThreadID := fmt.Sprintf("%s:sub:%s", parentThreadID, sa.Name)
+	if parentToolID != "" {
+		subThreadID = fmt.Sprintf("%s:sub:%s:%s", parentThreadID, sa.Name, parentToolID)
+	}
 
 	log.Printf("[subagent] delegating to %q (thread: %s, tools: %d)", sa.Name, subThreadID, len(tools))
 
