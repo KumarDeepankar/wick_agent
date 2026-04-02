@@ -17,7 +17,7 @@ sample-prompts:
   - Compare events of 2023 vs 2022
 metadata:
   author: wick-agent
-  version: "3.0"
+  version: "4.0"
 allowed-tools:
   - read_file
   - write_file
@@ -34,15 +34,23 @@ It uses aggregations to understand the data, applies filters to scope the query,
 reads documents in batches, analyzes each batch, writes findings to disk, then
 progressively reduces the findings into a single final report.
 
-## Workspace Path
+## File Paths — IMPORTANT
 
-**CRITICAL**: The workspace path is NOT `/workspace/` — it is scoped per-user
-(e.g. `/workspace/local/`). You MUST discover it dynamically in Phase 1 using
-`pwd` and use that path for ALL file operations (write_file, read_file, etc.)
-and in ALL sub-agent task descriptions. Hardcoding `/workspace/research/...`
-will fail with "outside workspace" errors.
+**Always use relative paths** for all file operations (write_file, read_file, ls,
+glob, etc.). The tools automatically resolve relative paths to the correct
+workspace directory. For example:
 
-Throughout this document, `{WS}` refers to the workspace path discovered via `pwd`.
+- `write_file` to `research/my_index/batches/batch_001.md` → works
+- `read_file` from `research/my_index/final_report.md` → works
+- `ls` on `research/my_index/batches/` → works
+
+**Never use absolute paths** like `/workspace/...`, `/app/...`, or any path
+starting with `/`. Absolute paths will fail with "outside workspace" errors.
+
+This applies to you AND to all sub-agent task descriptions — always pass
+relative paths to batch-processor, summarizer, and report-generator.
+
+`write_file` automatically creates parent directories — no `mkdir` needed.
 
 ## Prerequisites
 
@@ -121,23 +129,17 @@ This is aggregation-driven — fast and efficient, no batching needed.
 
 ### Step 1: Discovery
 
-1. **Discover your workspace path**:
-   ```bash
-   pwd
-   ```
-   Save the output as `{WS}` (e.g. `/workspace/local`).
-
-2. **Get the index name**. If not specified:
+1. **Get the index name**. If not specified:
    ```bash
    opensearch-cli list-indices
    ```
 
-3. **Get filterable fields**:
+2. **Get filterable fields**:
    ```bash
    opensearch-cli filterable-fields --index <index_name>
    ```
 
-4. **Run baseline aggregations** to understand the full data:
+3. **Run baseline aggregations** to understand the full data:
    ```bash
    opensearch-cli aggs --index <index_name>
    ```
@@ -187,14 +189,9 @@ opensearch-cli aggs --index events_analytics_v4 -f country=USA -f event_theme=Ar
 
 ### Step 4: Write comparison report
 
-Create a working directory and write the report:
-```bash
-mkdir -p {WS}/research/<index_name>
+Write the comparison report (write_file creates parent directories automatically):
 ```
-
-Write the comparison report:
-```
-write_file: {WS}/research/<index_name>/comparison_report.md
+write_file: research/<index_name>/comparison_report.md
 ```
 
 The comparison report MUST include:
@@ -228,7 +225,10 @@ Delegate to report-generator to create an interactive slide-deck with
 comparison charts:
 ```
 delegate_to_agent: report-generator
-task: "Generate a visual comparison report from {WS}/research/<index_name>/ comparing <group A> vs <group B>, focusing on <user's original query>"
+task: "Source directory: research/<index_name>/
+Focus: comparison of <group A> vs <group B> — <user's original query>
+Primary data: research/<index_name>/comparison_report.md
+Output: research/<index_name>/report.md"
 ```
 
 ### Step 6: Notify user
@@ -250,26 +250,18 @@ Follow these steps precisely. Do NOT skip any step.
 
 ### Phase 1: Discovery & Scoping
 
-1. **Discover your workspace path**:
-   ```bash
-   pwd
-   ```
-   Save the output as `{WS}` — use it as the base for ALL file paths in this
-   session, including paths you pass to sub-agents. For example, if `pwd`
-   returns `/workspace/local`, then `{WS}` = `/workspace/local`.
-
-2. **Get the index name** from the user's message. If not specified, list indices:
+1. **Get the index name** from the user's message. If not specified, list indices:
    ```bash
    opensearch-cli list-indices
    ```
    Ask the user which index to research.
 
-3. **Get filterable fields** to understand what filters are available:
+2. **Get filterable fields** to understand what filters are available:
    ```bash
    opensearch-cli filterable-fields --index <index_name>
    ```
 
-4. **Run aggregations** to understand the data distribution:
+3. **Run aggregations** to understand the data distribution:
    ```bash
    opensearch-cli aggs --index <index_name>
    ```
@@ -280,7 +272,7 @@ Follow these steps precisely. Do NOT skip any step.
 
    Study the aggregation output carefully. This is your map of the data.
 
-5. **Determine filters** based on the user's request and the aggregation results.
+4. **Determine filters** based on the user's request and the aggregation results.
 
    Examples of how to translate user intent to filters:
    - "incidents for year 2024" → `-f year=2024`
@@ -294,14 +286,14 @@ Follow these steps precisely. Do NOT skip any step.
    but aggs show only 2021-2023), inform the user and suggest alternatives based on
    what the aggregations show.
 
-6. **Count the scoped documents**:
+5. **Count the scoped documents**:
    ```bash
    opensearch-cli count --index <index_name> -f <filter1> -f <filter2>
    ```
    If count is 0, tell the user no matching documents were found and show the
    aggregation results so they can refine their query.
 
-7. **If filters are applied, run scoped aggregations** to give yourself context
+6. **If filters are applied, run scoped aggregations** to give yourself context
    about the filtered subset:
    ```bash
    opensearch-cli aggs --index <index_name> -f <filter1> -f <filter2>
@@ -309,52 +301,48 @@ Follow these steps precisely. Do NOT skip any step.
    This tells you the distribution within the filtered data. Use these insights
    during your batch analysis.
 
-8. **Create a working directory** for this research:
-   ```bash
-   mkdir -p {WS}/research/<index_name>/batches
-   mkdir -p {WS}/research/<index_name>/summaries
-   ```
-
 ### Phase 2: Parallel Batch Processing
 
 Always delegate batch reading and analysis to **batch-processor** sub-agents.
 This keeps the main agent's context clean regardless of document count.
 
-9. **Calculate batches**: `total_batches = ceil(count / 50)`.
+7. **Calculate batches**: `total_batches = ceil(count / 50)`.
    If `count ≤ 50`, that's 1 batch — still delegate it.
 
-10. **Build the filter string** for the CLI command. For example, if filters are
-    `year=2024` and `country=India`, the filter string is `-f year=2024 -f country=India`.
+8. **Build the filter string** for the CLI command. For example, if filters are
+   `year=2024` and `country=India`, the filter string is `-f year=2024 -f country=India`.
 
-11. **Fan out in rounds of up to 10 parallel sub-agents**. For each round, emit
-    multiple `delegate_to_agent` calls **in the same response** (this is critical —
-    the harness runs tool calls from the same response in parallel).
+9. **Fan out in rounds of up to 10 parallel sub-agents**. For each round, emit
+   multiple `delegate_to_agent` calls **in the same response** (this is critical —
+   the harness runs tool calls from the same response in parallel).
 
-    If there is only 1 batch, emit a single `delegate_to_agent` call.
+   If there is only 1 batch, emit a single `delegate_to_agent` call.
 
-    For each batch `i` in the current round:
-    ```
-    delegate_to_agent: batch-processor
-    task: "Execute: `opensearch-cli query --index <index_name> <filter_string> --batch-size 50 --offset <i * 50>`
-    Analyze the output for: key themes and patterns, notable data points and outliers, common value distributions across fields, field relationships, data quality issues.
-    Write structured findings to: {WS}/research/<index_name>/batches/batch_<NNN>.md
-    Include in the file: batch number (<NNN>), document range (<offset>-<offset+49>), filters applied, document count, key findings."
-    ```
-    Where `<NNN>` is zero-padded (001, 002, 003, ...) and `{WS}` is the
-    workspace path discovered in Phase 1 (e.g. `/workspace/local`).
+   For each batch `i` in the current round:
+   ```
+   delegate_to_agent: batch-processor
+   task: "Execute: `opensearch-cli query --index <index_name> <filter_string> --batch-size 50 --offset <i * 50>`
+   Analyze the output for: key themes and patterns, notable data points and outliers, common value distributions across fields, field relationships, data quality issues.
+   Write structured findings to: research/<index_name>/batches/batch_<NNN>.md
+   Include in the file: batch number (<NNN>), document range (<offset>-<offset+49>), filters applied, document count, key findings."
+   ```
+   Where `<NNN>` is zero-padded (001, 002, 003, ...).
 
-    **Examples**:
-    - 80 docs → 2 batches → 2 parallel `delegate_to_agent` calls (one round)
-    - 25 batches → Round 1: 10 parallel, Round 2: 10 parallel, Round 3: 5 parallel
-    - 3 docs → 1 batch → 1 `delegate_to_agent` call
+   **IMPORTANT**: Use relative paths (no leading `/`) in the task description.
+   The sub-agent's write_file resolves relative paths to the correct workspace.
 
-    Wait for each round to complete before starting the next.
+   **Examples**:
+   - 80 docs → 2 batches → 2 parallel `delegate_to_agent` calls (one round)
+   - 25 batches → Round 1: 10 parallel, Round 2: 10 parallel, Round 3: 5 parallel
+   - 3 docs → 1 batch → 1 `delegate_to_agent` call
+
+   Wait for each round to complete before starting the next.
 
 ### Phase 3: Verify Batch Files
 
-11. **Count the batch files on disk**:
-    ```bash
-    ls {WS}/research/<index_name>/batches/
+10. **Count the batch files on disk**:
+    ```
+    ls: research/<index_name>/batches/
     ```
     Verify the count matches the expected `total_batches`.
 
@@ -362,42 +350,42 @@ This keeps the main agent's context clean regardless of document count.
 
 Now reduce the batch files into a single final report using **summarizer** sub-agents.
 
-12. **Set up reduction loop**:
-    - `input_dir` = `{WS}/research/<index_name>/batches/`
-    - `output_dir` = `{WS}/research/<index_name>/summaries/`
+11. **Set up reduction loop**:
+    - `input_dir` = `research/<index_name>/batches/`
+    - `output_dir` = `research/<index_name>/summaries/`
     - `round` = 1
 
-13. **List files** in `input_dir` and count them.
+12. **List files** in `input_dir` and count them.
 
-14. **If only 1 file remains**: This is the final report. Skip to Phase 5.
+13. **If only 1 file remains**: This is the final report. Skip to Phase 5.
 
-15. **If more than 1 file**: Fan out to summarizer sub-agents, one per group of
+14. **If more than 1 file**: Fan out to summarizer sub-agents, one per group of
     up to 10 files. Emit multiple `delegate_to_agent` calls **in the same response**:
 
     For each group of up to 10 files:
     ```
     delegate_to_agent: summarizer
-    task: "Read files matching: {WS}/research/<index_name>/<input_dir>/batch_0{01..10}.md (or list exact paths)
+    task: "Read these files: research/<index_name>/batches/batch_001.md, research/<index_name>/batches/batch_002.md, ... (list exact relative paths)
     Summarization query: Merge common themes across these batch findings. Identify the most significant patterns. Highlight key statistics (counts, distributions, top values). Note contradictions or variations between batches. Preserve important specific findings with evidence.
-    Write summary to: {WS}/research/<index_name>/summaries/round<R>_summary_<NNN>.md"
+    Write summary to: research/<index_name>/summaries/round<R>_summary_<NNN>.md
+    IMPORTANT: Use relative paths (no leading /) for all file operations."
     ```
     Where `<R>` is the round number and `<NNN>` is zero-padded.
 
-16. **Prepare next round**:
+15. **Prepare next round**:
     - Set `input_dir` = current `output_dir`
-    - Set `output_dir` = `{WS}/research/<index_name>/summaries/round<R+1>/`
-    - Create the new output directory
+    - Set `output_dir` = `research/<index_name>/summaries/round<R+1>/`
     - Increment `round`
-    - Go back to step 13.
+    - Go back to step 12.
 
 ### Phase 5: Final Report
 
-17. **Read the single remaining summary file** — this is the consolidated research.
+16. **Read the single remaining summary file** — this is the consolidated research.
 
-18. **Delegate to summarizer** to produce the final report:
+17. **Delegate to summarizer** to produce the final report:
     ```
     delegate_to_agent: summarizer
-    task: "Read: {WS}/research/<index_name>/summaries/<last_remaining_file>
+    task: "Read: research/<index_name>/summaries/<last_remaining_file>
     Summarization query: Produce a comprehensive final research report including:
     - Executive summary (2-3 sentences)
     - Index overview (<index_name>, <total_docs> documents)
@@ -406,22 +394,25 @@ Now reduce the batch files into a single final report using **summarizer** sub-a
     - Data quality assessment
     - Statistical highlights
     - Recommendations or areas for deeper investigation
-    Write to: {WS}/research/<index_name>/final_report.md"
+    Write to: research/<index_name>/final_report.md
+    IMPORTANT: Use relative paths (no leading /) for all file operations."
     ```
 
 ### Phase 6: Visual Report
 
-19. **Delegate to report-generator** to create an interactive slide-deck report
+18. **Delegate to report-generator** to create an interactive slide-deck report
     with charts and visualizations from the research artifacts:
     ```
     delegate_to_agent: report-generator
-    task: "Generate a visual report from {WS}/research/<index_name>/ focusing on <user's original query/focus>"
+    task: "Source directory: research/<index_name>/
+    Focus: <user's original query/focus>
+    Primary data: research/<index_name>/final_report.md
+    Output: research/<index_name>/report.md"
     ```
-    The report-generator reads the final report, summaries, and batch files,
-    extracts real data, and writes a `<!-- slides -->` presentation to
-    `{WS}/research/<index_name>/report.md` with interactive charts.
+    The report-generator reads final_report.md first, extracts real data,
+    and writes a `<!-- slides -->` presentation with charts to report.md.
 
-20. **Notify the user** that research is complete. Include:
+19. **Notify the user** that research is complete. Include:
     - The index name and filters applied
     - Total documents analyzed (scoped count, not full index count)
     - Number of batches processed (and how many ran in parallel)
@@ -434,7 +425,7 @@ Now reduce the batch files into a single final report using **summarizer** sub-a
 ## Output Structure
 
 ```
-{WS}/research/<index_name>/
+research/<index_name>/
   batches/
     batch_001.md
     batch_002.md
@@ -457,6 +448,7 @@ Now reduce the batch files into a single final report using **summarizer** sub-a
 - Always run `aggs` before fetching — it gives you context that makes analysis better.
 - Always use `query` with filters when the user specifies criteria — do NOT use `fetch` and filter client-side.
 - Use `count` with the same filters before batching to know exactly how many docs to expect.
+- **ALWAYS use relative paths** (no leading `/`) for write_file, read_file, ls, glob. This applies to you AND to all sub-agent task descriptions.
 - **Parallel sub-agents**: Always emit multiple `delegate_to_agent` calls in the **same response** to run them in parallel. Do NOT emit them one at a time across separate responses.
 - **Max parallelism**: Up to 10 sub-agent calls per response to avoid rate limits. If more batches are needed, process in rounds of 10.
 - Each batch analysis should be substantive (not just restating raw data).
