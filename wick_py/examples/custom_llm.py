@@ -61,19 +61,74 @@ math_agent = Agent(
     builtin_tools=["calculate"],
 )
 
+REPORT_GENERATOR_PROMPT = """\
+You generate visual slide-deck reports from research artifacts on disk.
+
+## File Paths
+All paths must be RELATIVE (no leading /). Example: research/my_index/report.md
+NEVER use absolute paths like /workspace/..., /app/..., or /tmp/...
+
+## Execution Steps (follow in order)
+
+### Step 1: Read artifacts in this EXACT order
+1. ls the source directory from the task message
+2. read_file: <source>/final_report.md (or comparison_report.md)
+   — This is your PRIMARY data source. It has all consolidated findings.
+3. ONLY if the final report lacks numeric detail for charts, read 1-2 summary
+   files from <source>/summaries/
+4. Do NOT read batch files unless absolutely necessary for a specific data point.
+
+### Step 2: Write the report in a SINGLE write_file call
+Write to: <source>/report.md
+
+The file MUST start with `<!-- slides -->` on the very first line.
+Aim for 8-15 slides. Separate slides with `---` on its own line.
+
+Slide format:
+- First slide: `# Title` (cover slide, no chart)
+- All other slides: `## Heading` (becomes slide title)
+- Mix charts + bullets + tables per slide
+- 3-5 bullets max per slide
+
+### Chart DSL (embed in markdown code blocks)
+
+```chart
+type: bar
+title: Chart Title
+labels: [Label1, Label2, Label3]
+data: [100, 200, 150]
+showValues: true
+```
+
+Chart types: bar, hbar, line, area, pie, donut, stacked_bar
+
+Multi-series (for comparisons):
+```chart
+type: bar
+title: Comparison
+labels: [Cat A, Cat B, Cat C]
+series:
+  - name: Group 1
+    data: [10, 20, 30]
+  - name: Group 2
+    data: [15, 25, 20]
+legend: true
+```
+
+Optional fields: legend, legendPosition, xLabel, yLabel, colors
+
+### Rules
+- NEVER fabricate numbers — every data point must come from the artifacts
+- For fields with many values, show top 5-8 in chart, mention others in text
+- One chart per insight — don't overload slides
+- Extract real data: aggregation counts, batch statistics, report findings
+- If artifacts lack numeric data, use tables and qualitative slides instead
+"""
+
 report_agent = Agent(
     "report-generator",
     name="Report Generator",
-    system_prompt="You generate visual slide-deck reports from research artifacts on disk. "
-    "The task message contains the source directory path and focus area. "
-    "Read the artifacts, extract real data, and write a <!-- slides --> markdown file "
-    "with charts (using the chart DSL) and detailed analysis. "
-    "Never fabricate numbers — every data point must come from the artifacts. "
-    "Work efficiently: read all needed files, then generate the complete report in a "
-    "single write_file call. After writing, review the report against your planned "
-    "tasks — if any tasks are not covered, rewrite the report to address them. "
-    "Only mark tasks as done using write_todos once you are satisfied the report "
-    "covers all planned items.",
+    system_prompt=REPORT_GENERATOR_PROMPT,
     builtin_tools=["read_file", "write_file", "ls", "glob"],
 )
 
@@ -90,8 +145,9 @@ batch_processor_agent = Agent(
     "3. Write structured findings (key themes, notable data points, field distributions, "
     "data quality issues) to the output path using write_file.\n"
     "4. Return a 1-2 line summary of the batch findings.\n\n"
-    "IMPORTANT: Always use the exact output path provided in the task. "
-    "The path is already validated by the caller — do not modify or shorten it.",
+    "IMPORTANT: Always use the exact path provided in the task for write_file. "
+    "Paths must be relative (no leading /). Example: research/my_index/batches/batch_001.md\n"
+    "NEVER use absolute paths like /workspace/..., /app/..., or /tmp/... — they will fail.",
     builtin_tools=["execute", "read_file", "write_file"],
 )
 
@@ -109,8 +165,9 @@ summarizer_agent = Agent(
     "rank by frequency/importance, preserve key statistics and evidence.\n"
     "4. Write the result to the output path using write_file.\n"
     "5. Return a brief summary of what was produced.\n\n"
-    "IMPORTANT: Always use the exact file paths provided in the task. "
-    "The paths are already validated by the caller — do not modify or shorten them.\n"
+    "IMPORTANT: All file paths must be relative (no leading /). "
+    "Example: research/my_index/batches/batch_001.md\n"
+    "NEVER use absolute paths like /workspace/..., /app/..., or /tmp/... — they will fail.\n"
     "Never fabricate data — every claim must trace to a source file. "
     "Focus on synthesis and insight, not concatenation.",
     builtin_tools=["read_file", "write_file", "glob", "ls"],

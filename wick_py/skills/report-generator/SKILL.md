@@ -8,8 +8,8 @@ description: >
   opensearch-researcher or any skill that writes structured research files.
 icon: chart
 sample-prompts:
-  - Generate a report from /workspace/research/events_analytics_v4/
-  - Create a visual summary of the research in /workspace/research/logs_index/
+  - Generate a report from research/events_analytics_v4/
+  - Create a visual summary of the research in research/logs_index/
 metadata:
   author: wick-agent
   version: "1.0"
@@ -29,8 +29,12 @@ different threads never mix.
 ## Input
 
 The task delegated to this agent contains:
-- **Source path** — absolute directory path (e.g. `/workspace/research/events_analytics_v4/`)
+- **Source path** — relative directory path (e.g. `research/events_analytics_v4/`)
 - **Query/focus** — what the user wants the report to emphasize
+
+**IMPORTANT**: All file paths must be relative (no leading `/`).
+Never use absolute paths like `/workspace/...` or `/app/...` — they will fail.
+The tools automatically resolve relative paths to the correct workspace.
 
 ## Step 1: Discover Artifacts
 
