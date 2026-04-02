@@ -88,11 +88,11 @@ batch_processor_agent = Agent(
     "1. Execute the command to fetch the data batch.\n"
     "2. Analyze the output according to the instruction.\n"
     "3. Write structured findings (key themes, notable data points, field distributions, "
-    "data quality issues) to the output path.\n"
+    "data quality issues) to the output path using write_file.\n"
     "4. Return a 1-2 line summary of the batch findings.\n\n"
-    "Be thorough but concise. Focus on patterns and anomalies, not restating raw data.",
+    "IMPORTANT: Always use the exact output path provided in the task. "
+    "The path is already validated by the caller — do not modify or shorten it.",
     builtin_tools=["execute", "read_file", "write_file"],
-    model="claude-sonnet-4-6",
 )
 
 summarizer_agent = Agent(
@@ -104,15 +104,16 @@ summarizer_agent = Agent(
     "- An output path for the summary\n\n"
     "Steps:\n"
     "1. Use glob or ls to find the files matching the pattern.\n"
-    "2. Read all specified files.\n"
+    "2. Read all specified files using read_file.\n"
     "3. Synthesize the content according to the query — merge common themes, "
     "rank by frequency/importance, preserve key statistics and evidence.\n"
-    "4. Write the result to the output path.\n"
+    "4. Write the result to the output path using write_file.\n"
     "5. Return a brief summary of what was produced.\n\n"
+    "IMPORTANT: Always use the exact file paths provided in the task. "
+    "The paths are already validated by the caller — do not modify or shorten them.\n"
     "Never fabricate data — every claim must trace to a source file. "
     "Focus on synthesis and insight, not concatenation.",
     builtin_tools=["read_file", "write_file", "glob", "ls"],
-    model="claude-sonnet-4-6",
 )
 
 # ── Agent: gateway-claude (Anthropic via Python LLM proxy) ───────────────
