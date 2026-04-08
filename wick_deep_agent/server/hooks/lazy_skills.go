@@ -18,11 +18,11 @@ import (
 // all skill prompts upfront. Keeps the base system prompt small.
 type LazySkillsHook struct {
 	agent.BaseHook
-	backend backend.Backend
-	paths   []string
-	prefs   *agent.SkillPrefs
-	skills  []SkillEntry
-
+	backend      backend.Backend
+	paths        []string
+	prefs        *agent.SkillPrefs
+	skills       []SkillEntry
+	autoActivate string // if set, auto-activate this skill after discovery
 }
 
 // NewLazySkillsHook creates a lazy skills hook that scans the given paths.
@@ -97,6 +97,11 @@ func (h *LazySkillsHook) BeforeAgent(ctx context.Context, state *agent.AgentStat
 			return h.deactivateSkill(state), nil
 		},
 	})
+
+	// Auto-activate a matching skill if configured (used by sub-agents)
+	if h.autoActivate != "" {
+		h.activateSkill(state, h.autoActivate)
+	}
 
 	return nil
 }
@@ -205,6 +210,14 @@ func (h *LazySkillsHook) listSkills(state *agent.AgentState) string {
 		names = append(names, name)
 	}
 	return "Available skills: " + strings.Join(names, ", ") + ". Call activate_skill to load one."
+}
+
+// WithAutoActivate sets a skill name to auto-activate after discovery in BeforeAgent.
+// If the name matches a discovered skill, it is activated before the first LLM call.
+// If no match, this is a no-op. Chainable.
+func (h *LazySkillsHook) WithAutoActivate(name string) *LazySkillsHook {
+	h.autoActivate = name
+	return h
 }
 
 // activateSkill loads a skill's full prompt and deactivates the previous one.

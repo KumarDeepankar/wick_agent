@@ -2329,7 +2329,7 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) (*agent
 				return h.deps.ExternalTools.ForAgent(agentID)
 			}
 		}
-		agentHooks = append(agentHooks, hooks.NewSubAgentHook(cfg.Subagents, cfg.Model, b, toolLookup))
+		agentHooks = append(agentHooks, hooks.NewSubAgentHook(cfg.Subagents, cfg, b, toolLookup))
 	}
 
 	// Summarization hook — use agent's ContextWindow (default 128k)
