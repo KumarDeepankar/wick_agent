@@ -9,6 +9,7 @@ import (
 	"wick_server/agent"
 	"wick_server/backend"
 	"wick_server/llm"
+	"wick_server/tracing"
 )
 
 // ToolLookup resolves tool names to agent.Tool instances.
@@ -22,22 +23,22 @@ type ToolLookup func(agentID string) []agent.Tool
 // events are forwarded to the parent SSE connection for real-time UI rendering.
 type SubAgentHook struct {
 	agent.BaseHook
-	subagents   []agent.SubAgentCfg
-	parentModel any
-	backend     backend.Backend
-	toolLookup  ToolLookup
+	subagents  []agent.SubAgentCfg
+	parentCfg  *agent.AgentConfig
+	backend    backend.Backend
+	toolLookup ToolLookup
 }
 
 // NewSubAgentHook creates a sub-agent orchestration hook.
-// parentModel is used when a SubAgentCfg.Model is empty (inheritance).
+// parentCfg is the parent agent's config — sub-agents inherit model, skills, and memory from it.
 // backend may be nil (sub-agents won't get filesystem tools).
 // toolLookup resolves tools for sub-agents (may be nil).
-func NewSubAgentHook(subagents []agent.SubAgentCfg, parentModel any, b backend.Backend, lookup ToolLookup) *SubAgentHook {
+func NewSubAgentHook(subagents []agent.SubAgentCfg, parentCfg *agent.AgentConfig, b backend.Backend, lookup ToolLookup) *SubAgentHook {
 	return &SubAgentHook{
-		subagents:   subagents,
-		parentModel: parentModel,
-		backend:     b,
-		toolLookup:  lookup,
+		subagents:  subagents,
+		parentCfg:  parentCfg,
+		backend:    b,
+		toolLookup: lookup,
 	}
 }
 
@@ -68,7 +69,7 @@ func (h *SubAgentHook) BeforeAgent(ctx context.Context, state *agent.AgentState)
 		strings.Join(descParts, ", "),
 	)
 
-	parentModel := h.parentModel
+	parentCfg := h.parentCfg
 	b := h.backend
 	toolLookup := h.toolLookup
 
@@ -107,7 +108,7 @@ func (h *SubAgentHook) BeforeAgent(ctx context.Context, state *agent.AgentState)
 			parentToolID := agent.ToolCallIDFromContext(ctx)
 			parentEventCh := agent.EventChFromContext(ctx)
 
-			return runSubAgent(ctx, sa, task, parentModel, b, state.ThreadID, toolLookup, parentEventCh, parentToolID)
+			return runSubAgent(ctx, sa, task, parentCfg, b, state.ThreadID, toolLookup, parentEventCh, parentToolID)
 		},
 	})
 
@@ -115,11 +116,13 @@ func (h *SubAgentHook) BeforeAgent(ctx context.Context, state *agent.AgentState)
 }
 
 // runSubAgent builds and executes a sub-agent, streaming events when parentEventCh is set.
+// Sub-agents are full agents — they get the same hook chain as parent agents.
+// The only difference is they run on an isolated thread and have no sub-agents of their own.
 func runSubAgent(
 	ctx context.Context,
 	sa agent.SubAgentCfg,
 	task string,
-	parentModel any,
+	parentCfg *agent.AgentConfig,
 	b backend.Backend,
 	parentThreadID string,
 	toolLookup ToolLookup,
@@ -129,7 +132,7 @@ func runSubAgent(
 	// Resolve model — inherit from parent if not specified
 	modelSpec := any(sa.Model)
 	if sa.Model == "" {
-		modelSpec = parentModel
+		modelSpec = parentCfg.Model
 	}
 	llmClient, _, err := llm.Resolve(modelSpec)
 	if err != nil {
@@ -141,16 +144,49 @@ func runSubAgent(
 		Name:         sa.Name,
 		Model:        modelSpec,
 		SystemPrompt: sa.SystemPrompt,
-		// No Subagents — prevent infinite recursion
 	}
 
-	// Build hooks for sub-agent
+	// Build hooks — same chain as parent agents (mirrors handlers.go buildAgent).
+	// Sub-agents are full agents; the only thing they lack is sub-agents of their own.
 	var subHooks []agent.Hook
+
+	// Truncation hook (outermost)
+	var maxToolOutputChars int
+	if parentCfg.Backend != nil {
+		maxToolOutputChars = parentCfg.Backend.MaxToolOutputChars
+	}
+	subHooks = append(subHooks, NewTruncationHook(maxToolOutputChars))
+
+	// Tracing hook
+	subHooks = append(subHooks, tracing.NewTracingHook())
+
+	// TodoList hook
 	subHooks = append(subHooks, NewTodoListHook())
+
+	// Filesystem hook
 	if b != nil {
 		subHooks = append(subHooks, NewFilesystemHook(b))
 	}
-	subHooks = append(subHooks, NewSummarizationHook(llmClient, 128_000))
+
+	// Skills hook — inherit skill paths from parent so sub-agents can discover and activate skills.
+	// Auto-activate the skill matching the sub-agent's name (no-op if no match).
+	if parentCfg.Skills != nil && len(parentCfg.Skills.Paths) > 0 && b != nil {
+		subHooks = append(subHooks, NewLazySkillsHook(b, parentCfg.Skills.Paths, nil).WithAutoActivate(sa.Name))
+	}
+
+	// Memory hook — inherit memory paths from parent
+	if parentCfg.Memory != nil && len(parentCfg.Memory.Paths) > 0 && b != nil {
+		subHooks = append(subHooks, NewMemoryHook(b, parentCfg.Memory.Paths))
+	}
+
+	// No SubAgentHook — sub-agents have no sub-agents of their own
+
+	// Summarization hook
+	contextWindow := parentCfg.ContextWindow
+	if contextWindow <= 0 {
+		contextWindow = 128_000
+	}
+	subHooks = append(subHooks, NewSummarizationHook(llmClient, contextWindow))
 
 	// Resolve tools for the sub-agent
 	var tools []agent.Tool
