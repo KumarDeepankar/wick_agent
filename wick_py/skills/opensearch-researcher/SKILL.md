@@ -4,10 +4,10 @@ description: >
   Research, analyze, and compare documents stored in an OpenSearch index. Uses
   aggregations to understand data distribution, applies filters to scope queries
   precisely, supports comparison mode for side-by-side analysis (e.g. 2023 vs 2024).
-  Fans out large result sets to parallel batch-processor sub-agents (50 docs per batch,
-  up to 10 in parallel), then uses parallel summarizer sub-agents for map-reduce
-  synthesis until a single final report remains. Delegates to report-generator for
-  visual slides. Use this skill when the user asks to research, analyze, compare,
+  Fans out result sets to parallel batch-processor sub-agents using dynamic batch
+  sizing — batch size scales with document count, capped at 4 batches total — then
+  delegates to a single summarizer to consolidate findings into a final report, and
+  to report-generator for visual slides. Use this skill when the user asks to research, analyze, compare,
   or summarize data in an OpenSearch index.
 icon: search
 sample-prompts:
@@ -31,8 +31,9 @@ allowed-tools:
 
 This skill orchestrates a multi-phase research pipeline over an OpenSearch index.
 It uses aggregations to understand the data, applies filters to scope the query,
-reads documents in batches, analyzes each batch, writes findings to disk, then
-progressively reduces the findings into a single final report.
+reads documents in up to 4 parallel batches, analyzes each batch, writes findings
+to disk, then consolidates the findings into a single final report in one
+summarization pass.
 
 ## File Paths — IMPORTANT
 
@@ -306,37 +307,53 @@ Follow these steps precisely. Do NOT skip any step.
 Always delegate batch reading and analysis to **batch-processor** sub-agents.
 This keeps the main agent's context clean regardless of document count.
 
-7. **Calculate batches**: `total_batches = ceil(count / 50)`.
-   If `count ≤ 50`, that's 1 batch — still delegate it.
+7. **Calculate dynamic batch sizing**. The total number of batches is hard-capped
+   at **4** to keep fan-out predictable. Compute:
+
+   ```
+   MAX_BATCHES    = 4
+   MIN_BATCH_SIZE = 10
+   batch_size     = max(MIN_BATCH_SIZE, ceil(count / MAX_BATCHES))
+   num_batches    = ceil(count / batch_size)      # always ≤ 4
+   ```
+
+   Worked examples:
+
+   | Scoped count | batch_size | num_batches |
+   |--------------|------------|-------------|
+   | 6            | 10         | 1           |
+   | 25           | 10         | 3           |
+   | 80           | 20         | 4           |
+   | 200          | 50         | 4           |
+   | 410          | 103        | 4           |
+   | 5,000        | 1,250      | 4           |
+
+   For very large scoped counts the per-batch document count grows — that is the
+   intended trade-off of capping fan-out at 4.
 
 8. **Build the filter string** for the CLI command. For example, if filters are
    `year=2024` and `country=India`, the filter string is `-f year=2024 -f country=India`.
 
-9. **Fan out in rounds of up to 10 parallel sub-agents**. For each round, emit
-   multiple `delegate_to_agent` calls **in the same response** (this is critical —
-   the harness runs tool calls from the same response in parallel).
+9. **Fan out all batches in a single response**. Because `num_batches ≤ 4`, emit
+   all `delegate_to_agent` calls **in the same response** (this is critical — the
+   harness runs tool calls from the same response in parallel). No multi-round
+   logic is needed.
 
-   If there is only 1 batch, emit a single `delegate_to_agent` call.
+   For each batch index `i` in `0 .. num_batches - 1`:
+   - `offset = i * batch_size`
+   - The last batch may return fewer documents than `batch_size` — that is fine.
 
-   For each batch `i` in the current round:
    ```
    delegate_to_agent: batch-processor
-   task: "Execute: `opensearch-cli query --index <index_name> <filter_string> --batch-size 50 --offset <i * 50>`
+   task: "Execute: `opensearch-cli query --index <index_name> <filter_string> --batch-size <batch_size> --offset <offset>`
    Analyze the output for: key themes and patterns, notable data points and outliers, common value distributions across fields, field relationships, data quality issues.
    Write structured findings to: research/<index_name>/batches/batch_<NNN>.md
-   Include in the file: batch number (<NNN>), document range (<offset>-<offset+49>), filters applied, document count, key findings."
+   Include in the file: batch number (<NNN>), document range (offset=<offset>, requested size=<batch_size>; the final batch may return fewer), filters applied, document count actually returned, key findings."
    ```
-   Where `<NNN>` is zero-padded (001, 002, 003, ...).
+   Where `<NNN>` is zero-padded (001, 002, 003, 004).
 
    **IMPORTANT**: Use relative paths (no leading `/`) in the task description.
    The sub-agent's write_file resolves relative paths to the correct workspace.
-
-   **Examples**:
-   - 80 docs → 2 batches → 2 parallel `delegate_to_agent` calls (one round)
-   - 25 batches → Round 1: 10 parallel, Round 2: 10 parallel, Round 3: 5 parallel
-   - 3 docs → 1 batch → 1 `delegate_to_agent` call
-
-   Wait for each round to complete before starting the next.
 
 ### Phase 3: Verify Batch Files
 
@@ -344,63 +361,36 @@ This keeps the main agent's context clean regardless of document count.
     ```
     ls: research/<index_name>/batches/
     ```
-    Verify the count matches the expected `total_batches`.
+    Verify the count matches the expected `num_batches`. If a batch file is
+    missing, re-delegate that specific batch before proceeding.
 
-### Phase 4: Parallel Summarization (Map-Reduce)
+### Phase 4: Final Report (Single Summarization Pass)
 
-Now reduce the batch files into a single final report using **summarizer** sub-agents.
+Because `num_batches ≤ 4`, no multi-round map-reduce is needed. A single
+**summarizer** call consolidates all batch files directly into the final report.
 
-11. **Set up reduction loop**:
-    - `input_dir` = `research/<index_name>/batches/`
-    - `output_dir` = `research/<index_name>/summaries/`
-    - `round` = 1
-
-12. **List files** in `input_dir` and count them.
-
-13. **If only 1 file remains**: This is the final report. Skip to Phase 5.
-
-14. **If more than 1 file**: Fan out to summarizer sub-agents, one per group of
-    up to 10 files. Emit multiple `delegate_to_agent` calls **in the same response**:
-
-    For each group of up to 10 files:
+11. **Delegate to summarizer** with the full list of batch file paths:
     ```
     delegate_to_agent: summarizer
-    task: "Read these files: research/<index_name>/batches/batch_001.md, research/<index_name>/batches/batch_002.md, ... (list exact relative paths)
-    Summarization query: Merge common themes across these batch findings. Identify the most significant patterns. Highlight key statistics (counts, distributions, top values). Note contradictions or variations between batches. Preserve important specific findings with evidence.
-    Write summary to: research/<index_name>/summaries/round<R>_summary_<NNN>.md
-    IMPORTANT: Use relative paths (no leading /) for all file operations."
-    ```
-    Where `<R>` is the round number and `<NNN>` is zero-padded.
-
-15. **Prepare next round**:
-    - Set `input_dir` = current `output_dir`
-    - Set `output_dir` = `research/<index_name>/summaries/round<R+1>/`
-    - Increment `round`
-    - Go back to step 12.
-
-### Phase 5: Final Report
-
-16. **Read the single remaining summary file** — this is the consolidated research.
-
-17. **Delegate to summarizer** to produce the final report:
-    ```
-    delegate_to_agent: summarizer
-    task: "Read: research/<index_name>/summaries/<last_remaining_file>
+    task: "Read these files: research/<index_name>/batches/batch_001.md, research/<index_name>/batches/batch_002.md, ... (list every batch file explicitly)
     Summarization query: Produce a comprehensive final research report including:
     - Executive summary (2-3 sentences)
     - Index overview (<index_name>, <total_docs> documents)
-    - Filters applied: <filters> (scoped count: <count>)
-    - Key findings organized by theme
-    - Data quality assessment
-    - Statistical highlights
+    - Filters applied: <filters> (scoped count: <count>, batch_size: <batch_size>, num_batches: <num_batches>)
+    - Key findings organized by theme — merge common patterns across batches and preserve important specifics with evidence
+    - Statistical highlights (counts, distributions, top values)
+    - Data quality assessment (note contradictions or variations between batches)
     - Recommendations or areas for deeper investigation
     Write to: research/<index_name>/final_report.md
     IMPORTANT: Use relative paths (no leading /) for all file operations."
     ```
 
-### Phase 6: Visual Report
+    If `num_batches == 1`, still delegate to summarizer with that single batch
+    file — it normalizes the batch findings into the final report structure.
 
-18. **Delegate to report-generator** to create an interactive slide-deck report
+### Phase 5: Visual Report
+
+12. **Delegate to report-generator** to create an interactive slide-deck report
     with charts and visualizations from the research artifacts:
     ```
     delegate_to_agent: report-generator
@@ -412,11 +402,10 @@ Now reduce the batch files into a single final report using **summarizer** sub-a
     The report-generator reads final_report.md first, extracts real data,
     and writes a `<!-- slides -->` presentation with charts to report.md.
 
-19. **Notify the user** that research is complete. Include:
+13. **Notify the user** that research is complete. Include:
     - The index name and filters applied
     - Total documents analyzed (scoped count, not full index count)
-    - Number of batches processed (and how many ran in parallel)
-    - Number of summarization rounds performed
+    - `batch_size` and `num_batches` used (all ran in parallel)
     - Path to the final report (`final_report.md`)
     - Path to the visual report (`report.md`) — viewable as an interactive
       presentation in the canvas panel with PPTX export
@@ -429,14 +418,7 @@ research/<index_name>/
   batches/
     batch_001.md
     batch_002.md
-    ...
-  summaries/
-    round1_summary_001.md
-    round1_summary_002.md
-    ...
-    round2/
-      round2_summary_001.md
-      ...
+    ...                       # up to batch_004.md
   final_report.md           # text report (Research workflow)
   comparison_report.md      # text report (Comparison workflow)
   report.md                 # visual slide-deck with charts (both workflows)
@@ -450,9 +432,9 @@ research/<index_name>/
 - Use `count` with the same filters before batching to know exactly how many docs to expect.
 - **ALWAYS use relative paths** (no leading `/`) for write_file, read_file, ls, glob. This applies to you AND to all sub-agent task descriptions.
 - **Parallel sub-agents**: Always emit multiple `delegate_to_agent` calls in the **same response** to run them in parallel. Do NOT emit them one at a time across separate responses.
-- **Max parallelism**: Up to 10 sub-agent calls per response to avoid rate limits. If more batches are needed, process in rounds of 10.
+- **Max batches**: hard cap of 4 batches per research run. `batch_size` is computed as `max(10, ceil(count / 4))` so all batches fan out in one parallel response.
 - Each batch analysis should be substantive (not just restating raw data).
-- During summarization, focus on synthesis — find patterns across batches, not just concatenation.
+- The summarizer reduces all batch files in a single pass — focus its task on synthesis (patterns across batches), not concatenation.
 - If `opensearch-cli` returns an error, report it to the user and stop.
 - If the scoped count is 0, show the aggregation results and suggest alternative filters.
 - For comparisons, prefer the **Comparison Workflow** (aggregation-driven, 2-3 tool calls) over running the full Research Workflow twice. Only use the Research Workflow for comparisons when the user explicitly asks for document-level deep-dive on both sides.
