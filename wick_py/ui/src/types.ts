@@ -38,6 +38,7 @@ export interface Iteration {
   content: string;                         // model text for this iteration
   toolCalls: ToolCallInfo[];
   status: 'thinking' | 'streaming' | 'tool_running' | 'done';
+  llmInputTraceId?: string;                // trace event ID for the on_llm_input that produced this iteration
 }
 
 export interface ChatMessage {

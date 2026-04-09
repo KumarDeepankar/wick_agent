@@ -7,9 +7,10 @@ interface Props {
   status: StreamStatus;
   isOpen: boolean;
   onClose: () => void;
+  highlightEventId?: string | null;
 }
 
-export function TraceOverlay({ events, status, isOpen, onClose }: Props) {
+export function TraceOverlay({ events, status, isOpen, onClose, highlightEventId }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Close on Escape key
@@ -65,7 +66,7 @@ export function TraceOverlay({ events, status, isOpen, onClose }: Props) {
             </svg>
           </button>
         </div>
-        <TracePanel events={events} status={status} />
+        <TracePanel events={events} status={status} highlightEventId={highlightEventId} />
       </div>
     </div>
   );

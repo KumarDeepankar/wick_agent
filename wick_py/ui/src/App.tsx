@@ -35,6 +35,7 @@ export default function App() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [traceOpen, setTraceOpen] = useState(false);
+  const [traceHighlightId, setTraceHighlightId] = useState<string | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState<string | undefined>();
   const [canvasWidth, setCanvasWidth] = useState(520);
   const [dragging, setDragging] = useState(false);
@@ -179,6 +180,11 @@ export default function App() {
 
   const handlePromptClick = useCallback((prompt: string) => {
     setPendingPrompt(prompt);
+  }, []);
+
+  const handleViewPrompt = useCallback((traceId: string) => {
+    setTraceHighlightId(traceId);
+    setTraceOpen(true);
   }, []);
 
   const handlePromptConsumed = useCallback(() => {
@@ -499,6 +505,7 @@ export default function App() {
               pendingPrompt={pendingPrompt}
               onPromptConsumed={handlePromptConsumed}
               onPromptClick={handlePromptClick}
+              onViewPrompt={handleViewPrompt}
             />
           )}
           {!canvasCollapsed && !canvasFullscreen && (
@@ -575,6 +582,7 @@ export default function App() {
                 onReset={handleReset}
                 pendingPrompt={pendingPrompt}
                 onPromptConsumed={handlePromptConsumed}
+                onViewPrompt={handleViewPrompt}
               />
               <div
                 className="chat-popup-resize-grip"
@@ -607,7 +615,8 @@ export default function App() {
         events={traceEvents}
         status={status}
         isOpen={traceOpen}
-        onClose={() => setTraceOpen(false)}
+        onClose={() => { setTraceOpen(false); setTraceHighlightId(null); }}
+        highlightEventId={traceHighlightId}
       />
 
       {undoToast.visible && (

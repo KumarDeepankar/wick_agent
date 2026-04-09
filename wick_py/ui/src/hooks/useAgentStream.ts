@@ -82,6 +82,8 @@ export function useAgentStream() {
   // Iteration tracking for ReAct loop grouping
   const iterationsRef = useRef<Iteration[]>([]);
   const currentIterRef = useRef<Iteration | null>(null);
+  // Stash on_llm_input trace ID until the next iteration is created
+  const pendingLlmInputTraceIdRef = useRef<string | null>(null);
   // Batch streaming tokens via rAF for performance
   const pendingTokensRef = useRef('');
   const rafRef = useRef<number>(0);
@@ -190,6 +192,11 @@ export function useAgentStream() {
           };
           setTraceEvents((prev) => [...prev, traceEvt]);
 
+          // on_llm_input → stash trace ID for the next iteration
+          if (sse.event === 'on_llm_input') {
+            pendingLlmInputTraceIdRef.current = traceEvt.id;
+          }
+
           // on_chat_model_start → push new iteration
           if (sse.event === 'on_chat_model_start') {
             // Finalize previous iteration if it exists
@@ -201,7 +208,9 @@ export function useAgentStream() {
               content: '',
               toolCalls: [],
               status: 'streaming',
+              llmInputTraceId: pendingLlmInputTraceIdRef.current ?? undefined,
             };
+            pendingLlmInputTraceIdRef.current = null;
             iterationsRef.current.push(newIter);
             currentIterRef.current = newIter;
           }
