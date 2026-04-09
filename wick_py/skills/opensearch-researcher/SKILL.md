@@ -346,9 +346,10 @@ This keeps the main agent's context clean regardless of document count.
    ```
    delegate_to_agent: batch-processor
    task: "Execute: `opensearch-cli query --index <index_name> <filter_string> --batch-size <batch_size> --offset <offset>`
-   Analyze the output for: key themes and patterns, notable data points and outliers, common value distributions across fields, field relationships, data quality issues.
+   Analyze the output for: key themes and patterns, notable data points and outliers, common value distributions across fields, data quality issues.
    Write structured findings to: research/<index_name>/batches/batch_<NNN>.md
-   Include in the file: batch number (<NNN>), document range (offset=<offset>, requested size=<batch_size>; the final batch may return fewer), filters applied, document count actually returned, key findings."
+   Include in the file: batch number (<NNN>), document range (offset=<offset>, requested size=<batch_size>; the final batch may return fewer), filters applied, document count actually returned, key findings.
+   IMPORTANT: Keep the batch file under ~400 words. Use compact bullets, not prose. Lead with numbers (counts, top values) rather than narrative."
    ```
    Where `<NNN>` is zero-padded (001, 002, 003, 004).
 
@@ -373,16 +374,13 @@ Because `num_batches ≤ 4`, no multi-round map-reduce is needed. A single
     ```
     delegate_to_agent: summarizer
     task: "Read these files: research/<index_name>/batches/batch_001.md, research/<index_name>/batches/batch_002.md, ... (list every batch file explicitly)
-    Summarization query: Produce a comprehensive final research report including:
+    Summarization query: Produce a concise final research report with these sections only:
     - Executive summary (2-3 sentences)
-    - Index overview (<index_name>, <total_docs> documents)
-    - Filters applied: <filters> (scoped count: <count>, batch_size: <batch_size>, num_batches: <num_batches>)
-    - Key findings organized by theme — merge common patterns across batches and preserve important specifics with evidence
-    - Statistical highlights (counts, distributions, top values)
-    - Data quality assessment (note contradictions or variations between batches)
-    - Recommendations or areas for deeper investigation
+    - Scope: <index_name>, scoped count: <count>, filters: <filters>, batches: <num_batches> × <batch_size>
+    - Key findings (4-7 bullets, organized by theme — merge common patterns across batches)
+    - Statistical highlights (top values, counts, distributions — use a small table if helpful)
     Write to: research/<index_name>/final_report.md
-    IMPORTANT: Use relative paths (no leading /) for all file operations."
+    IMPORTANT: Use bullets, not paragraphs. Total length 600-900 words. Use relative paths (no leading /) for all file operations."
     ```
 
     If `num_batches == 1`, still delegate to summarizer with that single batch
