@@ -55,15 +55,15 @@
   --radius-xs: 8px;
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-  /* Typography scale — strict 6-step + 2 display */
-  --text-xs: 11px;
-  --text-sm: 12px;
-  --text-base: 14px;
-  --text-md: 15px;
-  --text-lg: 16px;
-  --text-xl: 18px;
-  --text-2xl: 22px;
-  --text-3xl: 28px;
+  /* Typography scale — responsive via clamp(min, preferred, max) */
+  --text-xs: clamp(10px, 0.55vw + 7px, 11px);
+  --text-sm: clamp(11px, 0.6vw + 7.5px, 12px);
+  --text-base: clamp(12.5px, 0.7vw + 8px, 14px);
+  --text-md: clamp(13px, 0.75vw + 8.5px, 15px);
+  --text-lg: clamp(14px, 0.8vw + 9px, 16px);
+  --text-xl: clamp(15px, 0.9vw + 10px, 18px);
+  --text-2xl: clamp(18px, 1.1vw + 12px, 22px);
+  --text-3xl: clamp(22px, 1.4vw + 14px, 28px);
   --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   --glass: rgba(254, 254, 254, 0.8);
   --glass-border: rgba(255, 255, 255, 0.4);
@@ -189,6 +189,8 @@ a {
 .app {
   display: flex;
   height: 100%;
+  max-width: 1920px;
+  margin: 0 auto;
 }
 
 /* ── Left Sidebar ── */
@@ -1587,9 +1589,9 @@ a {
 
 /* ── Shared centered container for header, messages, and input ── */
 .chat-container {
-  max-width: 900px;
+  max-width: clamp(560px, 65vw, 900px);
   margin: 0 auto;
-  padding: 0 40px;
+  padding: 0 clamp(16px, 3vw, 40px);
   width: 100%;
   box-sizing: border-box;
 }
@@ -3976,6 +3978,48 @@ a {
 }
 
 /* ── Responsive Breakpoints ── */
+
+/* Large desktop — rein in canvas and trace on wide screens */
+@media (max-width: 1440px) {
+  .canvas-panel-wrapper {
+    max-width: 55vw;
+  }
+  .trace-overlay-panel {
+    width: 40vw;
+  }
+}
+
+/* Tablet / small laptop — compact spacing, collapse sidebar */
+@media (max-width: 1024px) {
+  .app-sidebar {
+    width: 44px;
+    min-width: 44px;
+  }
+  .app-sidebar.expanded {
+    width: 180px;
+    min-width: 180px;
+  }
+  .canvas-panel-wrapper {
+    min-width: 240px;
+    max-width: 50vw;
+  }
+  .trace-overlay-panel {
+    width: 50vw;
+    max-width: none;
+  }
+  .app-header {
+    padding: 6px 10px;
+  }
+  .tool-call-header {
+    padding: 6px 10px;
+  }
+  .chat-messages .chat-container {
+    gap: 12px;
+    padding-top: 16px;
+    padding-bottom: 16px;
+  }
+}
+
 @media (max-width: 768px) {
   .app-sidebar {
     display: none;
