@@ -310,7 +310,10 @@ async def gateway_llm(request: LLMRequest):
         "Authorization": f"Bearer {_get_token()}",
     }
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=5.0)) as client:
+    # read=300s: gateway is non-streaming, so the whole LLM response must arrive
+    # within this window. Long synthesis calls (e.g. summarizer reading multiple
+    # batch files) need more than the previous 120s ceiling.
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=5.0)) as client:
         resp = await client.post(
             f"{GATEWAY_URL}/chat/completions",
             headers=headers,
