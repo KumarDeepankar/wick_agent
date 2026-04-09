@@ -3,6 +3,7 @@ import type { TraceEvent as TraceEventType } from '../types';
 
 interface Props {
   event: TraceEventType;
+  id?: string;
 }
 
 const EVENT_VAR_MAP: Record<string, string> = {
@@ -11,6 +12,7 @@ const EVENT_VAR_MAP: Record<string, string> = {
   on_chat_model_stream: 'var(--trace-llm)',
   on_chat_model_end: 'var(--trace-llm)',
   on_llm_output: 'var(--trace-llm)',
+  on_subagent_llm_input: 'var(--trace-llm)',
   on_tool_start: 'var(--trace-tool)',
   on_tool_end: 'var(--trace-tool)',
   on_chain_start: 'var(--trace-chain)',
@@ -29,12 +31,14 @@ function getSummary(event: TraceEventType): string {
   const name = d.name as string ?? '';
 
   switch (event.eventType) {
-    case 'on_llm_input': {
+    case 'on_llm_input':
+    case 'on_subagent_llm_input': {
       const data = d.data as Record<string, unknown> | undefined;
       const msgs = data?.messages as unknown[] | undefined;
       const tools = data?.tools as unknown[] | undefined;
       const model = (data?.model as string) ?? name;
-      return `${msgs?.length ?? '?'} messages | ${tools?.length ?? 0} tools → ${model}`;
+      const prefix = event.eventType === 'on_subagent_llm_input' ? `[${name}] ` : '';
+      return `${prefix}${msgs?.length ?? '?'} messages | ${tools?.length ?? 0} tools → ${model}`;
     }
     case 'on_chat_model_start':
       return `${name}`;
@@ -103,7 +107,7 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
   );
 }
 
-export function TraceEventCard({ event }: Props) {
+export function TraceEventCard({ event, id }: Props) {
   const [expanded, setExpanded] = useState(false);
   const color = getColor(event.eventType);
 
@@ -128,6 +132,7 @@ export function TraceEventCard({ event }: Props) {
 
   return (
     <div
+      id={id}
       className="trace-event-card"
       style={{ borderLeftColor: color }}
       onClick={handleToggle}

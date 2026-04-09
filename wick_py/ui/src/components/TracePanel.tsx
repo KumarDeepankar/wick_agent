@@ -5,12 +5,13 @@ import { TraceEventCard } from './TraceEvent';
 interface Props {
   events: TraceEvent[];
   status: StreamStatus;
+  highlightEventId?: string | null;
 }
 
 const EVENT_CATEGORIES: Record<string, string[]> = {
   all: [],
   setup: ['agent_start', 'input_prompt', 'files_seeded'],
-  llm: ['on_llm_input', 'on_chat_model_start', 'on_chat_model_stream', 'on_chat_model_end', 'on_llm_output'],
+  llm: ['on_llm_input', 'on_chat_model_start', 'on_chat_model_stream', 'on_chat_model_end', 'on_llm_output', 'on_subagent_llm_input'],
   tools: ['on_tool_start', 'on_tool_end'],
   chain: ['on_chain_start', 'on_chain_end', 'on_chain_stream'],
   status: ['done', 'error'],
@@ -73,11 +74,27 @@ function collapseStreamTokens(events: TraceEvent[]): DisplayItem[] {
 
 const TRACE_PAGE_SIZE = 500;
 
-export function TracePanel({ events, status }: Props) {
+export function TracePanel({ events, status, highlightEventId }: Props) {
   const [filter, setFilter] = useState('all');
   const [autoScroll, setAutoScroll] = useState(true);
   const [page, setPage] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // When highlightEventId changes, switch to LLM filter and scroll to the event
+  useEffect(() => {
+    if (!highlightEventId) return;
+    setFilter('llm');
+    setAutoScroll(false);
+    // Wait for filter + render, then scroll to the highlighted element
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`trace-${highlightEventId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('trace-highlight');
+        setTimeout(() => el.classList.remove('trace-highlight'), 2000);
+      }
+    });
+  }, [highlightEventId]);
 
   const filtered = useMemo(() =>
     filter === 'all'
@@ -157,7 +174,7 @@ export function TracePanel({ events, status }: Props) {
         )}
         {pageItems.map((item) =>
           item.type === 'event' ? (
-            <TraceEventCard key={item.id} event={item.event!} />
+            <TraceEventCard key={item.id} event={item.event!} id={`trace-${item.event!.id}`} />
           ) : (
             <div key={item.id} className="trace-collapsed-tokens">
               {item.count} stream tokens (collapsed)

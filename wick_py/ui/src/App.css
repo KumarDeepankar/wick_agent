@@ -1958,6 +1958,32 @@ a {
   border-color: transparent;
 }
 
+/* ── View Prompt Button ── */
+.view-prompt-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  padding: 2px 8px;
+  opacity: 0;
+  transition: all var(--transition);
+  margin-top: 2px;
+}
+.iteration-group:hover .view-prompt-btn {
+  opacity: 0.7;
+}
+.view-prompt-btn:hover {
+  opacity: 1 !important;
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .message-content {
   font-weight: 400;
 }
@@ -2286,6 +2312,14 @@ a {
     opacity: 1;
     transform: translateX(0);
   }
+}
+
+.trace-event-card.trace-highlight {
+  animation: trace-pulse 2s ease-out;
+}
+@keyframes trace-pulse {
+  0% { box-shadow: 0 0 0 3px var(--accent); }
+  100% { box-shadow: none; }
 }
 
 .trace-event-card:hover {

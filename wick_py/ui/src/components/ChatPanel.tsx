@@ -14,6 +14,7 @@ interface Props {
   pendingPrompt?: string;
   onPromptConsumed?: () => void;
   onPromptClick?: (prompt: string) => void;
+  onViewPrompt?: (traceId: string) => void;
 }
 
 const SendIcon = () => (
@@ -39,6 +40,7 @@ export function ChatPanel({
   pendingPrompt,
   onPromptConsumed,
   onPromptClick,
+  onViewPrompt,
 }: Props) {
   const [input, setInput] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
@@ -190,6 +192,7 @@ export function ChatPanel({
               message={m}
               isStreaming={isActive && m.id === lastAssistantId}
               status={status}
+              onViewPrompt={onViewPrompt}
             />
           ))}
           {error && !errorDismissed && (

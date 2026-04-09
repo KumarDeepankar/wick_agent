@@ -210,10 +210,11 @@ function ParallelAgentFork({ tools }: { tools: ToolCallInfo[] }) {
   );
 }
 
-function IterationGroup({ iteration, isFinal, isStreaming }: {
+function IterationGroup({ iteration, isFinal, isStreaming, onViewPrompt }: {
   iteration: Iteration;
   isFinal: boolean;
   isStreaming: boolean;
+  onViewPrompt?: (traceId: string) => void;
 }) {
   const html = useMemo(() => {
     if (!iteration.content) return '';
@@ -254,6 +255,19 @@ function IterationGroup({ iteration, isFinal, isStreaming }: {
           )}
         </div>
       )}
+      {iteration.llmInputTraceId && onViewPrompt && (
+        <button
+          className="view-prompt-btn"
+          onClick={() => onViewPrompt(iteration.llmInputTraceId!)}
+          title="View the exact LLM prompt for this response"
+        >
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M1 8s3-5 7-5 7 5 7 5-3 5-7 5-7-5-7-5z" />
+            <circle cx="8" cy="8" r="2" />
+          </svg>
+          View Prompt
+        </button>
+      )}
       {regularTools.length > 0 && (
         <div className="tool-calls-flow">
           {regularTools.map((tc) => (
@@ -272,9 +286,10 @@ interface Props {
   message: ChatMessage;
   isStreaming: boolean;
   status: StreamStatus;
+  onViewPrompt?: (traceId: string) => void;
 }
 
-export function MessageBubble({ message, isStreaming, status }: Props) {
+export function MessageBubble({ message, isStreaming, status, onViewPrompt }: Props) {
   const [copied, setCopied] = useState(false);
   const isUser = message.role === 'user';
   const isActiveStream = isStreaming && status === 'streaming';
@@ -348,6 +363,7 @@ export function MessageBubble({ message, isStreaming, status }: Props) {
                     iteration={iter}
                     isFinal={isFinal}
                     isStreaming={isActiveStream}
+                    onViewPrompt={onViewPrompt}
                   />
                 );
               })}

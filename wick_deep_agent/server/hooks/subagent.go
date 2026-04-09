@@ -278,6 +278,14 @@ func runSubAgentStreaming(
 				},
 			}
 
+		case "on_llm_input":
+			parentEventCh <- agent.StreamEvent{
+				Event: "on_subagent_llm_input",
+				Name:  agentName,
+				RunID: parentToolID,
+				Data:  evt.Data,
+			}
+
 		case "on_chat_model_start":
 			parentEventCh <- agent.StreamEvent{
 				Event: "on_subagent_model_start",
