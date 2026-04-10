@@ -301,6 +301,7 @@ async def gateway_llm(request: LLMRequest):
         "model": GATEWAY_MODEL,
         "max_tokens": request.max_tokens or 4096,
         "messages": messages,
+        "stream": True,
     }
     if tools:
         payload["tools"] = tools
@@ -310,48 +311,77 @@ async def gateway_llm(request: LLMRequest):
         "Authorization": f"Bearer {_get_token()}",
     }
 
-    # read=300s: gateway is non-streaming, so the whole LLM response must arrive
-    # within this window. Long synthesis calls (e.g. summarizer reading multiple
-    # batch files) need more than the previous 120s ceiling.
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=5.0)) as client:
-        resp = await client.post(
+    # Streaming: read timeout only needs to cover the gap between successive
+    # SSE chunks, not the entire generation. 60s is generous for inter-token
+    # silence; connect/write/pool stay tight.
+    timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0)
+
+    # Accumulator for tool calls arriving as fragments across SSE chunks.
+    # Key: tool call index → {id, name, arguments_json}
+    pending_tool_calls: dict[int, dict] = {}
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.stream(
+            "POST",
             f"{GATEWAY_URL}/chat/completions",
             headers=headers,
             json=payload,
-        )
-        resp.raise_for_status()
-        result = resp.json()
+        ) as resp:
+            resp.raise_for_status()
 
-    logger.info("Gateway response keys: %s", list(result.keys()))
+            async for line in resp.aiter_lines():
+                # SSE format: "data: {...}" or "data: [DONE]"
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:]
+                if data.strip() == "[DONE]":
+                    break
 
-    # Parse OpenAI chat completions response
-    choices = result.get("choices", [])
-    if not choices:
-        logger.error("No choices in gateway response")
-        yield StreamChunk(done=True)
-        return
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    logger.warning("Skipping malformed SSE chunk: %s", data[:120])
+                    continue
 
-    message = choices[0].get("message", {})
+                choices = chunk.get("choices", [])
+                if not choices:
+                    continue
+                delta = choices[0].get("delta", {})
 
-    # Handle text content
-    content = message.get("content") or ""
-    if content:
-        CHUNK_SIZE = 4
-        CHUNK_DELAY = 0.01
-        for i in range(0, len(content), CHUNK_SIZE):
-            yield StreamChunk(delta=content[i:i + CHUNK_SIZE])
-            await asyncio.sleep(CHUNK_DELAY)
+                # Text content — yield each fragment immediately
+                text = delta.get("content")
+                if text:
+                    yield StreamChunk(delta=text)
 
-    # Handle tool calls
-    tool_calls = message.get("tool_calls", [])
-    for tc in tool_calls:
-        func = tc.get("function", {})
-        args = func.get("arguments", "{}")
-        if isinstance(args, str):
-            args = json.loads(args)
+                # Tool calls — accumulate fragments, yield when complete
+                for tc in delta.get("tool_calls", []):
+                    idx = tc.get("index", 0)
+                    if idx not in pending_tool_calls:
+                        pending_tool_calls[idx] = {
+                            "id": tc.get("id", ""),
+                            "name": tc.get("function", {}).get("name", ""),
+                            "arguments": "",
+                        }
+                    entry = pending_tool_calls[idx]
+                    if tc.get("id"):
+                        entry["id"] = tc["id"]
+                    func = tc.get("function", {})
+                    if func.get("name"):
+                        entry["name"] = func["name"]
+                    if func.get("arguments"):
+                        entry["arguments"] += func["arguments"]
+
+    # Yield fully-assembled tool calls after the stream ends
+    for idx in sorted(pending_tool_calls):
+        entry = pending_tool_calls[idx]
+        try:
+            args = json.loads(entry["arguments"]) if entry["arguments"] else {}
+        except json.JSONDecodeError:
+            logger.error("Malformed tool call args for %s: %s", entry["name"], entry["arguments"][:200])
+            args = {}
         yield StreamChunk(tool_call=ToolCallResult(
-            id=tc.get("id", f"call_{id(tc)}"),
-            name=func.get("name", ""),
+            id=entry["id"] or f"call_{idx}",
+            name=entry["name"],
             args=args,
         ))
 
