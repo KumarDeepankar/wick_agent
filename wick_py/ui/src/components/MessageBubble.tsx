@@ -254,8 +254,9 @@ function ParallelAgentFork({ tools, traceId, onViewPrompt }: { tools: ToolCallIn
   );
 }
 
-function IterationGroup({ iteration, isFinal, isStreaming, onViewPrompt }: {
+function IterationGroup({ iteration, nextLlmInputTraceId, isFinal, isStreaming, onViewPrompt }: {
   iteration: Iteration;
+  nextLlmInputTraceId?: string;
   isFinal: boolean;
   isStreaming: boolean;
   onViewPrompt?: (traceId: string) => void;
@@ -316,17 +317,14 @@ function IterationGroup({ iteration, isFinal, isStreaming, onViewPrompt }: {
           {soloTools.map((tc) => (
             <ToolCallCard key={tc.id} tool={tc} />
           ))}
-          <ViewPromptButton traceId={iteration.llmInputTraceId} onViewPrompt={onViewPrompt} />
+          <ViewPromptButton traceId={nextLlmInputTraceId} onViewPrompt={onViewPrompt} />
         </div>
       )}
       {parallelRegularTools.length > 0 && (
-        <ParallelToolGroup tools={parallelRegularTools} traceId={iteration.llmInputTraceId} onViewPrompt={onViewPrompt} />
+        <ParallelToolGroup tools={parallelRegularTools} traceId={nextLlmInputTraceId} onViewPrompt={onViewPrompt} />
       )}
       {parallelSubAgents.length > 0 && (
-        <ParallelAgentFork tools={parallelSubAgents} traceId={iteration.llmInputTraceId} onViewPrompt={onViewPrompt} />
-      )}
-      {!hasTools && (
-        <ViewPromptButton traceId={iteration.llmInputTraceId} onViewPrompt={onViewPrompt} />
+        <ParallelAgentFork tools={parallelSubAgents} traceId={nextLlmInputTraceId} onViewPrompt={onViewPrompt} />
       )}
     </div>
   );
@@ -407,10 +405,12 @@ export function MessageBubble({ message, isStreaming, status, onViewPrompt }: Pr
             <>
               {iterations.map((iter, i) => {
                 const isFinal = i === iterations.length - 1 && iter.toolCalls.length === 0;
+                const nextTraceId = iterations[i + 1]?.llmInputTraceId;
                 return (
                   <IterationGroup
                     key={iter.index}
                     iteration={iter}
+                    nextLlmInputTraceId={nextTraceId}
                     isFinal={isFinal}
                     isStreaming={isActiveStream}
                     onViewPrompt={onViewPrompt}
