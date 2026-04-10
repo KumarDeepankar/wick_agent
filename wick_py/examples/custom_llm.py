@@ -343,10 +343,10 @@ async def gateway_llm(request: LLMRequest):
                     logger.warning("Skipping malformed SSE chunk: %s", data[:120])
                     continue
 
-                choices = chunk.get("choices", [])
+                choices = chunk.get("choices") or []
                 if not choices:
                     continue
-                delta = choices[0].get("delta", {})
+                delta = choices[0].get("delta") or {}
 
                 # Text content — yield each fragment immediately
                 text = delta.get("content")
@@ -354,18 +354,18 @@ async def gateway_llm(request: LLMRequest):
                     yield StreamChunk(delta=text)
 
                 # Tool calls — accumulate fragments, yield when complete
-                for tc in delta.get("tool_calls", []):
+                for tc in (delta.get("tool_calls") or []):
                     idx = tc.get("index", 0)
                     if idx not in pending_tool_calls:
                         pending_tool_calls[idx] = {
                             "id": tc.get("id", ""),
-                            "name": tc.get("function", {}).get("name", ""),
+                            "name": (tc.get("function") or {}).get("name", ""),
                             "arguments": "",
                         }
                     entry = pending_tool_calls[idx]
                     if tc.get("id"):
                         entry["id"] = tc["id"]
-                    func = tc.get("function", {})
+                    func = tc.get("function") or {}
                     if func.get("name"):
                         entry["name"] = func["name"]
                     if func.get("arguments"):
