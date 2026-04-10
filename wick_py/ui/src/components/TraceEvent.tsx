@@ -38,7 +38,25 @@ function getSummary(event: TraceEventType): string {
       const tools = data?.tools as unknown[] | undefined;
       const model = (data?.model as string) ?? name;
       const prefix = event.eventType === 'on_subagent_llm_input' ? `[${name}] ` : '';
-      return `${prefix}${msgs?.length ?? '?'} messages | ${tools?.length ?? 0} tools → ${model}`;
+      // Extract tool_calls from assistant messages to show which tools were invoked
+      const toolCallNames: string[] = [];
+      if (msgs) {
+        for (const m of msgs) {
+          const msg = m as Record<string, unknown>;
+          const tcs = msg.tool_calls as Array<Record<string, unknown>> | undefined;
+          if (tcs) {
+            for (const tc of tcs) {
+              const fn = tc.function as Record<string, unknown> | undefined;
+              const tcName = (fn?.name ?? tc.name) as string | undefined;
+              if (tcName) toolCallNames.push(tcName);
+            }
+          }
+        }
+      }
+      const tcSuffix = toolCallNames.length > 0
+        ? ` | tool_calls: [${toolCallNames.join(', ')}]`
+        : ' | tool_calls: none';
+      return `${prefix}${msgs?.length ?? '?'} messages | ${tools?.length ?? 0} tools${tcSuffix} → ${model}`;
     }
     case 'on_chat_model_start':
       return `${name}`;
@@ -49,7 +67,7 @@ function getSummary(event: TraceEventType): string {
       const iter = data?.iteration ?? '?';
       const contentLen = data?.content_length ?? 0;
       const tcCount = data?.tool_call_count ?? 0;
-      return `Iteration ${iter} | ${contentLen} chars${tcCount ? ` | ${tcCount} tool calls` : ''} ← ${name}`;
+      return `Iteration ${iter} | ${contentLen} chars | ${tcCount} tool calls${tcCount === 0 ? ' (loop exit)' : ''} ← ${name}`;
     }
     case 'on_chat_model_end':
       return `${name}`;
