@@ -1985,6 +1985,13 @@ a {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+.parallel-fork-header .view-prompt-btn {
+  margin-top: 0;
+  margin-left: auto;
+}
+.parallel-fork-header:hover .view-prompt-btn {
+  opacity: 0.7;
+}
 
 .message-content {
   font-weight: 400;

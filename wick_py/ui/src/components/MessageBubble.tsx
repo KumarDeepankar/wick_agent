@@ -184,7 +184,24 @@ function ForkIcon() {
   );
 }
 
-function ParallelToolGroup({ tools }: { tools: ToolCallInfo[] }) {
+function ViewPromptButton({ traceId, onViewPrompt }: { traceId?: string; onViewPrompt?: (id: string) => void }) {
+  if (!traceId || !onViewPrompt) return null;
+  return (
+    <button
+      className="view-prompt-btn"
+      onClick={() => onViewPrompt(traceId)}
+      title="View the exact LLM prompt for this response"
+    >
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M1 8s3-5 7-5 7 5 7 5-3 5-7 5-7-5-7-5z" />
+        <circle cx="8" cy="8" r="2" />
+      </svg>
+      View Prompt
+    </button>
+  );
+}
+
+function ParallelToolGroup({ tools, traceId, onViewPrompt }: { tools: ToolCallInfo[]; traceId?: string; onViewPrompt?: (id: string) => void }) {
   const doneCount = tools.filter(t => t.status === 'done').length;
   const allDone = doneCount === tools.length;
 
@@ -197,6 +214,7 @@ function ParallelToolGroup({ tools }: { tools: ToolCallInfo[] }) {
             ? `${tools.length} parallel tools completed`
             : `${doneCount} of ${tools.length} tools running`}
         </span>
+        <ViewPromptButton traceId={traceId} onViewPrompt={onViewPrompt} />
       </div>
       <div className="parallel-fork-lanes">
         {tools.map((tc) => (
@@ -209,7 +227,7 @@ function ParallelToolGroup({ tools }: { tools: ToolCallInfo[] }) {
   );
 }
 
-function ParallelAgentFork({ tools }: { tools: ToolCallInfo[] }) {
+function ParallelAgentFork({ tools, traceId, onViewPrompt }: { tools: ToolCallInfo[]; traceId?: string; onViewPrompt?: (id: string) => void }) {
   const runningCount = tools.filter(t => (t.subStatus ?? t.status) === 'running').length;
   const doneCount = tools.filter(t => (t.subStatus ?? t.status) === 'done').length;
   const allDone = doneCount === tools.length;
@@ -223,6 +241,7 @@ function ParallelAgentFork({ tools }: { tools: ToolCallInfo[] }) {
             ? `${tools.length} parallel agents completed`
             : `${runningCount} of ${tools.length} agents running`}
         </span>
+        <ViewPromptButton traceId={traceId} onViewPrompt={onViewPrompt} />
       </div>
       <div className="parallel-fork-lanes">
         {tools.map((tc) => (
@@ -292,31 +311,22 @@ function IterationGroup({ iteration, isFinal, isStreaming, onViewPrompt }: {
           )}
         </div>
       )}
-      {iteration.llmInputTraceId && onViewPrompt && (
-        <button
-          className="view-prompt-btn"
-          onClick={() => onViewPrompt(iteration.llmInputTraceId!)}
-          title="View the exact LLM prompt for this response"
-        >
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M1 8s3-5 7-5 7 5 7 5-3 5-7 5-7-5-7-5z" />
-            <circle cx="8" cy="8" r="2" />
-          </svg>
-          View Prompt
-        </button>
-      )}
       {soloTools.length > 0 && (
         <div className="tool-calls-flow">
           {soloTools.map((tc) => (
             <ToolCallCard key={tc.id} tool={tc} />
           ))}
+          <ViewPromptButton traceId={iteration.llmInputTraceId} onViewPrompt={onViewPrompt} />
         </div>
       )}
       {parallelRegularTools.length > 0 && (
-        <ParallelToolGroup tools={parallelRegularTools} />
+        <ParallelToolGroup tools={parallelRegularTools} traceId={iteration.llmInputTraceId} onViewPrompt={onViewPrompt} />
       )}
       {parallelSubAgents.length > 0 && (
-        <ParallelAgentFork tools={parallelSubAgents} />
+        <ParallelAgentFork tools={parallelSubAgents} traceId={iteration.llmInputTraceId} onViewPrompt={onViewPrompt} />
+      )}
+      {!hasTools && (
+        <ViewPromptButton traceId={iteration.llmInputTraceId} onViewPrompt={onViewPrompt} />
       )}
     </div>
   );
