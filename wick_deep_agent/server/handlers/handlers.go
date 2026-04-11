@@ -2169,7 +2169,11 @@ func createHookByName(name string, b backend.Backend, llmClient llm.Client, cfg 
 			paths = cfg.Skills.Paths
 		}
 		if len(paths) > 0 && b != nil {
-			return hooks.NewLazySkillsHook(b, paths, nil)
+			sc := cfg.Skills
+			if sc == nil {
+				sc = &agent.SkillsCfg{Paths: paths}
+			}
+			return hooks.NewLazySkillsHook(b, sc, nil)
 		}
 	case "memory":
 		paths := getConfigPaths(hookConfig, "memory")
@@ -2312,7 +2316,7 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) (*agent
 	// Skills hook — use lazy loading (only injects meta-tools, not full skill prompts).
 	// Host→container sync is handled by OnReady at container launch.
 	if cfg.Skills != nil && len(cfg.Skills.Paths) > 0 && b != nil {
-		agentHooks = append(agentHooks, hooks.NewLazySkillsHook(b, cfg.Skills.Paths, inst.SkillPrefs))
+		agentHooks = append(agentHooks, hooks.NewLazySkillsHook(b, cfg.Skills, inst.SkillPrefs))
 	}
 
 

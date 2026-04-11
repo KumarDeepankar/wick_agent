@@ -40,6 +40,8 @@ type BackendCfg struct {
 type SkillsCfg struct {
 	Paths     []string `yaml:"paths" json:"paths"`           // container-side paths (used by SkillsHook via backend.Execute)
 	HostPaths []string `yaml:"host_paths" json:"host_paths"` // host-side paths (used by availableSkills for welcome page)
+	Include   []string `yaml:"include" json:"include"`       // if set, only these skill names are visible
+	Exclude   []string `yaml:"exclude" json:"exclude"`       // skill names to hide (applied after include)
 }
 
 // MemoryCfg holds memory configuration.

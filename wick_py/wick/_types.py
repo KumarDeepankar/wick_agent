@@ -103,6 +103,8 @@ class BackendConfig(BaseModel):
 class SkillsConfig(BaseModel):
     paths: list[str] = Field(default_factory=list)
     host_paths: list[str] = Field(default_factory=list)
+    include: list[str] = Field(default_factory=list)  # if set, only these skill names are visible
+    exclude: list[str] = Field(default_factory=list)  # skill names to hide
 
 
 class MemoryConfig(BaseModel):

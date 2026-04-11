@@ -171,7 +171,8 @@ func runSubAgent(
 	// Skills hook — inherit skill paths from parent so sub-agents can discover and activate skills.
 	// Auto-activate the skill matching the sub-agent's name (no-op if no match).
 	if parentCfg.Skills != nil && len(parentCfg.Skills.Paths) > 0 && b != nil {
-		subHooks = append(subHooks, NewLazySkillsHook(b, parentCfg.Skills.Paths, nil).WithAutoActivate(sa.Name))
+		subSkillsCfg := &agent.SkillsCfg{Paths: parentCfg.Skills.Paths}
+		subHooks = append(subHooks, NewLazySkillsHook(b, subSkillsCfg, nil).WithAutoActivate(sa.Name))
 	}
 
 	// Memory hook — inherit memory paths from parent
