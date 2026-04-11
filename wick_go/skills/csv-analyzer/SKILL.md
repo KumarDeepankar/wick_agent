@@ -8,8 +8,8 @@ description: >
   a dataset, or check data quality.
 icon: table
 sample-prompts:
-  - Analyze the CSV at /workspace/data.csv
-  - Show statistics for /workspace/sales.csv
+  - Analyze the CSV at data.csv
+  - Show statistics for sales.csv
 metadata:
   author: wick-agent
   version: "1.0"
@@ -65,18 +65,18 @@ Follow these steps when the user asks to analyze a CSV file:
 
 1. **Locate the CSV**: Use `ls` to find the CSV file, or ask the user for the path.
 
-2. **Run the script**: Execute the analyzer:
+2. **Run the script**: Execute the analyzer (use relative paths for CSV files):
    ```bash
-   python /skills/csv-analyzer/analyze.py /path/to/data.csv --format markdown
+   python /skills/csv-analyzer/analyze.py data.csv --format markdown
    ```
    For JSON output (useful for further processing):
    ```bash
-   python /skills/csv-analyzer/analyze.py /path/to/data.csv --format json
+   python /skills/csv-analyzer/analyze.py data.csv --format json
    ```
 
 3. **Save the report**: Write to a file if the user wants to keep it:
    ```bash
-   python /skills/csv-analyzer/analyze.py /path/to/data.csv -o /workspace/analysis.md
+   python /skills/csv-analyzer/analyze.py data.csv -o analysis.md
    ```
 
 4. **Interpret the results**: After running the script, read the output and provide:
@@ -90,7 +90,7 @@ Follow these steps when the user asks to analyze a CSV file:
 User: "Analyze the sales data in sales.csv"
 
 ```bash
-python /skills/csv-analyzer/analyze.py /workspace/sales.csv --format markdown -o /workspace/sales_analysis.md
+python /skills/csv-analyzer/analyze.py sales.csv --format markdown -o sales_analysis.md
 ```
 
 Then read the report, summarize findings, and highlight:

@@ -7,8 +7,8 @@ description: >
   bugs, analyze code quality, or find security issues.
 icon: code
 sample-prompts:
-  - Review the code in /workspace/main.py for bugs
-  - Check /workspace/app.js for security issues
+  - Review the code in main.py for bugs
+  - Check app.js for security issues
 metadata:
   author: wick-agent
   version: "1.0"
@@ -29,7 +29,7 @@ You are a senior software engineer performing a code review.
 1. **Discover**: Use `ls` and `glob` to understand the project structure.
 2. **Read**: Use `read_file` to examine the files under review.
 3. **Analyze**: Check for each category below.
-4. **Report**: Write findings to `/workspace/code_review.md`.
+4. **Report**: Write findings to `code_review.md`.
 
 ## Review Categories
 

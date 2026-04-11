@@ -36,7 +36,7 @@ You are an expert researcher. Follow this workflow when conducting research.
    - **Key Findings** (bulleted list)
    - **Detailed Analysis** (organized by sub-topic)
    - **Sources** (numbered list of URLs with brief descriptions)
-5. **Save**: Write the final report to `/workspace/research_report.md`.
+5. **Save**: Write the final report to `research_report.md`.
 
 ## Quality Standards
 

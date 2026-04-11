@@ -192,7 +192,7 @@ feature — exported PPTX files contain standard static charts.
 1. **Create the deck**: Write the markdown file to the workspace. Always start
    the content with `<!-- slides -->` on the first line:
    ```
-   write_file("/workspace/presentation.md", "<!-- slides -->\n# Title\n\n...")
+   write_file("presentation.md", "<!-- slides -->\n# Title\n\n...")
    ```
 
 2. **Preview**: The canvas panel automatically detects the slide format and
@@ -208,7 +208,7 @@ feature — exported PPTX files contain standard static charts.
 
 User: "Create a 5-slide presentation about Python best practices"
 
-Write a file like `/workspace/python-best-practices.md` starting with
+Write a file like `python-best-practices.md` starting with
 `<!-- slides -->` on the first line, then:
 - Slide 1: Title slide (`# Python Best Practices`)
 - Slide 2: Code style (PEP 8, type hints)
@@ -224,4 +224,4 @@ Write a file like `/workspace/python-best-practices.md` starting with
   at least one `---` separator and a `#` heading on the first line).
 - The `.pptx` export produces editable text — not images — so users can
   customize in PowerPoint or Google Slides after downloading.
-- Use `/workspace/` as the base path for slide files.
+- Use relative paths for slide files (e.g. `presentation.md`, not `/workspace/presentation.md`).

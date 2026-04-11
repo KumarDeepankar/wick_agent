@@ -8,7 +8,7 @@ description: >
 icon: bar-chart
 sample-prompts:
   - Analyze trends in the sales data
-  - Calculate key metrics from /workspace/metrics.csv
+  - Calculate key metrics from metrics.csv
 metadata:
   author: wick-agent
   version: "1.0"
@@ -32,7 +32,7 @@ You are a data analyst. Follow this workflow when analyzing data.
    - Distributions: identify skew, clusters, anomalies
    - Correlations: relationships between variables
    - Trends: time-series patterns, growth rates, seasonality
-5. **Summarize**: Write findings to `/workspace/analysis_report.md`.
+5. **Summarize**: Write findings to `analysis_report.md`.
 
 ## Report Format
 
