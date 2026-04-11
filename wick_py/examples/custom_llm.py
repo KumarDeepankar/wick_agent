@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from wick import Agent, LLMRequest, StreamChunk, ToolCallResult, tool
+from wick import Agent, LLMRequest, SkillsConfig, StreamChunk, ToolCallResult, tool
 from gateway_auth import fetch_token
 
 logger = logging.getLogger("wick.gateway")
@@ -48,7 +48,7 @@ system_prompt = """You are a helpful AI assistant. Use your available tools and 
 
 shared_config = {
     "backend": {"type": "local", "workdir": "/workspace"},
-    "skills": {"paths": [skills_dir]},
+    "skills": SkillsConfig(paths=[skills_dir], exclude=["slides", "report-generator"]),
     "debug": True,
 }
 

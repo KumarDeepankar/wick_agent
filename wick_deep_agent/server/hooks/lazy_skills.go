@@ -20,18 +20,35 @@ type LazySkillsHook struct {
 	agent.BaseHook
 	backend      backend.Backend
 	paths        []string
+	include      map[string]bool // if non-empty, only these skill names are visible
+	exclude      map[string]bool // skill names to hide
 	prefs        *agent.SkillPrefs
 	skills       []SkillEntry
 	autoActivate string // if set, auto-activate this skill after discovery
 }
 
 // NewLazySkillsHook creates a lazy skills hook that scans the given paths.
-func NewLazySkillsHook(b backend.Backend, paths []string, prefs *agent.SkillPrefs) *LazySkillsHook {
-	return &LazySkillsHook{
+func NewLazySkillsHook(b backend.Backend, skillsCfg *agent.SkillsCfg, prefs *agent.SkillPrefs) *LazySkillsHook {
+	h := &LazySkillsHook{
 		backend: b,
-		paths:   paths,
 		prefs:   prefs,
 	}
+	if skillsCfg != nil {
+		h.paths = skillsCfg.Paths
+		if len(skillsCfg.Include) > 0 {
+			h.include = make(map[string]bool, len(skillsCfg.Include))
+			for _, name := range skillsCfg.Include {
+				h.include[name] = true
+			}
+		}
+		if len(skillsCfg.Exclude) > 0 {
+			h.exclude = make(map[string]bool, len(skillsCfg.Exclude))
+			for _, name := range skillsCfg.Exclude {
+				h.exclude[name] = true
+			}
+		}
+	}
+	return h
 }
 
 // Skills returns the discovered skill entries (for API listing).
@@ -184,6 +201,16 @@ func (h *LazySkillsHook) discoverSkills() {
 						entry.Description = strings.TrimSpace(desc)
 					}
 				}
+			}
+
+			// Apply include/exclude filtering
+			if h.include != nil && !h.include[entry.Name] {
+				log.Printf("[lazy_skills] skipped (not in include list): %s", entry.Name)
+				continue
+			}
+			if h.exclude != nil && h.exclude[entry.Name] {
+				log.Printf("[lazy_skills] skipped (in exclude list): %s", entry.Name)
+				continue
 			}
 
 			log.Printf("[lazy_skills] discovered: %s (%s)", entry.Name, mdPath)
