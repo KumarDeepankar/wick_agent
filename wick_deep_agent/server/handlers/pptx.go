@@ -11,8 +11,9 @@ import (
 
 // slideContent holds parsed slide data for PPTX generation.
 type slideContent struct {
-	Title string
-	Body  []string // paragraphs / bullet points
+	Title  string
+	Body   []string       // paragraphs / bullet points
+	Charts []*ChartConfig // native charts parsed from ```chart fences
 }
 
 // parseMarkdownSlides splits markdown slide content into structured slides.
@@ -49,20 +50,37 @@ func parseMarkdownSlides(content string) []slideContent {
 		// Collect body paragraphs
 		var para strings.Builder
 		inCode := false
+		codeFenceLang := ""
+		var codeBuf strings.Builder
 		for _, line := range lines[bodyStart:] {
 			trimmed := strings.TrimSpace(line)
 
-			// Skip code/chart fences (just include the text content)
+			// Fenced blocks: capture ```chart bodies as native charts; drop other code.
 			if strings.HasPrefix(trimmed, "```") {
 				if inCode {
+					if codeFenceLang == "chart" {
+						chart := parseChartDSL(codeBuf.String())
+						if chartTypeIsNative(chart.Type) && (len(chart.Series) > 0 || len(chart.Data) > 0) {
+							s.Charts = append(s.Charts, chart)
+						} else {
+							s.Body = append(s.Body, fmt.Sprintf("[Chart: %s — unsupported in export]", chart.Type))
+						}
+					}
 					inCode = false
+					codeFenceLang = ""
+					codeBuf.Reset()
 				} else {
 					inCode = true
+					codeFenceLang = strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
 				}
 				continue
 			}
 			if inCode {
-				continue // skip code block contents for PPTX
+				if codeFenceLang == "chart" {
+					codeBuf.WriteString(line)
+					codeBuf.WriteString("\n")
+				}
+				continue
 			}
 
 			// Skip sub-headings (include as body text)
@@ -152,6 +170,15 @@ func generatePPTX(slides []slideContent) ([]byte, error) {
 	// Slide: 10" x 7.5"
 
 	// [Content_Types].xml
+	// Assign global chart IDs (1-based) to each chart so we can reference them
+	// from content types, slide rels, and the chart part files.
+	totalCharts := 0
+	chartStart := make([]int, len(slides)) // first global chart id for slide i
+	for i, s := range slides {
+		chartStart[i] = totalCharts + 1
+		totalCharts += len(s.Charts)
+	}
+
 	contentTypes := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -163,6 +190,11 @@ func generatePPTX(slides []slideContent) ([]byte, error) {
 	for i := range slides {
 		contentTypes += fmt.Sprintf(`
   <Override PartName="/ppt/slides/slide%d.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`, i+1)
+	}
+	for i := 1; i <= totalCharts; i++ {
+		contentTypes += fmt.Sprintf(`
+  <Override PartName="/ppt/charts/chart%d.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>
+  <Override PartName="/ppt/embeddings/Microsoft_Excel_Worksheet%d.xlsx" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"/>`, i, i)
 	}
 	contentTypes += `
 </Types>`
@@ -224,11 +256,42 @@ func generatePPTX(slides []slideContent) ([]byte, error) {
 
 	// Slides
 	for i, slide := range slides {
-		writeZipFile(zw, fmt.Sprintf("ppt/slides/slide%d.xml", i+1), buildSlideXML(slide))
-		writeZipFile(zw, fmt.Sprintf("ppt/slides/_rels/slide%d.xml.rels", i+1), `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+		writeZipFile(zw, fmt.Sprintf("ppt/slides/slide%d.xml", i+1), buildSlideXML(slide, chartStart[i]))
+
+		// Per-slide rels: layout + one entry per chart on this slide.
+		rels := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
-</Relationships>`)
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>`
+		for j := range slide.Charts {
+			globalID := chartStart[i] + j
+			rels += fmt.Sprintf(`
+  <Relationship Id="rId%d" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart%d.xml"/>`, j+2, globalID)
+		}
+		rels += `
+</Relationships>`
+		writeZipFile(zw, fmt.Sprintf("ppt/slides/_rels/slide%d.xml.rels", i+1), rels)
+	}
+
+	// Chart parts: chart XML + per-chart rels pointing at the embedded
+	// workbook + the workbook itself. The chart's <c:externalData r:id="rId1"/>
+	// is the hook PowerPoint follows when the user clicks "Edit Data".
+	for i, slide := range slides {
+		for j, chart := range slide.Charts {
+			globalID := chartStart[i] + j
+			writeZipFile(zw, fmt.Sprintf("ppt/charts/chart%d.xml", globalID), buildChartXML(chart))
+
+			rels := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/package" Target="../embeddings/Microsoft_Excel_Worksheet%d.xlsx"/>
+</Relationships>`, globalID)
+			writeZipFile(zw, fmt.Sprintf("ppt/charts/_rels/chart%d.xml.rels", globalID), rels)
+
+			xlsxBytes, err := buildEmbeddedXLSX(chart)
+			if err != nil {
+				return nil, fmt.Errorf("build embedded xlsx for chart %d: %w", globalID, err)
+			}
+			writeZipBytes(zw, fmt.Sprintf("ppt/embeddings/Microsoft_Excel_Worksheet%d.xlsx", globalID), xlsxBytes)
+		}
 	}
 
 	if err := zw.Close(); err != nil {
@@ -242,13 +305,27 @@ func writeZipFile(zw *zip.Writer, name, content string) {
 	w.Write([]byte(content))
 }
 
+func writeZipBytes(zw *zip.Writer, name string, content []byte) {
+	w, _ := zw.Create(name)
+	w.Write(content)
+}
+
 // buildSlideXML generates a single slide with title and body text.
 // Uses standalone text boxes (not placeholder references) so shapes render
 // without requiring matching placeholder definitions in the slide layout.
-func buildSlideXML(s slideContent) string {
+//
+// chartIDBase is the global chart ID assigned to this slide's first chart;
+// per-slide chart relationships start at rId2 (rId1 is the slideLayout).
+func buildSlideXML(s slideContent, chartIDBase int) string {
 	titleEsc := html.EscapeString(s.Title)
+	hasCharts := len(s.Charts) > 0
 
-	// Build body paragraphs
+	// Body box: full height when there are no charts; upper third when there are.
+	bodyY, bodyCY := 1600200, 4525963
+	if hasCharts {
+		bodyCY = 1700000
+	}
+
 	var bodyParas string
 	for _, para := range s.Body {
 		bodyParas += fmt.Sprintf(`
@@ -258,6 +335,42 @@ func buildSlideXML(s slideContent) string {
 	}
 	if bodyParas == "" {
 		bodyParas = `<a:p><a:endParaRPr lang="en-US"/></a:p>`
+	}
+
+	// Lay charts out in a single horizontal row beneath the body text.
+	chartsXML := ""
+	if hasCharts {
+		const (
+			rowY     = 3400000
+			rowCY    = 3300000
+			marginX  = 457200
+			gutter   = 200000
+			rowWidth = 9144000 - 2*457200
+		)
+		n := len(s.Charts)
+		chartCX := (rowWidth - gutter*(n-1)) / n
+		nextID := 100 // shape ids unique within the slide
+		for j := range s.Charts {
+			x := marginX + j*(chartCX+gutter)
+			rID := j + 2 // rId1 = layout, charts start at rId2
+			chartsXML += fmt.Sprintf(`
+      <p:graphicFrame>
+        <p:nvGraphicFramePr>
+          <p:cNvPr id="%d" name="Chart %d"/>
+          <p:cNvGraphicFramePr/>
+          <p:nvPr/>
+        </p:nvGraphicFramePr>
+        <p:xfrm>
+          <a:off x="%d" y="%d"/>
+          <a:ext cx="%d" cy="%d"/>
+        </p:xfrm>
+        <a:graphic>
+          <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">
+            <c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId%d"/>
+          </a:graphicData>
+        </a:graphic>
+      </p:graphicFrame>`, nextID+j, chartIDBase+j, x, rowY, chartCX, rowCY, rID)
+		}
 	}
 
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -300,7 +413,7 @@ func buildSlideXML(s slideContent) string {
           <p:nvPr/>
         </p:nvSpPr>
         <p:spPr>
-          <a:xfrm><a:off x="457200" y="1600200"/><a:ext cx="8229600" cy="4525963"/></a:xfrm>
+          <a:xfrm><a:off x="457200" y="%d"/><a:ext cx="8229600" cy="%d"/></a:xfrm>
           <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
           <a:noFill/>
         </p:spPr>
@@ -308,10 +421,10 @@ func buildSlideXML(s slideContent) string {
           <a:bodyPr wrap="square" anchor="t"/>
           <a:lstStyle/>%s
         </p:txBody>
-      </p:sp>
+      </p:sp>%s
     </p:spTree>
   </p:cSld>
-</p:sld>`, titleEsc, bodyParas)
+</p:sld>`, titleEsc, bodyY, bodyCY, bodyParas, chartsXML)
 }
 
 // Minimal theme XML
