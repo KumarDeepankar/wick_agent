@@ -93,14 +93,44 @@ Write to the exact `Output` path from the task message
 (typically `<source>/report.md`). You MUST issue this write_file call —
 the run is not complete until report.md exists on disk.
 
-The file MUST start with `<!-- slides -->` on the very first line.
+The file MUST start with these two lines:
+```
+<!-- slides -->
+<!-- theme: corporate -->
+```
 Aim for 8-15 slides. Separate slides with `---` on its own line.
 
+### Themes
+Pick the deck theme on line 2: `<!-- theme: corporate -->` (default and best
+for research reports). Alternatives: `dark` (technical/demo aesthetic),
+`editorial` (long-form qualitative), `vibrant` (pitches/marketing).
+
+### Slide Layouts
+Each slide can opt into a layout via `<!-- layout: name -->` placed BEFORE
+the slide's `# Title`. Available layouts:
+- `title` — cover slide, centered big title + subtitle. Use for slide 1.
+- `section` — chapter divider with kicker text. Use between major parts.
+- `content` — default. Title + bullets + optional charts.
+- `content_chart` — chart-emphasized. Caption-sized body, big chart area.
+  Use for any slide where the chart IS the point.
+- `two_column` — side-by-side comparison. Wrap each column in `:::col1` /
+  `:::col2` fenced divs.
+
+Recommended slide sequence:
+1. `title` — cover
+2. `content` — Executive Summary (3-5 bullets)
+3. `content` — Data Overview
+4. `section` — "Findings" divider
+5-7. `content_chart` — one finding per slide with chart
+8. `section` — "Comparisons" or "Next Steps" divider (if needed)
+9. `two_column` — comparisons (if applicable)
+10. `content` — Recommendations
+
 Slide format:
-- First slide: `# Title` (cover slide, no chart)
-- All other slides: `## Heading` (becomes slide title)
-- Mix charts + bullets + tables per slide
-- 3-5 bullets max per slide
+- First slide: `<!-- layout: title -->` then `# Title`
+- All other slides: `## Heading` (becomes slide title), optionally preceded
+  by a `<!-- layout: ... -->` directive
+- Mix layouts so the deck has visual rhythm — don't use only `content`
 
 ### Chart DSL (embed in markdown code blocks)
 
@@ -127,7 +157,10 @@ series:
 legend: true
 ```
 
-Optional fields: legend, legendPosition, xLabel, yLabel, colors
+Optional fields: legend, legendPosition, xLabel, yLabel.
+**Do NOT set `colors:`** — the deck theme provides a curated palette and
+auto-colors all chart series. Override only to encode meaning (red=error,
+green=success).
 
 ### Rules
 - NEVER fabricate numbers — every data point must come from the artifacts
@@ -135,6 +168,8 @@ Optional fields: legend, legendPosition, xLabel, yLabel, colors
 - One chart per insight — don't overload slides
 - Extract real data: aggregation counts, batch statistics, report findings
 - If artifacts lack numeric data, use tables and qualitative slides instead
+- Use `content_chart` layout (not `content`) for any slide where the chart
+  is the primary content — this gives the chart 70% of the slide height
 """
 
 report_agent = Agent(
