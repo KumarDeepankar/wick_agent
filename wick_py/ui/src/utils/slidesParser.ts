@@ -90,6 +90,33 @@ function extractColumns(md: string): { col1: string; col2: string; rest: string 
   };
 }
 
+/**
+ * Set or replace the deck-wide `<!-- theme: name -->` directive in a slides
+ * markdown string. Used by the canvas theme switcher to persist a theme
+ * change back to the source file.
+ *
+ * Behavior:
+ *  - If a theme directive already exists, its value is replaced.
+ *  - If no theme directive exists but a `<!-- slides -->` marker does, the
+ *    new directive is inserted on the line after the marker.
+ *  - If neither marker exists, the new directive is prepended to the file.
+ *  - Passing an empty/undefined name removes the directive entirely.
+ */
+export function setDeckTheme(content: string, name: string): string {
+  // Remove any existing theme directive first.
+  const stripped = content.replace(THEME_DIRECTIVE, '');
+  if (!name) return stripped;
+
+  const directive = `<!-- theme: ${name} -->`;
+  const slidesMatch = stripped.match(SLIDES_MARKER);
+  if (slidesMatch && slidesMatch.index !== undefined) {
+    // Insert right after the slides marker line.
+    const idx = slidesMatch.index + slidesMatch[0].length;
+    return stripped.slice(0, idx) + directive + '\n' + stripped.slice(idx);
+  }
+  return directive + '\n' + stripped;
+}
+
 export function parseSlidesContent(content: string): ParsedDeck {
   // Extract deck-wide theme directive (first match wins).
   let theme = '';

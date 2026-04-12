@@ -3554,6 +3554,53 @@ a {
   margin-left: 8px;
 }
 
+/* Theme switcher in the viewer header — styled native <select> that looks
+   like the badge but is interactive. Custom chevron via SVG background so
+   we don't depend on the platform appearance. */
+.slides-viewer-theme-select {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 24px 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--accent);
+  background-color: var(--accent-soft);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'><path fill='none' stroke='currentColor' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round' d='M3 4.5l3 3 3-3'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 7px center;
+  background-size: 10px 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  margin-left: 8px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  transition: background-color var(--transition), border-color var(--transition);
+}
+.slides-viewer-theme-select:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  border-color: var(--accent-soft);
+}
+.slides-viewer-theme-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.slides-viewer-theme-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.slides-viewer-theme-select option {
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  font-weight: 500;
+}
+
 /* Banner shown above the edit area when the slide has a non-default layout,
    so the user knows the directive (and column structure for two_column)
    will be preserved on save. */

@@ -5,8 +5,8 @@ import { exportSlidesAsPptx, saveFileContent } from '../../api';
 import { htmlToMarkdown } from '../../utils/htmlToMarkdown';
 import { getDisplayName } from '../../utils/canvasUtils';
 import { EditToolbar } from './EditToolbar';
-import { parseSlidesContent, type ParsedSlide } from '../../utils/slidesParser';
-import { resolveSlidesTheme, themeCssVars, type SlidesTheme } from '../../utils/slidesTheme';
+import { parseSlidesContent, setDeckTheme, type ParsedSlide } from '../../utils/slidesParser';
+import { resolveSlidesTheme, themeCssVars, SLIDES_THEMES, type SlidesTheme } from '../../utils/slidesTheme';
 
 interface Props {
   content: string;
@@ -225,6 +225,12 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // Theme switching is a persistent action (writes back to disk) so we
+  // track it separately from edit-mode saves to disable the switcher
+  // while a write is in flight.
+  const [switchingTheme, setSwitchingTheme] = useState(false);
+  const [themeError, setThemeError] = useState<string | null>(null);
+
   const slideRef = useRef<HTMLDivElement>(null);
   const editRef = useRef<HTMLDivElement>(null);
   // For two_column layout we render three editable surfaces — a title input
@@ -434,6 +440,29 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
     }
   }, [filePath, slides, currentSlide, content, deck.theme, onContentUpdate]);
 
+  // Persist a theme change back to the source file. Reads the current
+  // file content (which may include unsaved deck-level edits the user
+  // made elsewhere — unlikely, but cheap to be safe), rewrites the
+  // <!-- theme: name --> directive, and saves.
+  const handleThemeChange = useCallback(
+    async (newTheme: string) => {
+      if (newTheme === (deck.theme || '') || switchingTheme) return;
+      setSwitchingTheme(true);
+      setThemeError(null);
+      try {
+        const newContent = setDeckTheme(content, newTheme);
+        await saveFileContent(filePath, newContent);
+        onContentUpdate?.(filePath, newContent);
+      } catch (err) {
+        setThemeError(err instanceof Error ? err.message : 'Theme switch failed');
+        setTimeout(() => setThemeError(null), 4000);
+      } finally {
+        setSwitchingTheme(false);
+      }
+    },
+    [content, deck.theme, filePath, onContentUpdate, switchingTheme],
+  );
+
   const clearFilter = useCallback(() => setActiveFilter(null), []);
 
   const handleEditKeyDown = useCallback(
@@ -452,9 +481,21 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
     <div className="slides-viewer" ref={containerRef} tabIndex={0} onKeyDown={handleContainerKeyDown}>
       <div className="slides-viewer-header">
         <span className="slides-viewer-filename">{getDisplayName(fileName, 'slides')}</span>
-        <span className="slides-viewer-theme-badge" title={`Theme: ${theme.displayName}`}>
-          {theme.displayName}
-        </span>
+        <select
+          className="slides-viewer-theme-select"
+          value={theme.name}
+          onChange={(e) => handleThemeChange(e.target.value)}
+          disabled={editMode || switchingTheme}
+          title={`Deck theme: ${theme.displayName}`}
+          aria-label="Deck theme"
+        >
+          {Object.values(SLIDES_THEMES).map((t) => (
+            <option key={t.name} value={t.name}>
+              {t.displayName}
+            </option>
+          ))}
+        </select>
+        {themeError && <span className="slides-export-error">{themeError}</span>}
         {!editMode && (
           <span className="slides-viewer-counter">
             {currentSlide + 1} / {slides.length}
