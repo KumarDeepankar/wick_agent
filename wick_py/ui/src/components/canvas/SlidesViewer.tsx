@@ -227,6 +227,12 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
 
   const slideRef = useRef<HTMLDivElement>(null);
   const editRef = useRef<HTMLDivElement>(null);
+  // For two_column layout we render three editable surfaces — a title input
+  // and two column contentEditables — so layout/column structure survives a
+  // round-trip through edit mode. The title ref points at the <input>.
+  const editTitleRef = useRef<HTMLInputElement>(null);
+  const editCol1Ref = useRef<HTMLDivElement>(null);
+  const editCol2Ref = useRef<HTMLDivElement>(null);
 
   // Marked instance is theme-scoped so chart svgs pick up the right palette.
   // Re-create per render to keep chart-N counters deterministic per slide.
@@ -319,23 +325,46 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
     return () => el.removeEventListener('click', handleClick);
   }, [editMode]);
 
-  // For edit mode, we render the slide as plain marked HTML (no layout
-  // shell) so the contentEditable surface stays uniform. The save path
-  // round-trips through htmlToMarkdown.
-  const editableHtml = useMemo(() => {
+  // Edit mode populates either a single pane (default) or three panes
+  // (two_column: title input + col1 + col2 contentEditables). Two-column
+  // edits preserve the layout/col structure on save instead of flattening
+  // them out. For non-two_column, the editable area shows the full slide
+  // markdown rendered (title + body) so the user can edit everything.
+  const isTwoCol = (slides[currentSlide]?.layout ?? '') === 'two_column';
+
+  const singlePaneHtml = useMemo(() => {
     const s = slides[currentSlide];
     if (!s) return '';
-    const full = [s.markdown, s.col1Markdown, s.col2Markdown].filter(Boolean).join('\n\n');
-    return marked.parse(full, { async: false }) as string;
+    return marked.parse(s.markdown, { async: false }) as string;
   }, [slides, currentSlide, marked]);
 
-  // Set editable content when entering edit mode
+  const col1Html = useMemo(() => {
+    const s = slides[currentSlide];
+    if (!s || !s.col1Markdown) return '';
+    return marked.parse(s.col1Markdown, { async: false }) as string;
+  }, [slides, currentSlide, marked]);
+
+  const col2Html = useMemo(() => {
+    const s = slides[currentSlide];
+    if (!s || !s.col2Markdown) return '';
+    return marked.parse(s.col2Markdown, { async: false }) as string;
+  }, [slides, currentSlide, marked]);
+
+  // Populate editable surfaces when edit mode opens (or when the slide changes
+  // while editing).
   useEffect(() => {
-    if (editMode && editRef.current) {
-      editRef.current.innerHTML = editableHtml;
+    if (!editMode) return;
+    if (isTwoCol) {
+      const s = slides[currentSlide];
+      if (editTitleRef.current && s) editTitleRef.current.value = s.title;
+      if (editCol1Ref.current) editCol1Ref.current.innerHTML = col1Html;
+      if (editCol2Ref.current) editCol2Ref.current.innerHTML = col2Html;
+      editTitleRef.current?.focus();
+    } else if (editRef.current) {
+      editRef.current.innerHTML = singlePaneHtml;
       editRef.current.focus();
     }
-  }, [editMode, editableHtml]);
+  }, [editMode, isTwoCol, singlePaneHtml, col1Html, col2Html, currentSlide, slides]);
 
   // Edit mode handlers
   const enterEditMode = useCallback(() => {
@@ -349,27 +378,52 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
   }, []);
 
   const handleSave = useCallback(async () => {
-    if (!editRef.current) return;
     setSaving(true);
     setSaveError(null);
     try {
-      // Convert the currently edited slide's HTML back to markdown.
-      // NOTE: round-tripping through edit mode currently strips the
-      // <!-- layout: ... --> directive and column fences. The user can
-      // re-add them in the source if needed; preserving them through
-      // contentEditable is a Phase 5 concern.
-      const editedSlideMd = htmlToMarkdown(editRef.current.innerHTML);
-      const allRaw = content
+      const slide = slides[currentSlide];
+      if (!slide) throw new Error('no slide to save');
+
+      // Reconstruct the edited slide markdown, preserving the layout
+      // directive and (for two_column) column fences. Skip the directive
+      // when layout is empty or 'content' (the default) to avoid noise.
+      const layoutPrefix =
+        slide.layout && slide.layout !== 'content'
+          ? `<!-- layout: ${slide.layout} -->\n`
+          : '';
+
+      let editedSlideMd: string;
+      if (slide.layout === 'two_column') {
+        const title = (editTitleRef.current?.value ?? '').trim();
+        const col1Md = editCol1Ref.current
+          ? htmlToMarkdown(editCol1Ref.current.innerHTML).trim()
+          : '';
+        const col2Md = editCol2Ref.current
+          ? htmlToMarkdown(editCol2Ref.current.innerHTML).trim()
+          : '';
+        const titleLine = title ? `# ${title}\n\n` : '';
+        editedSlideMd = `${layoutPrefix}${titleLine}:::col1\n${col1Md}\n:::\n\n:::col2\n${col2Md}\n:::`;
+      } else {
+        if (!editRef.current) throw new Error('edit area missing');
+        const bodyMd = htmlToMarkdown(editRef.current.innerHTML).trim();
+        editedSlideMd = `${layoutPrefix}${bodyMd}`;
+      }
+
+      // Splice the edited slide back into the deck markdown, preserving
+      // the deck-level <!-- slides --> + <!-- theme --> directives.
+      const stripped = content
         .replace(/^\s*<!--\s*slides\s*-->\s*\n?/m, '')
-        .split(/\n---\n/);
+        .replace(/^\s*<!--\s*theme:\s*[a-zA-Z0-9_-]+\s*-->\s*\n?/m, '');
+      const allRaw = stripped.split(/\n---\n/).map((b) => b.trim());
       allRaw[currentSlide] = editedSlideMd;
-      // Preserve the slides marker + theme directive at the top.
+
       const headerLines: string[] = [];
-      const slidesMarker = content.match(/^\s*<!--\s*slides\s*-->\s*\n?/m);
-      if (slidesMarker) headerLines.push('<!-- slides -->');
+      if (content.match(/<!--\s*slides\s*-->/)) headerLines.push('<!-- slides -->');
       if (deck.theme) headerLines.push(`<!-- theme: ${deck.theme} -->`);
-      const newContent = (headerLines.length ? headerLines.join('\n') + '\n\n' : '') +
+      const newContent =
+        (headerLines.length ? headerLines.join('\n') + '\n\n' : '') +
         allRaw.join('\n\n---\n\n');
+
       await saveFileContent(filePath, newContent);
       onContentUpdate?.(filePath, newContent);
       setEditMode(false);
@@ -457,18 +511,67 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
             saving={saving}
             saveError={saveError}
           />
+          {currentSlideData && currentSlideData.layout && currentSlideData.layout !== 'content' && (
+            <div className="slides-edit-layout-banner">
+              Layout: <strong>{currentSlideData.layout}</strong>
+              <span className="slides-edit-layout-hint">
+                {currentSlideData.layout === 'two_column'
+                  ? 'editing title + each column separately; structure preserved on save'
+                  : 'directive will be reattached on save'}
+              </span>
+            </div>
+          )}
           <div className="slides-viewer-body">
             <div
               className="slides-viewer-stage"
               style={{ ...themeCssVars(theme), background: `#${theme.bgColor}` }}
             >
-              <div
-                ref={editRef}
-                className="slides-viewer-slide message-content canvas-editable"
-                contentEditable
-                suppressContentEditableWarning
-                onKeyDown={handleEditKeyDown}
-              />
+              {isTwoCol ? (
+                <div className="slides-edit-two-column">
+                  <input
+                    ref={editTitleRef}
+                    className="slides-edit-title-input"
+                    type="text"
+                    placeholder="Slide title"
+                    onKeyDown={(e) => {
+                      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+                        e.preventDefault();
+                        handleSave();
+                      }
+                    }}
+                  />
+                  <div className="slides-edit-column-grid">
+                    <div className="slides-edit-column">
+                      <div className="slides-edit-column-label">Column 1</div>
+                      <div
+                        ref={editCol1Ref}
+                        className="message-content canvas-editable slides-edit-column-body"
+                        contentEditable
+                        suppressContentEditableWarning
+                        onKeyDown={handleEditKeyDown}
+                      />
+                    </div>
+                    <div className="slides-edit-column">
+                      <div className="slides-edit-column-label">Column 2</div>
+                      <div
+                        ref={editCol2Ref}
+                        className="message-content canvas-editable slides-edit-column-body"
+                        contentEditable
+                        suppressContentEditableWarning
+                        onKeyDown={handleEditKeyDown}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  ref={editRef}
+                  className="slides-viewer-slide message-content canvas-editable"
+                  contentEditable
+                  suppressContentEditableWarning
+                  onKeyDown={handleEditKeyDown}
+                />
+              )}
             </div>
           </div>
         </div>

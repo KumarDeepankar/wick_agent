@@ -3554,6 +3554,92 @@ a {
   margin-left: 8px;
 }
 
+/* Banner shown above the edit area when the slide has a non-default layout,
+   so the user knows the directive (and column structure for two_column)
+   will be preserved on save. */
+.slides-edit-layout-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 18px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--text-sm);
+  border-bottom: 1px solid var(--border-light);
+}
+.slides-edit-layout-banner strong {
+  text-transform: lowercase;
+  font-weight: 700;
+}
+.slides-edit-layout-hint {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  margin-left: auto;
+}
+
+/* Two-column edit mode: title input + two stacked column contentEditables. */
+.slides-edit-two-column {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 36px 44px;
+  box-sizing: border-box;
+  font-family: var(--slides-body-font, var(--font-sans));
+}
+.slides-edit-title-input {
+  width: 100%;
+  border: none;
+  border-bottom: 2px solid var(--slides-accent1, var(--accent));
+  background: transparent;
+  font-family: var(--slides-title-font, var(--font-sans));
+  font-size: clamp(20px, 2.8vw, 32px);
+  font-weight: 800;
+  color: var(--slides-title, var(--text-primary));
+  padding: 4px 0 8px;
+  outline: none;
+  letter-spacing: -0.4px;
+}
+.slides-edit-title-input::placeholder {
+  color: var(--slides-muted, var(--text-muted));
+  font-weight: 400;
+}
+.slides-edit-column-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  flex: 1;
+  min-height: 0;
+}
+.slides-edit-column {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+.slides-edit-column-label {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--slides-muted, var(--text-muted));
+}
+.slides-edit-column-body {
+  flex: 1;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-xs);
+  padding: 12px;
+  overflow-y: auto;
+  color: var(--slides-body, var(--text-primary));
+  font-family: var(--slides-body-font, var(--font-sans));
+  outline: none;
+}
+.slides-edit-column-body:focus {
+  border-color: var(--slides-accent1, var(--accent));
+  border-style: solid;
+}
+
 /* ── Chart Container ── */
 .chart-container {
   display: flex;
