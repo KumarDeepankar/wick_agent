@@ -1,0 +1,24 @@
+{
+  "name": "dark",
+  "display_name": "Dark",
+  "bg_color": "0B0D10",
+  "title_color": "F1F5F9",
+  "body_color": "CBD5E1",
+  "muted_color": "64748B",
+  "accent1": "2DD4BF",
+  "accent2": "A78BFA",
+  "title_font": "Inter",
+  "body_font": "Inter",
+  "chart_colors": [
+    "2DD4BF",
+    "A78BFA",
+    "F59E0B",
+    "F87171",
+    "60A5FA",
+    "34D399",
+    "F472B6",
+    "818CF8"
+  ],
+  "accent_stripe": true,
+  "footer": true
+}

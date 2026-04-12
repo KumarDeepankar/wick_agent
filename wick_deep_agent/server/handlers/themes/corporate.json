@@ -1,0 +1,24 @@
+{
+  "name": "corporate",
+  "display_name": "Corporate",
+  "bg_color": "FFFFFF",
+  "title_color": "0F172A",
+  "body_color": "334155",
+  "muted_color": "94A3B8",
+  "accent1": "1E40AF",
+  "accent2": "0EA5A3",
+  "title_font": "Georgia",
+  "body_font": "Calibri",
+  "chart_colors": [
+    "1E40AF",
+    "0EA5A3",
+    "0891B2",
+    "7C3AED",
+    "DB2777",
+    "059669",
+    "EA580C",
+    "475569"
+  ],
+  "accent_stripe": true,
+  "footer": true
+}

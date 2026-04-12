@@ -20,14 +20,14 @@ labels: [Q1, Q2, Q3, Q4]
 data: [100, 150, 200, 180]
 ` + "```" + `
 `
-	slides := parseMarkdownSlides(md)
-	if len(slides) != 1 {
-		t.Fatalf("expected 1 slide, got %d", len(slides))
+	deck := parseMarkdownSlides(md)
+	if len(deck.Slides) != 1 {
+		t.Fatalf("expected 1 slide, got %d", len(deck.Slides))
 	}
-	if len(slides[0].Charts) != 1 {
-		t.Fatalf("expected 1 chart on slide, got %d", len(slides[0].Charts))
+	if len(deck.Slides[0].Charts) != 1 {
+		t.Fatalf("expected 1 chart on slide, got %d", len(deck.Slides[0].Charts))
 	}
-	chart := slides[0].Charts[0]
+	chart := deck.Slides[0].Charts[0]
 	if chart.Type != "bar" {
 		t.Errorf("chart type: got %q want bar", chart.Type)
 	}
@@ -35,7 +35,7 @@ data: [100, 150, 200, 180]
 		t.Errorf("series mis-parsed: %+v", chart.Series)
 	}
 
-	data, err := generatePPTX(slides)
+	data, err := generatePPTX(deck)
 	if err != nil {
 		t.Fatalf("generatePPTX: %v", err)
 	}
@@ -110,11 +110,11 @@ func TestGeneratePPTXAdditionalChartTypes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			md := "# Slide\n\n```chart\ntype: " + tc.dslType + "\nlabels: [A, B, C]\nseries:\n  - name: S1\n    data: [10, 20, 30]\n  - name: S2\n    data: [5, 15, 25]\n```\n"
-			slides := parseMarkdownSlides(md)
-			if len(slides) != 1 || len(slides[0].Charts) != 1 {
-				t.Fatalf("expected 1 slide with 1 chart, got %d slides", len(slides))
+			deck := parseMarkdownSlides(md)
+			if len(deck.Slides) != 1 || len(deck.Slides[0].Charts) != 1 {
+				t.Fatalf("expected 1 slide with 1 chart, got %d slides", len(deck.Slides))
 			}
-			data, err := generatePPTX(slides)
+			data, err := generatePPTX(deck)
 			if err != nil {
 				t.Fatalf("generatePPTX: %v", err)
 			}
@@ -153,12 +153,12 @@ labels: [Apples, Pears, Plums]
 data: [30, 50, 20]
 ` + "```" + `
 `
-	slides := parseMarkdownSlides(md)
-	if len(slides) != 2 {
-		t.Fatalf("expected 2 slides, got %d", len(slides))
+	deck := parseMarkdownSlides(md)
+	if len(deck.Slides) != 2 {
+		t.Fatalf("expected 2 slides, got %d", len(deck.Slides))
 	}
 
-	data, err := generatePPTX(slides)
+	data, err := generatePPTX(deck)
 	if err != nil {
 		t.Fatalf("generatePPTX: %v", err)
 	}
@@ -184,21 +184,21 @@ labels: [A, B]
 data: [1, 2]
 ` + "```" + `
 `
-	slides := parseMarkdownSlides(md)
-	if len(slides) != 1 {
+	deck := parseMarkdownSlides(md)
+	if len(deck.Slides) != 1 {
 		t.Fatalf("expected 1 slide")
 	}
-	if len(slides[0].Charts) != 0 {
-		t.Errorf("expected 0 native charts for bubble, got %d", len(slides[0].Charts))
+	if len(deck.Slides[0].Charts) != 0 {
+		t.Errorf("expected 0 native charts for bubble, got %d", len(deck.Slides[0].Charts))
 	}
 	found := false
-	for _, b := range slides[0].Body {
+	for _, b := range deck.Slides[0].Body {
 		if strings.Contains(b, "bubble") && strings.Contains(b, "unsupported") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected fallback text in body, got %v", slides[0].Body)
+		t.Errorf("expected fallback text in body, got %v", deck.Slides[0].Body)
 	}
 }
 

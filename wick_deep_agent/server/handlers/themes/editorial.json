@@ -1,0 +1,24 @@
+{
+  "name": "editorial",
+  "display_name": "Editorial",
+  "bg_color": "FAF7F0",
+  "title_color": "1C1917",
+  "body_color": "44403C",
+  "muted_color": "A8A29E",
+  "accent1": "B91C1C",
+  "accent2": "92400E",
+  "title_font": "Georgia",
+  "body_font": "Georgia",
+  "chart_colors": [
+    "B91C1C",
+    "92400E",
+    "78350F",
+    "065F46",
+    "1E3A8A",
+    "5B21B6",
+    "9F1239",
+    "374151"
+  ],
+  "accent_stripe": true,
+  "footer": true
+}

@@ -1432,13 +1432,13 @@ func (h *agentHandler) slidesExport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	slides := parseMarkdownSlides(content)
-	if len(slides) == 0 {
+	deck := parseMarkdownSlides(content)
+	if len(deck.Slides) == 0 {
 		writeJSONError(w, http.StatusBadRequest, "no slides found in file")
 		return
 	}
 
-	pptxData, err := generatePPTX(slides)
+	pptxData, err := generatePPTX(deck)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "PPTX generation failed: "+err.Error())
 		return

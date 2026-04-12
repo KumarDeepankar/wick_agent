@@ -1,0 +1,24 @@
+{
+  "name": "vibrant",
+  "display_name": "Vibrant",
+  "bg_color": "FFFFFF",
+  "title_color": "111827",
+  "body_color": "1F2937",
+  "muted_color": "9CA3AF",
+  "accent1": "EC4899",
+  "accent2": "F97316",
+  "title_font": "Inter",
+  "body_font": "Inter",
+  "chart_colors": [
+    "EC4899",
+    "F97316",
+    "8B5CF6",
+    "06B6D4",
+    "10B981",
+    "F59E0B",
+    "EF4444",
+    "3B82F6"
+  ],
+  "accent_stripe": true,
+  "footer": true
+}

@@ -132,12 +132,19 @@ var defaultChartColors = []string{
 	"7C3AED", "0D9488", "F59E0B", "6366F1",
 }
 
-func chartColorAt(colors []string, i int) string {
-	if i < len(colors) {
-		c := strings.TrimPrefix(strings.TrimSpace(colors[i]), "#")
+// chartColorAt resolves a series color in priority order:
+//  1. explicit color from the chart DSL (`colors:` field)
+//  2. the active theme's chart palette
+//  3. the package-level fallback palette
+func chartColorAt(explicit []string, theme *Theme, i int) string {
+	if i < len(explicit) {
+		c := strings.TrimPrefix(strings.TrimSpace(explicit[i]), "#")
 		if c != "" {
 			return strings.ToUpper(c)
 		}
+	}
+	if theme != nil && len(theme.ChartColors) > 0 {
+		return theme.ChartColors[i%len(theme.ChartColors)]
 	}
 	return defaultChartColors[i%len(defaultChartColors)]
 }
@@ -158,21 +165,22 @@ func chartTypeIsNative(t string) bool {
 
 // buildChartXML returns the body of ppt/charts/chartN.xml for a supported
 // chart type, including the externalData reference to the embedded workbook.
-func buildChartXML(c *ChartConfig) string {
+// theme provides the default series palette when the DSL omits `colors:`.
+func buildChartXML(c *ChartConfig, theme *Theme) string {
 	var inner string
 	switch chartTypeNormalized(c.Type) {
 	case "line":
-		inner = lineChartElement(c)
+		inner = lineChartElement(c, theme)
 	case "pie":
-		inner = pieChartElement(c, false)
+		inner = pieChartElement(c, theme, false)
 	case "donut":
-		inner = pieChartElement(c, true)
+		inner = pieChartElement(c, theme, true)
 	case "area":
-		inner = areaChartElement(c)
+		inner = areaChartElement(c, theme)
 	case "stacked_bar":
-		inner = barChartElement(c, true)
+		inner = barChartElement(c, theme, true)
 	default:
-		inner = barChartElement(c, false)
+		inner = barChartElement(c, theme, false)
 	}
 	return wrapChartSpace(inner)
 }
@@ -249,10 +257,10 @@ func colLetter(i int) string {
 	return string(rune('B' + i))
 }
 
-func barSeriesXML(c *ChartConfig) string {
+func barSeriesXML(c *ChartConfig, theme *Theme) string {
 	var sb strings.Builder
 	for i, s := range c.Series {
-		color := chartColorAt(c.Colors, i)
+		color := chartColorAt(c.Colors, theme, i)
 		sb.WriteString(fmt.Sprintf(`
         <c:ser>
           <c:idx val="%d"/>
@@ -267,7 +275,7 @@ func barSeriesXML(c *ChartConfig) string {
 	return sb.String()
 }
 
-func barChartElement(c *ChartConfig, stacked bool) string {
+func barChartElement(c *ChartConfig, theme *Theme, stacked bool) string {
 	barDir := "col"
 	if strings.EqualFold(c.Type, "hbar") {
 		barDir = "bar"
@@ -297,13 +305,13 @@ func barChartElement(c *ChartConfig, stacked bool) string {
     </c:plotArea>
     <c:plotVisOnly val="1"/>
     <c:dispBlanksAs val="gap"/>
-  </c:chart>`, chartTitleXML(c.Title), barDir, grouping, barSeriesXML(c), overlap, catValAxesXML())
+  </c:chart>`, chartTitleXML(c.Title), barDir, grouping, barSeriesXML(c, theme), overlap, catValAxesXML())
 }
 
-func lineSeriesXML(c *ChartConfig) string {
+func lineSeriesXML(c *ChartConfig, theme *Theme) string {
 	var sb strings.Builder
 	for i, s := range c.Series {
-		color := chartColorAt(c.Colors, i)
+		color := chartColorAt(c.Colors, theme, i)
 		sb.WriteString(fmt.Sprintf(`
         <c:ser>
           <c:idx val="%d"/>
@@ -320,7 +328,7 @@ func lineSeriesXML(c *ChartConfig) string {
 	return sb.String()
 }
 
-func lineChartElement(c *ChartConfig) string {
+func lineChartElement(c *ChartConfig, theme *Theme) string {
 	return fmt.Sprintf(`<c:chart>
     %s
     <c:plotArea>
@@ -337,13 +345,13 @@ func lineChartElement(c *ChartConfig) string {
     </c:plotArea>
     <c:plotVisOnly val="1"/>
     <c:dispBlanksAs val="gap"/>
-  </c:chart>`, chartTitleXML(c.Title), lineSeriesXML(c), catValAxesXML())
+  </c:chart>`, chartTitleXML(c.Title), lineSeriesXML(c, theme), catValAxesXML())
 }
 
-func areaSeriesXML(c *ChartConfig) string {
+func areaSeriesXML(c *ChartConfig, theme *Theme) string {
 	var sb strings.Builder
 	for i, s := range c.Series {
-		color := chartColorAt(c.Colors, i)
+		color := chartColorAt(c.Colors, theme, i)
 		sb.WriteString(fmt.Sprintf(`
         <c:ser>
           <c:idx val="%d"/>
@@ -361,7 +369,7 @@ func areaSeriesXML(c *ChartConfig) string {
 	return sb.String()
 }
 
-func areaChartElement(c *ChartConfig) string {
+func areaChartElement(c *ChartConfig, theme *Theme) string {
 	return fmt.Sprintf(`<c:chart>
     %s
     <c:plotArea>
@@ -377,21 +385,21 @@ func areaChartElement(c *ChartConfig) string {
     </c:plotArea>
     <c:plotVisOnly val="1"/>
     <c:dispBlanksAs val="gap"/>
-  </c:chart>`, chartTitleXML(c.Title), areaSeriesXML(c), catValAxesXML())
+  </c:chart>`, chartTitleXML(c.Title), areaSeriesXML(c, theme), catValAxesXML())
 }
 
 // pieChartElement renders a pie or doughnut chart from the first series only.
 // donut=true switches the OOXML element from <c:pieChart> to <c:doughnutChart>
 // and adds <c:holeSize>.
-func pieChartElement(c *ChartConfig, donut bool) string {
+func pieChartElement(c *ChartConfig, theme *Theme, donut bool) string {
 	if len(c.Series) == 0 {
-		return barChartElement(c, false)
+		return barChartElement(c, theme, false)
 	}
 	s := c.Series[0]
 
 	var dPts strings.Builder
 	for i := range s.Data {
-		color := chartColorAt(c.Colors, i)
+		color := chartColorAt(c.Colors, theme, i)
 		dPts.WriteString(fmt.Sprintf(`
           <c:dPt>
             <c:idx val="%d"/>

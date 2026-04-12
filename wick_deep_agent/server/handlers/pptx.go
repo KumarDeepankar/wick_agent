@@ -16,13 +16,30 @@ type slideContent struct {
 	Charts []*ChartConfig // native charts parsed from ```chart fences
 }
 
-// parseMarkdownSlides splits markdown slide content into structured slides.
-func parseMarkdownSlides(content string) []slideContent {
+// parsedDeck is the result of parsing a slides markdown file: a deck-wide
+// theme name plus the per-slide content.
+type parsedDeck struct {
+	Theme  string
+	Slides []slideContent
+}
+
+var themeDirective = regexp.MustCompile(`(?m)^\s*<!--\s*theme:\s*([a-zA-Z0-9_-]+)\s*-->\s*\n?`)
+
+// parseMarkdownSlides splits markdown slide content into structured slides
+// and extracts the optional <!-- theme: name --> directive.
+func parseMarkdownSlides(content string) parsedDeck {
+	// Extract <!-- theme: X --> directive (first match wins) and strip it
+	// from the content so it doesn't end up as slide text.
+	deck := parsedDeck{}
+	if m := themeDirective.FindStringSubmatch(content); len(m) == 2 {
+		deck.Theme = m[1]
+		content = themeDirective.ReplaceAllString(content, "")
+	}
+
 	// Strip <!-- slides --> marker
 	content = regexp.MustCompile(`(?m)^\s*<!--\s*slides\s*-->\s*\n?`).ReplaceAllString(content, "")
 
 	raw := strings.Split(content, "\n---\n")
-	var slides []slideContent
 	for _, block := range raw {
 		block = strings.TrimSpace(block)
 		if block == "" {
@@ -139,9 +156,9 @@ func parseMarkdownSlides(content string) []slideContent {
 			s.Body = s.Body[1:]
 		}
 
-		slides = append(slides, s)
+		deck.Slides = append(deck.Slides, s)
 	}
-	return slides
+	return deck
 }
 
 var mdStripPatterns = regexp.MustCompile(`\*\*([^*]+)\*\*|\*([^*]+)\*|_([^_]+)_|__([^_]+)__|` + "`" + `([^` + "`" + `]+)` + "`" + `|\[([^\]]+)\]\([^)]+\)`)
@@ -161,8 +178,13 @@ func stripMarkdown(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// generatePPTX creates a minimal PPTX file from parsed slides.
-func generatePPTX(slides []slideContent) ([]byte, error) {
+// generatePPTX creates a designed PPTX file from a parsed deck. The deck's
+// theme drives slide background, title color, accent stripe, footer style,
+// and chart palette.
+func generatePPTX(deck parsedDeck) ([]byte, error) {
+	theme := ResolveTheme(deck.Theme)
+	slides := deck.Slides
+
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 
@@ -236,19 +258,17 @@ func generatePPTX(slides []slideContent) ([]byte, error) {
 </Relationships>`
 	writeZipFile(zw, "ppt/_rels/presentation.xml.rels", presRels)
 
-	// Theme (minimal)
-	writeZipFile(zw, "ppt/theme/theme1.xml", themeXML)
+	// Theme + master + layout — all driven by the resolved theme.
+	writeZipFile(zw, "ppt/theme/theme1.xml", buildThemeXML(theme))
 
-	// Slide master
-	writeZipFile(zw, "ppt/slideMasters/slideMaster1.xml", slideMasterXML)
+	writeZipFile(zw, "ppt/slideMasters/slideMaster1.xml", buildSlideMasterXML(theme))
 	writeZipFile(zw, "ppt/slideMasters/_rels/slideMaster1.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/>
 </Relationships>`)
 
-	// Slide layout
-	writeZipFile(zw, "ppt/slideLayouts/slideLayout1.xml", slideLayoutXML)
+	writeZipFile(zw, "ppt/slideLayouts/slideLayout1.xml", buildSlideLayoutXML(theme))
 	writeZipFile(zw, "ppt/slideLayouts/_rels/slideLayout1.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/>
@@ -256,7 +276,7 @@ func generatePPTX(slides []slideContent) ([]byte, error) {
 
 	// Slides
 	for i, slide := range slides {
-		writeZipFile(zw, fmt.Sprintf("ppt/slides/slide%d.xml", i+1), buildSlideXML(slide, chartStart[i]))
+		writeZipFile(zw, fmt.Sprintf("ppt/slides/slide%d.xml", i+1), buildSlideXML(slide, chartStart[i], theme))
 
 		// Per-slide rels: layout + one entry per chart on this slide.
 		rels := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -278,7 +298,7 @@ func generatePPTX(slides []slideContent) ([]byte, error) {
 	for i, slide := range slides {
 		for j, chart := range slide.Charts {
 			globalID := chartStart[i] + j
-			writeZipFile(zw, fmt.Sprintf("ppt/charts/chart%d.xml", globalID), buildChartXML(chart))
+			writeZipFile(zw, fmt.Sprintf("ppt/charts/chart%d.xml", globalID), buildChartXML(chart, theme))
 
 			rels := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -316,7 +336,8 @@ func writeZipBytes(zw *zip.Writer, name string, content []byte) {
 //
 // chartIDBase is the global chart ID assigned to this slide's first chart;
 // per-slide chart relationships start at rId2 (rId1 is the slideLayout).
-func buildSlideXML(s slideContent, chartIDBase int) string {
+// theme drives title/body colors and fonts.
+func buildSlideXML(s slideContent, chartIDBase int, theme *Theme) string {
 	titleEsc := html.EscapeString(s.Title)
 	hasCharts := len(s.Charts) > 0
 
@@ -330,8 +351,8 @@ func buildSlideXML(s slideContent, chartIDBase int) string {
 	for _, para := range s.Body {
 		bodyParas += fmt.Sprintf(`
             <a:p>
-              <a:r><a:rPr lang="en-US" sz="1800" dirty="0"/><a:t>%s</a:t></a:r>
-            </a:p>`, html.EscapeString(para))
+              <a:r><a:rPr lang="en-US" sz="1800" dirty="0"><a:solidFill><a:srgbClr val="%s"/></a:solidFill><a:latin typeface="%s"/></a:rPr><a:t>%s</a:t></a:r>
+            </a:p>`, theme.BodyColor, theme.BodyFont, html.EscapeString(para))
 	}
 	if bodyParas == "" {
 		bodyParas = `<a:p><a:endParaRPr lang="en-US"/></a:p>`
@@ -402,7 +423,7 @@ func buildSlideXML(s slideContent, chartIDBase int) string {
           <a:bodyPr wrap="square" anchor="b"/>
           <a:lstStyle/>
           <a:p>
-            <a:r><a:rPr lang="en-US" sz="3200" b="1" dirty="0"/><a:t>%s</a:t></a:r>
+            <a:r><a:rPr lang="en-US" sz="3200" b="1" dirty="0"><a:solidFill><a:srgbClr val="%s"/></a:solidFill><a:latin typeface="%s"/></a:rPr><a:t>%s</a:t></a:r>
           </a:p>
         </p:txBody>
       </p:sp>
@@ -424,67 +445,6 @@ func buildSlideXML(s slideContent, chartIDBase int) string {
       </p:sp>%s
     </p:spTree>
   </p:cSld>
-</p:sld>`, titleEsc, bodyY, bodyCY, bodyParas, chartsXML)
+</p:sld>`, theme.TitleColor, theme.TitleFont, titleEsc, bodyY, bodyCY, bodyParas, chartsXML)
 }
 
-// Minimal theme XML
-const themeXML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Wick Theme">
-  <a:themeElements>
-    <a:clrScheme name="Wick">
-      <a:dk1><a:srgbClr val="1A1A2E"/></a:dk1>
-      <a:lt1><a:srgbClr val="FFFFFF"/></a:lt1>
-      <a:dk2><a:srgbClr val="333333"/></a:dk2>
-      <a:lt2><a:srgbClr val="F5F5F5"/></a:lt2>
-      <a:accent1><a:srgbClr val="6C5CE7"/></a:accent1>
-      <a:accent2><a:srgbClr val="00B894"/></a:accent2>
-      <a:accent3><a:srgbClr val="FDCB6E"/></a:accent3>
-      <a:accent4><a:srgbClr val="E17055"/></a:accent4>
-      <a:accent5><a:srgbClr val="74B9FF"/></a:accent5>
-      <a:accent6><a:srgbClr val="A29BFE"/></a:accent6>
-      <a:hlink><a:srgbClr val="6C5CE7"/></a:hlink>
-      <a:folHlink><a:srgbClr val="A29BFE"/></a:folHlink>
-    </a:clrScheme>
-    <a:fontScheme name="Wick">
-      <a:majorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>
-      <a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont>
-    </a:fontScheme>
-    <a:fmtScheme name="Wick">
-      <a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst>
-      <a:lnStyleLst><a:ln w="9525"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="9525"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="9525"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst>
-      <a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst>
-      <a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst>
-    </a:fmtScheme>
-  </a:themeElements>
-</a:theme>`
-
-// Minimal slide master
-const slideMasterXML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
-  xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
-  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <p:cSld>
-    <p:bg><p:bgPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>
-    <p:spTree>
-      <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
-      <p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>
-    </p:spTree>
-  </p:cSld>
-  <p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>
-  <p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst>
-</p:sldMaster>`
-
-// Minimal slide layout
-const slideLayoutXML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
-  xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
-  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-  type="obj">
-  <p:cSld name="Title and Content">
-    <p:spTree>
-      <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
-      <p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>
-    </p:spTree>
-  </p:cSld>
-  <p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
-</p:sldLayout>`
