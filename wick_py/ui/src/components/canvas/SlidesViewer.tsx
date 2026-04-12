@@ -5,6 +5,8 @@ import { exportSlidesAsPptx, saveFileContent } from '../../api';
 import { htmlToMarkdown } from '../../utils/htmlToMarkdown';
 import { getDisplayName } from '../../utils/canvasUtils';
 import { EditToolbar } from './EditToolbar';
+import { parseSlidesContent, type ParsedSlide } from '../../utils/slidesParser';
+import { resolveSlidesTheme, themeCssVars, type SlidesTheme } from '../../utils/slidesTheme';
 
 interface Props {
   content: string;
@@ -14,7 +16,8 @@ interface Props {
 }
 
 /**
- * Apply cross-chart filter directly on the DOM.
+ * Apply cross-chart filter directly on the DOM. Walks any element with a
+ * data-label attribute and dims those that don't match.
  */
 function applyFilterToDOM(container: HTMLElement, label: string | null) {
   const elements = container.querySelectorAll<SVGElement | HTMLElement>('[data-label]');
@@ -40,15 +43,177 @@ function applyFilterToDOM(container: HTMLElement, label: string | null) {
   });
 }
 
+/**
+ * Build a Marked instance whose ```chart code blocks are pre-rendered to
+ * SVG using the active deck theme's chart palette. Each call resets the
+ * chart index counter so chart-N IDs stay deterministic per slide.
+ */
+function buildMarkedForTheme(theme: SlidesTheme): Marked {
+  let chartIdx = 0;
+  return new Marked({
+    renderer: {
+      code({ text, lang }: { text: string; lang?: string }) {
+        if (lang === 'chart') {
+          return renderChartSVG(text, chartIdx++, undefined, theme.chartColors);
+        }
+        return `<pre><code class="language-${lang || ''}">${text
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')}</code></pre>`;
+      },
+    },
+  });
+}
+
+/**
+ * SlideStage dispatches on slide.layout and renders the appropriate JSX
+ * structure. Each layout has its own DOM shape so the CSS in App.css can
+ * style them independently. Body markdown is rendered through marked once
+ * per slide; the result is a string of HTML we drop into a div.
+ */
+function SlideStage({
+  slide,
+  theme,
+  marked,
+  refEl,
+}: {
+  slide: ParsedSlide;
+  theme: SlidesTheme;
+  marked: Marked;
+  refEl?: React.RefObject<HTMLDivElement | null>;
+}) {
+  // Each layout gets its own marked render of the appropriate markdown chunk.
+  const html = useMemo(
+    () => marked.parse(slide.markdown, { async: false }) as string,
+    [slide.markdown, marked],
+  );
+  const col1Html = useMemo(
+    () => (slide.col1Markdown ? (marked.parse(slide.col1Markdown, { async: false }) as string) : ''),
+    [slide.col1Markdown, marked],
+  );
+  const col2Html = useMemo(
+    () => (slide.col2Markdown ? (marked.parse(slide.col2Markdown, { async: false }) as string) : ''),
+    [slide.col2Markdown, marked],
+  );
+
+  // Strip the leading H1/H2 from the body html since the title is rendered
+  // separately by some layouts. We let marked render the heading first to
+  // pick up any inline formatting, then strip it from the html string.
+  const bodyHtmlMinusTitle = useMemo(() => {
+    if (!slide.title) return html;
+    return html.replace(/^\s*<h[12][^>]*>[^<]*<\/h[12]>\s*/i, '');
+  }, [html, slide.title]);
+
+  const titleStyle: React.CSSProperties = {
+    color: 'var(--slides-title)',
+    fontFamily: 'var(--slides-title-font)',
+  };
+
+  switch (slide.layout) {
+    case 'title': {
+      // Centered hero: big title, subtitle from first paragraph, accent stripe.
+      const subtitleMatch = bodyHtmlMinusTitle.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
+      const subtitleHtml = subtitleMatch ? subtitleMatch[1] : '';
+      return (
+        <div ref={refEl} className="slides-layout-title message-content" style={themeCssVars(theme)}>
+          <div className="slides-title-stack">
+            <h1 className="slides-title-big" style={titleStyle}>
+              {slide.title}
+            </h1>
+            <div
+              className="slides-title-stripe"
+              style={{ background: `var(--slides-accent1)` }}
+            />
+            {subtitleHtml && (
+              <div
+                className="slides-title-subtitle"
+                style={{ color: 'var(--slides-muted)' }}
+                dangerouslySetInnerHTML={{ __html: subtitleHtml }}
+              />
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    case 'section': {
+      // Left-aligned divider with kicker (uppercased first body line) + side bar.
+      const kickerMatch = bodyHtmlMinusTitle.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
+      const kicker = kickerMatch && kickerMatch[1] ? kickerMatch[1].replace(/<[^>]+>/g, '') : '';
+      return (
+        <div ref={refEl} className="slides-layout-section message-content" style={themeCssVars(theme)}>
+          <div className="slides-section-bar" style={{ background: `var(--slides-accent1)` }} />
+          <div className="slides-section-text">
+            {kicker && (
+              <div className="slides-section-kicker" style={{ color: 'var(--slides-accent1)' }}>
+                {kicker.toUpperCase()}
+              </div>
+            )}
+            <h1 className="slides-section-title" style={titleStyle}>
+              {slide.title}
+            </h1>
+          </div>
+        </div>
+      );
+    }
+
+    case 'two_column': {
+      return (
+        <div ref={refEl} className="slides-layout-two-column message-content" style={themeCssVars(theme)}>
+          <h2 className="slides-section-title" style={titleStyle}>
+            {slide.title}
+          </h2>
+          <div className="slides-two-column-grid">
+            <div className="slides-two-column-cell" dangerouslySetInnerHTML={{ __html: col1Html }} />
+            <div className="slides-two-column-cell" dangerouslySetInnerHTML={{ __html: col2Html }} />
+          </div>
+        </div>
+      );
+    }
+
+    case 'content_chart': {
+      return (
+        <div ref={refEl} className="slides-layout-content-chart message-content" style={themeCssVars(theme)}>
+          <h2 className="slides-content-title" style={titleStyle}>
+            {slide.title}
+          </h2>
+          <div
+            className="slides-content-chart-body"
+            dangerouslySetInnerHTML={{ __html: bodyHtmlMinusTitle }}
+          />
+        </div>
+      );
+    }
+
+    default: {
+      // 'content' or unknown — render the slide as-is, with the accent stripe
+      // under the title to mirror the slide master in the exported pptx.
+      return (
+        <div ref={refEl} className="slides-layout-content message-content" style={themeCssVars(theme)}>
+          <h2 className="slides-content-title" style={titleStyle}>
+            {slide.title}
+          </h2>
+          <div
+            className="slides-content-stripe"
+            style={{ background: `var(--slides-accent1)` }}
+          />
+          <div
+            className="slides-content-body"
+            dangerouslySetInnerHTML={{ __html: bodyHtmlMinusTitle }}
+          />
+        </div>
+      );
+    }
+  }
+}
+
 export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: Props) {
-  const slides = useMemo(() => {
-    // Strip the <!-- slides --> marker before splitting
-    const cleaned = content.replace(/^\s*<!--\s*slides\s*-->\s*\n?/, '');
-    return cleaned
-      .split(/\n---\n/)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-  }, [content]);
+  // Parse the deck once per content change: extracts theme + per-slide
+  // layout/columns. The result drives both rendering and the export button
+  // (export goes through the Go server which re-parses the same string).
+  const deck = useMemo(() => parseSlidesContent(content), [content]);
+  const theme = useMemo(() => resolveSlidesTheme(deck.theme), [deck.theme]);
+
+  const slides = deck.slides;
 
   const [currentSlide, setCurrentSlide] = useState(0);
   const [exporting, setExporting] = useState(false);
@@ -63,40 +228,19 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
   const slideRef = useRef<HTMLDivElement>(null);
   const editRef = useRef<HTMLDivElement>(null);
 
-  // Build slide HTML
-  const slidesMarked = useMemo(() => {
-    let chartIdx = 0;
-    return new Marked({
-      renderer: {
-        code({ text, lang }: { text: string; lang?: string }) {
-          if (lang === 'chart') {
-            return renderChartSVG(text, chartIdx++);
-          }
-          return `<pre><code class="language-${lang || ''}">${text.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`;
-        },
-      },
-    });
-  }, []);
+  // Marked instance is theme-scoped so chart svgs pick up the right palette.
+  // Re-create per render to keep chart-N counters deterministic per slide.
+  const marked = useMemo(() => buildMarkedForTheme(theme), [theme]);
 
-  const slideHtml = useMemo(() => {
-    if (slides[currentSlide] === undefined) return '';
-    return slidesMarked.parse(slides[currentSlide]!, { async: false }) as string;
-  }, [slides, currentSlide, slidesMarked]);
-
-  // Thumbnails
+  // Thumbnails: render each slide's main markdown as compact HTML.
   const thumbnailHtmls = useMemo(() => {
-    const marked = new Marked({
-      renderer: {
-        code({ text, lang }: { text: string; lang?: string }) {
-          if (lang === 'chart') {
-            return renderChartSVG(text, 0);
-          }
-          return `<pre><code class="language-${lang || ''}">${text.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`;
-        },
-      },
+    return slides.map((s) => {
+      const m = buildMarkedForTheme(theme);
+      // For thumbnails we just render the full slide markdown (cols + body).
+      const full = [s.markdown, s.col1Markdown, s.col2Markdown].filter(Boolean).join('\n\n');
+      return m.parse(full, { async: false }) as string;
     });
-    return slides.map((s) => marked.parse(s, { async: false }) as string);
-  }, [slides]);
+  }, [slides, theme]);
 
   const goNext = useCallback(() => {
     setCurrentSlide((s) => Math.min(s + 1, slides.length - 1));
@@ -175,13 +319,23 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
     return () => el.removeEventListener('click', handleClick);
   }, [editMode]);
 
+  // For edit mode, we render the slide as plain marked HTML (no layout
+  // shell) so the contentEditable surface stays uniform. The save path
+  // round-trips through htmlToMarkdown.
+  const editableHtml = useMemo(() => {
+    const s = slides[currentSlide];
+    if (!s) return '';
+    const full = [s.markdown, s.col1Markdown, s.col2Markdown].filter(Boolean).join('\n\n');
+    return marked.parse(full, { async: false }) as string;
+  }, [slides, currentSlide, marked]);
+
   // Set editable content when entering edit mode
   useEffect(() => {
     if (editMode && editRef.current) {
-      editRef.current.innerHTML = slideHtml;
+      editRef.current.innerHTML = editableHtml;
       editRef.current.focus();
     }
-  }, [editMode, currentSlide]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [editMode, editableHtml]);
 
   // Edit mode handlers
   const enterEditMode = useCallback(() => {
@@ -199,12 +353,23 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
     setSaving(true);
     setSaveError(null);
     try {
-      // Convert the currently edited slide's HTML back to markdown
-      const editedSlidemd = htmlToMarkdown(editRef.current.innerHTML);
-      // Reconstruct full content with the edited slide
-      const newSlides = [...slides];
-      newSlides[currentSlide] = editedSlidemd;
-      const newContent = newSlides.join('\n\n---\n\n');
+      // Convert the currently edited slide's HTML back to markdown.
+      // NOTE: round-tripping through edit mode currently strips the
+      // <!-- layout: ... --> directive and column fences. The user can
+      // re-add them in the source if needed; preserving them through
+      // contentEditable is a Phase 5 concern.
+      const editedSlideMd = htmlToMarkdown(editRef.current.innerHTML);
+      const allRaw = content
+        .replace(/^\s*<!--\s*slides\s*-->\s*\n?/m, '')
+        .split(/\n---\n/);
+      allRaw[currentSlide] = editedSlideMd;
+      // Preserve the slides marker + theme directive at the top.
+      const headerLines: string[] = [];
+      const slidesMarker = content.match(/^\s*<!--\s*slides\s*-->\s*\n?/m);
+      if (slidesMarker) headerLines.push('<!-- slides -->');
+      if (deck.theme) headerLines.push(`<!-- theme: ${deck.theme} -->`);
+      const newContent = (headerLines.length ? headerLines.join('\n') + '\n\n' : '') +
+        allRaw.join('\n\n---\n\n');
       await saveFileContent(filePath, newContent);
       onContentUpdate?.(filePath, newContent);
       setEditMode(false);
@@ -213,7 +378,7 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
     } finally {
       setSaving(false);
     }
-  }, [filePath, slides, currentSlide, onContentUpdate]);
+  }, [filePath, slides, currentSlide, content, deck.theme, onContentUpdate]);
 
   const clearFilter = useCallback(() => setActiveFilter(null), []);
 
@@ -227,10 +392,15 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
     [handleSave],
   );
 
+  const currentSlideData = slides[currentSlide];
+
   return (
     <div className="slides-viewer" ref={containerRef} tabIndex={0} onKeyDown={handleContainerKeyDown}>
       <div className="slides-viewer-header">
         <span className="slides-viewer-filename">{getDisplayName(fileName, 'slides')}</span>
+        <span className="slides-viewer-theme-badge" title={`Theme: ${theme.displayName}`}>
+          {theme.displayName}
+        </span>
         {!editMode && (
           <span className="slides-viewer-counter">
             {currentSlide + 1} / {slides.length}
@@ -288,7 +458,10 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
             saveError={saveError}
           />
           <div className="slides-viewer-body">
-            <div className="slides-viewer-stage">
+            <div
+              className="slides-viewer-stage"
+              style={{ ...themeCssVars(theme), background: `#${theme.bgColor}` }}
+            >
               <div
                 ref={editRef}
                 className="slides-viewer-slide message-content canvas-editable"
@@ -302,12 +475,18 @@ export function SlidesViewer({ content, fileName, filePath, onContentUpdate }: P
       ) : (
         <>
           <div className="slides-viewer-body">
-            <div className="slides-viewer-stage">
-              <div
-                ref={slideRef}
-                className="slides-viewer-slide message-content"
-                dangerouslySetInnerHTML={{ __html: slideHtml }}
-              />
+            <div
+              className="slides-viewer-stage"
+              style={{ ...themeCssVars(theme), background: `#${theme.bgColor}` }}
+            >
+              {currentSlideData && (
+                <SlideStage
+                  slide={currentSlideData}
+                  theme={theme}
+                  marked={marked}
+                  refEl={slideRef}
+                />
+              )}
             </div>
           </div>
           {activeFilter && (

@@ -3366,6 +3366,194 @@ a {
   font-style: italic;
 }
 
+/* ── Themed slide layouts ──
+   Each .slides-layout-* class is rendered by SlideStage in SlidesViewer.tsx.
+   They share the slide stage's theme CSS variables (--slides-bg, --slides-title,
+   --slides-body, --slides-muted, --slides-accent1, --slides-title-font,
+   --slides-body-font) which are pushed onto .slides-viewer-stage at runtime.
+   The styles below mirror the OOXML layouts emitted by buildSlideXML on the
+   Go side so the live preview matches the exported pptx. */
+
+.slides-viewer-stage [class^="slides-layout-"] {
+  width: 100%;
+  height: 100%;
+  padding: 36px 44px;
+  font-family: var(--slides-body-font, var(--font-sans));
+  color: var(--slides-body, var(--text-primary));
+  overflow-y: auto;
+  position: relative;
+  box-sizing: border-box;
+}
+
+/* Body text inside any layout — bullets, paragraphs, etc. — picks up
+   theme body color/font so the deck looks unified. */
+.slides-viewer-stage [class^="slides-layout-"] p,
+.slides-viewer-stage [class^="slides-layout-"] li {
+  color: var(--slides-body, var(--text-primary));
+  font-family: var(--slides-body-font, var(--font-sans));
+}
+.slides-viewer-stage [class^="slides-layout-"] h1,
+.slides-viewer-stage [class^="slides-layout-"] h2,
+.slides-viewer-stage [class^="slides-layout-"] h3 {
+  color: var(--slides-title, var(--text-primary));
+  font-family: var(--slides-title-font, var(--font-sans));
+}
+
+/* Title slide: centered hero with accent stripe between title and subtitle. */
+.slides-layout-title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.slides-title-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  text-align: center;
+  max-width: 80%;
+}
+.slides-title-big {
+  font-size: clamp(32px, 5vw, 56px);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -1px;
+  margin: 0;
+}
+.slides-title-stripe {
+  width: 120px;
+  height: 4px;
+  border-radius: 2px;
+}
+.slides-title-subtitle {
+  font-size: clamp(14px, 1.8vw, 20px);
+  font-weight: 400;
+  line-height: 1.4;
+  font-family: var(--slides-body-font, var(--font-sans));
+}
+.slides-title-subtitle p { margin: 0; }
+
+/* Section divider: left-aligned title with kicker and side bar. */
+.slides-layout-section {
+  display: flex;
+  align-items: center;
+  padding-left: 0;
+}
+.slides-section-bar {
+  width: 6px;
+  align-self: stretch;
+  margin-right: 36px;
+  border-radius: 0 3px 3px 0;
+}
+.slides-section-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.slides-section-kicker {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  font-family: var(--slides-body-font, var(--font-sans));
+}
+.slides-section-title {
+  font-size: clamp(28px, 4.2vw, 48px);
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.8px;
+  margin: 0;
+}
+
+/* Two-column: title at top, two equal columns below. */
+.slides-layout-two-column {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.slides-layout-two-column .slides-section-title {
+  font-size: clamp(20px, 2.8vw, 32px);
+}
+.slides-two-column-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px;
+  flex: 1;
+  min-height: 0;
+}
+.slides-two-column-cell {
+  border-left: 3px solid var(--slides-accent1, var(--accent));
+  padding-left: 16px;
+  overflow-y: auto;
+}
+.slides-two-column-cell ul,
+.slides-two-column-cell ol {
+  margin: 0;
+  padding-left: 18px;
+}
+
+/* Default content layout: title with accent stripe, body below. */
+.slides-layout-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.slides-content-title {
+  font-size: clamp(22px, 3vw, 32px);
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: -0.4px;
+  margin: 0;
+}
+.slides-content-stripe {
+  width: 56px;
+  height: 3px;
+  border-radius: 2px;
+  margin-top: 4px;
+  margin-bottom: 12px;
+}
+.slides-content-body {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Content + chart: smaller body, chart row gets the most space. */
+.slides-layout-content-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.slides-layout-content-chart .slides-content-title {
+  font-size: clamp(20px, 2.8vw, 30px);
+}
+.slides-content-chart-body {
+  flex: 1;
+  min-height: 0;
+}
+.slides-content-chart-body p:first-child {
+  font-size: clamp(13px, 1.6vw, 16px);
+  color: var(--slides-muted, var(--text-muted));
+  margin-top: 0;
+}
+.slides-content-chart-body .chart-container {
+  margin-top: 8px;
+}
+
+/* Theme badge in the viewer header showing which deck theme is active. */
+.slides-viewer-theme-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 999px;
+  margin-left: 8px;
+}
+
 /* ── Chart Container ── */
 .chart-container {
   display: flex;

@@ -544,8 +544,19 @@ function renderStackedBar(cfg: ChartConfig, activeFilter?: string | null): strin
 
 // ── Main entry ───────────────────────────────────────────────────────────
 
-export function renderChartSVG(text: string, chartIndex: number, activeFilter?: string | null): string {
+export function renderChartSVG(
+  text: string,
+  chartIndex: number,
+  activeFilter?: string | null,
+  themeColors?: string[],
+): string {
   const cfg = parseChartDSL(text);
+  // If the DSL didn't specify per-chart colors, fall back to the active
+  // deck theme palette. Theme colors are stored as bare hex; getColor()
+  // expects '#'-prefixed values.
+  if ((!cfg.colors || cfg.colors.length === 0) && themeColors && themeColors.length > 0) {
+    cfg.colors = themeColors.map((c) => (c.startsWith('#') ? c : `#${c}`));
+  }
   const isPieType = cfg.type === 'pie' || cfg.type === 'donut';
   const viewBox = isPieType ? '0 0 400 400' : '0 0 600 400';
   const width = isPieType ? '400' : '600';
