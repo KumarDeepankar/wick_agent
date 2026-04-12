@@ -170,21 +170,125 @@ point in one chart highlights that category across ALL charts on the slide.
 Click the same data point again to clear the filter. This is a live-preview
 feature — exported PPTX files contain standard static charts.
 
+## Themes
+
+Pick a deck-wide visual theme by adding **`<!-- theme: name -->`** anywhere
+in the file (typically right after the `<!-- slides -->` marker). The theme
+controls slide background, title color, accent stripe, footer style, and the
+default chart palette — so unstyled charts automatically match the slide
+chrome. If you omit the directive, `corporate` is used.
+
+| Theme | Style |
+|-------|-------|
+| `corporate` | White background, navy + teal accents, Georgia title — default, business reports |
+| `editorial` | Warm cream background, serif throughout, rust + amber accents — long-form essays |
+| `dark` | Near-black background, cyan + violet accents, sans-serif — technical decks, demos |
+| `vibrant` | White background, magenta + orange accents — pitches, marketing |
+
+```markdown
+<!-- slides -->
+<!-- theme: dark -->
+# Q4 Engineering Review
+```
+
+When you set a theme, **omit the per-chart `colors:` field** unless you have
+a specific reason to override — the theme palette is curated for harmony.
+
+## Slide Layouts
+
+Each slide can opt into a specific layout by adding **`<!-- layout: name -->`**
+inside the slide block (before the `# Title`). Without a directive, the slide
+uses the default `content` layout (title + bullets + optional charts).
+
+| Layout | Use for | Notes |
+|--------|---------|-------|
+| `title` | Cover slide / hero | Centered title (54pt) + first body line as subtitle, accent stripe below. No charts. |
+| `section` | Section dividers between major parts of the deck | Large left-aligned title, kicker text above (UPPER-CASED from first body line), vertical accent bar on the left. |
+| `content` | Standard slide (default) | Title + bullets + optional charts at the bottom. Used when no directive is given. |
+| `content_chart` | Chart-emphasized slide | Caption-sized body line, chart row takes ~70% of the slide. Use when the chart is the point. |
+| `two_column` | Side-by-side comparison | Title across top, two text columns below. Use `:::col1` / `:::col2` fences (see below). |
+
+### Title slide example
+
+```markdown
+<!-- layout: title -->
+# Annual Report 2026
+
+A look at the year ahead
+```
+
+### Section divider example
+
+```markdown
+<!-- layout: section -->
+# Findings
+
+Part Two
+```
+
+The `Part Two` line becomes a small uppercase kicker above the title.
+
+### Two-column slide
+
+Use **pandoc-style fenced divs** to separate the columns:
+
+```markdown
+<!-- layout: two_column -->
+# Pros and Cons
+
+:::col1
+- Faster iteration
+- Lower hosting cost
+- Easier to debug
+:::
+
+:::col2
+- Less mature ecosystem
+- Smaller talent pool
+- Migration risk
+:::
+```
+
+If you forget the `<!-- layout: two_column -->` directive, the parser still
+auto-detects the layout from the `:::col1`/`:::col2` fences.
+
+### Content-chart (chart-emphasized) example
+
+```markdown
+<!-- layout: content_chart -->
+# Revenue Growth
+
+Year-over-year revenue across all product lines.
+
+```chart
+type: line
+labels: [2021, 2022, 2023, 2024, 2025]
+data: [12, 18, 25, 38, 52]
+```
+```
+
 ## Guidelines for Good Slides
 
-1. **First slide**: Use only `# Title` and an optional subtitle line — this
-   becomes the cover/title slide.
+1. **First slide**: Use `<!-- layout: title -->` with `# Title` and an optional
+   subtitle line — this becomes the cover slide.
 
-2. **Keep slides focused**: Each slide should cover one idea. Aim for 3-5
+2. **Section dividers**: For decks of 8+ slides, insert
+   `<!-- layout: section -->` slides between major parts to create visual
+   chapter breaks.
+
+3. **Keep slides focused**: Each slide should cover one idea. Aim for 3-5
    bullet points maximum per slide.
 
-3. **Use headings**: Start each slide with `## Heading` so the exported PPTX
+4. **Use headings**: Start each slide with `## Heading` so the exported PPTX
    has proper slide titles.
 
-4. **Mix content types**: Alternate between bullets, code blocks, tables, and
-   quotes to keep the presentation engaging.
+5. **Mix content types**: Alternate between bullets, code blocks, tables,
+   charts, and two-column comparisons to keep the presentation engaging.
 
-5. **Typical deck length**: 5-10 slides for a focused presentation, up to 20
+6. **Pick a theme once**: Set `<!-- theme: name -->` near the top of the file.
+   Don't override per-chart colors unless you have a specific design reason.
+
+7. **Typical deck length**: 5-10 slides for a focused presentation, up to 20
    for comprehensive topics.
 
 ## Workflow
@@ -209,12 +313,27 @@ feature — exported PPTX files contain standard static charts.
 User: "Create a 5-slide presentation about Python best practices"
 
 Write a file like `python-best-practices.md` starting with
-`<!-- slides -->` on the first line, then:
-- Slide 1: Title slide (`# Python Best Practices`)
-- Slide 2: Code style (PEP 8, type hints)
+`<!-- slides -->` and a theme directive on the next line, then:
+- Slide 1: `<!-- layout: title -->` cover slide
+- Slide 2: Code style (PEP 8, type hints) — default content layout
 - Slide 3: Error handling (try/except patterns)
-- Slide 4: Testing (pytest, coverage)
+- Slide 4: Testing (pytest, coverage) — could use `two_column` for "good vs bad"
 - Slide 5: Summary / key takeaways
+
+```markdown
+<!-- slides -->
+<!-- theme: corporate -->
+
+<!-- layout: title -->
+# Python Best Practices
+
+A 2026 field guide
+
+---
+
+## Code Style
+...
+```
 
 ## Notes
 

@@ -79,19 +79,33 @@ Typical structure:
 
 Based on the artifacts, plan 8-15 slides covering:
 
-| Slide | Content |
-|-------|---------|
-| 1 | Title slide — research topic, index name, date range / filters |
-| 2 | Executive Summary — 3-5 key findings as bullets |
-| 3 | Data Overview — total docs, filters applied, scope |
-| 4-6 | Key Findings — one theme per slide with supporting charts |
-| 7-8 | Distribution Analysis — charts showing field distributions |
-| 9 | Comparisons (if applicable) — side-by-side charts |
-| 10 | Data Quality — observations, gaps, anomalies |
-| 11 | Recommendations — next steps, deeper dives |
-| 12 | Appendix (optional) — detailed tables, methodology |
+| Slide | Layout | Content |
+|-------|--------|---------|
+| 1 | `title` | Title slide — research topic, index name, date range / filters |
+| 2 | `content` | Executive Summary — 3-5 key findings as bullets |
+| 3 | `content` | Data Overview — total docs, filters applied, scope |
+| 4 | `section` | Section divider — "Key Findings" |
+| 5-7 | `content_chart` | Key Findings — one theme per slide, chart-emphasized |
+| 8-9 | `content_chart` | Distribution Analysis — charts showing field distributions |
+| 10 | `two_column` | Comparisons (if applicable) — side-by-side analysis |
+| 11 | `content` | Data Quality — observations, gaps, anomalies |
+| 12 | `section` | Section divider — "Next Steps" |
+| 13 | `content` | Recommendations — next steps, deeper dives |
+| 14 | `content` | Appendix (optional) — detailed tables, methodology |
 
 Adjust based on what the data actually contains. Not all slides are mandatory.
+
+### Pick a theme
+
+Set the deck theme on the second line of the file with `<!-- theme: name -->`.
+For research reports, **`corporate`** is the default and almost always right.
+Use `dark` only if the user explicitly asks for a technical/demo aesthetic;
+`editorial` for long-form qualitative reports; `vibrant` only for pitches.
+
+Once a theme is set, **omit per-chart `colors:` overrides** — the theme
+palette is curated so unstyled charts automatically harmonize with slide
+chrome. Only override colors when you need to encode meaning (e.g., red for
+errors, green for success).
 
 ## Step 4: Build Charts from Data
 
@@ -153,8 +167,10 @@ showValues: true
    points explaining it.
 4. **Use appropriate types** — bar for comparisons, line/area for trends, pie
    for composition, stacked_bar for part-to-whole.
-5. **Color consistency** — use the same color for the same category across slides.
-   Default palette: `[#2563eb, #059669, #d97706, #dc2626, #7c3aed, #0891b2]`
+5. **Let the theme color charts** — omit `colors:` from the chart DSL. The
+   active deck theme provides a curated palette and will auto-color series
+   so all charts in the report match each other and the slide chrome.
+   Override only to encode meaning (red=error, green=success, etc.).
 
 ## Step 5: Write the Report
 
@@ -170,6 +186,9 @@ write_file: <source_path>/report.md
 
 ```markdown
 <!-- slides -->
+<!-- theme: corporate -->
+
+<!-- layout: title -->
 # Research Report: <Topic>
 
 <Index Name> | <Date Range / Filters> | <Total Documents>
@@ -184,7 +203,17 @@ write_file: <source_path>/report.md
 
 ---
 
+<!-- layout: section -->
+# Findings
+
+Distribution and Trends
+
+---
+
+<!-- layout: content_chart -->
 ## Data Distribution
+
+Documents grouped by primary category.
 
 ```chart
 type: bar
@@ -194,10 +223,9 @@ data: [120, 85, 45]
 showValues: true
 ```
 
-Key observations about the distribution.
-
 ---
 
+<!-- layout: content_chart -->
 ## Trend Analysis
 
 ```chart
@@ -209,8 +237,24 @@ xLabel: Year
 yLabel: Count
 ```
 
-- Trend insight one
-- Trend insight two
+---
+
+<!-- layout: two_column -->
+## 2023 vs 2024
+
+:::col1
+**2023**
+- Volume: 1,200 docs
+- Top theme: Security
+- New sources: 4
+:::
+
+:::col2
+**2024**
+- Volume: 2,150 docs
+- Top theme: AI/ML
+- New sources: 11
+:::
 ```
 
 ### Slide Content Rules
