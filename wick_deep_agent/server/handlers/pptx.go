@@ -14,6 +14,9 @@ type slideContent struct {
 	Title  string
 	Body   []string       // paragraphs / bullet points
 	Charts []*ChartConfig // native charts parsed from ```chart fences
+	Layout string         // title|section|content|content_chart|two_column
+	Col1   []string       // two-column left, populated only when Layout=two_column
+	Col2   []string       // two-column right
 }
 
 // parsedDeck is the result of parsing a slides markdown file: a deck-wide
@@ -24,6 +27,7 @@ type parsedDeck struct {
 }
 
 var themeDirective = regexp.MustCompile(`(?m)^\s*<!--\s*theme:\s*([a-zA-Z0-9_-]+)\s*-->\s*\n?`)
+var layoutDirective = regexp.MustCompile(`(?m)^\s*<!--\s*layout:\s*([a-zA-Z0-9_-]+)\s*-->\s*\n?`)
 
 // parseMarkdownSlides splits markdown slide content into structured slides
 // and extracts the optional <!-- theme: name --> directive.
@@ -45,7 +49,15 @@ func parseMarkdownSlides(content string) parsedDeck {
 		if block == "" {
 			continue
 		}
+
 		s := slideContent{}
+
+		// Per-slide layout directive: <!-- layout: section -->
+		if m := layoutDirective.FindStringSubmatch(block); len(m) == 2 {
+			s.Layout = m[1]
+			block = layoutDirective.ReplaceAllString(block, "")
+		}
+
 		lines := strings.Split(block, "\n")
 		bodyStart := 0
 
@@ -64,13 +76,42 @@ func parseMarkdownSlides(content string) parsedDeck {
 			}
 		}
 
-		// Collect body paragraphs
+		// `target` is the slice that paragraph/bullet/heading lines append to.
+		// It points at s.Body by default and at s.Col1/s.Col2 inside :::col1
+		// / :::col2 fenced divs, so the same accumulation logic serves both.
+		target := &s.Body
+		flushPara := func(para *strings.Builder) {
+			if para.Len() > 0 {
+				*target = append(*target, stripMarkdown(para.String()))
+				para.Reset()
+			}
+		}
+
 		var para strings.Builder
 		inCode := false
 		codeFenceLang := ""
 		var codeBuf strings.Builder
 		for _, line := range lines[bodyStart:] {
 			trimmed := strings.TrimSpace(line)
+
+			// :::col1 / :::col2 / ::: fenced divs (pandoc-style).
+			if trimmed == ":::col1" || trimmed == ":::col2" {
+				flushPara(&para)
+				if trimmed == ":::col1" {
+					target = &s.Col1
+				} else {
+					target = &s.Col2
+				}
+				if s.Layout == "" {
+					s.Layout = "two_column"
+				}
+				continue
+			}
+			if trimmed == ":::" {
+				flushPara(&para)
+				target = &s.Body
+				continue
+			}
 
 			// Fenced blocks: capture ```chart bodies as native charts; drop other code.
 			if strings.HasPrefix(trimmed, "```") {
@@ -80,7 +121,7 @@ func parseMarkdownSlides(content string) parsedDeck {
 						if chartTypeIsNative(chart.Type) && (len(chart.Series) > 0 || len(chart.Data) > 0) {
 							s.Charts = append(s.Charts, chart)
 						} else {
-							s.Body = append(s.Body, fmt.Sprintf("[Chart: %s — unsupported in export]", chart.Type))
+							*target = append(*target, fmt.Sprintf("[Chart: %s — unsupported in export]", chart.Type))
 						}
 					}
 					inCode = false
@@ -102,42 +143,30 @@ func parseMarkdownSlides(content string) parsedDeck {
 
 			// Skip sub-headings (include as body text)
 			if strings.HasPrefix(trimmed, "### ") || strings.HasPrefix(trimmed, "## ") {
-				if para.Len() > 0 {
-					s.Body = append(s.Body, stripMarkdown(para.String()))
-					para.Reset()
-				}
-				s.Body = append(s.Body, stripMarkdown(strings.TrimLeft(trimmed, "# ")))
+				flushPara(&para)
+				*target = append(*target, stripMarkdown(strings.TrimLeft(trimmed, "# ")))
 				continue
 			}
 
 			// Bullet points
 			if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
-				if para.Len() > 0 {
-					s.Body = append(s.Body, stripMarkdown(para.String()))
-					para.Reset()
-				}
+				flushPara(&para)
 				text := strings.TrimPrefix(trimmed, "- ")
 				text = strings.TrimPrefix(text, "* ")
-				s.Body = append(s.Body, "• "+stripMarkdown(text))
+				*target = append(*target, "• "+stripMarkdown(text))
 				continue
 			}
 
 			// Numbered list
 			if matched, _ := regexp.MatchString(`^\d+\.\s`, trimmed); matched {
-				if para.Len() > 0 {
-					s.Body = append(s.Body, stripMarkdown(para.String()))
-					para.Reset()
-				}
-				s.Body = append(s.Body, stripMarkdown(trimmed))
+				flushPara(&para)
+				*target = append(*target, stripMarkdown(trimmed))
 				continue
 			}
 
 			// Empty line = paragraph break
 			if trimmed == "" {
-				if para.Len() > 0 {
-					s.Body = append(s.Body, stripMarkdown(para.String()))
-					para.Reset()
-				}
+				flushPara(&para)
 				continue
 			}
 
@@ -147,9 +176,7 @@ func parseMarkdownSlides(content string) parsedDeck {
 			}
 			para.WriteString(trimmed)
 		}
-		if para.Len() > 0 {
-			s.Body = append(s.Body, stripMarkdown(para.String()))
-		}
+		flushPara(&para)
 
 		if s.Title == "" && len(s.Body) > 0 {
 			s.Title = s.Body[0]
@@ -330,14 +357,26 @@ func writeZipBytes(zw *zip.Writer, name string, content []byte) {
 	w.Write(content)
 }
 
-// buildSlideXML generates a single slide with title and body text.
-// Uses standalone text boxes (not placeholder references) so shapes render
-// without requiring matching placeholder definitions in the slide layout.
-//
-// chartIDBase is the global chart ID assigned to this slide's first chart;
-// per-slide chart relationships start at rId2 (rId1 is the slideLayout).
-// theme drives title/body colors and fonts.
+// buildSlideXML dispatches to a layout-specific builder based on s.Layout.
+// Per-slide chart relationships start at rId2 (rId1 is the slideLayout).
+// chartIDBase is the global chart ID assigned to this slide's first chart.
 func buildSlideXML(s slideContent, chartIDBase int, theme *Theme) string {
+	switch s.Layout {
+	case "title":
+		return buildTitleSlide(s, theme)
+	case "section":
+		return buildSectionSlide(s, theme)
+	case "two_column":
+		return buildTwoColumnSlide(s, theme)
+	case "content_chart":
+		return buildContentChartSlide(s, chartIDBase, theme)
+	default:
+		return buildContentSlide(s, chartIDBase, theme)
+	}
+}
+
+// buildContentSlide is the default Title + body + optional charts layout.
+func buildContentSlide(s slideContent, chartIDBase int, theme *Theme) string {
 	titleEsc := html.EscapeString(s.Title)
 	hasCharts := len(s.Charts) > 0
 
