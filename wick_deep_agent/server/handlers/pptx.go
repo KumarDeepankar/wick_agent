@@ -14,6 +14,7 @@ type slideContent struct {
 	Title  string
 	Body   []string       // paragraphs / bullet points
 	Charts []*ChartConfig // native charts parsed from ```chart fences
+	Tables []*TableData   // pipe tables parsed from the slide body
 	Layout string         // title|section|content|content_chart|two_column
 	Col1   []string       // two-column left, populated only when Layout=two_column
 	Col2   []string       // two-column right
@@ -91,7 +92,11 @@ func parseMarkdownSlides(content string) parsedDeck {
 		inCode := false
 		codeFenceLang := ""
 		var codeBuf strings.Builder
-		for _, line := range lines[bodyStart:] {
+
+		// Indexed loop so we can peek ahead at lines[i+1] when detecting
+		// markdown pipe-table header/separator pairs.
+		for i := bodyStart; i < len(lines); i++ {
+			line := lines[i]
 			trimmed := strings.TrimSpace(line)
 
 			// :::col1 / :::col2 / ::: fenced divs (pandoc-style).
@@ -138,6 +143,18 @@ func parseMarkdownSlides(content string) parsedDeck {
 					codeBuf.WriteString(line)
 					codeBuf.WriteString("\n")
 				}
+				continue
+			}
+
+			// Pipe-table detection: a line starting with `|` followed by a
+			// `|---|---|` separator line. Tables parse into structured
+			// TableData and get rendered as a native OOXML <a:tbl> in the
+			// slide XML — NOT as raw pipe text.
+			if isTableHeader(lines, i) {
+				flushPara(&para)
+				tbl, next := parseTableBlock(lines, i)
+				s.Tables = append(s.Tables, tbl)
+				i = next - 1 // for-loop will increment
 				continue
 			}
 
@@ -375,15 +392,21 @@ func buildSlideXML(s slideContent, chartIDBase int, theme *Theme) string {
 	}
 }
 
-// buildContentSlide is the default Title + body + optional charts layout.
+// buildContentSlide is the default Title + body + optional charts/tables layout.
 func buildContentSlide(s slideContent, chartIDBase int, theme *Theme) string {
 	titleEsc := html.EscapeString(s.Title)
 	hasCharts := len(s.Charts) > 0
+	hasTables := len(s.Tables) > 0
 
-	// Body box: full height when there are no charts; upper third when there are.
+	// Body box height: shrinks to make room for charts and/or tables below.
+	// Layout zones from top (EMU):
+	//   title:   274638 .. 1417638
+	//   body:    1600200 .. bodyEnd
+	//   tables:  just below body (if any)
+	//   charts:  bottom region (if any)
 	bodyY, bodyCY := 1600200, 4525963
-	if hasCharts {
-		bodyCY = 1700000
+	if hasCharts || hasTables {
+		bodyCY = 1400000
 	}
 
 	var bodyParas string
@@ -397,16 +420,51 @@ func buildContentSlide(s slideContent, chartIDBase int, theme *Theme) string {
 		bodyParas = `<a:p><a:endParaRPr lang="en-US"/></a:p>`
 	}
 
-	// Lay charts out in a single horizontal row beneath the body text.
+	// Tables go directly below body text, charts (if any) below tables.
+	tablesXML := ""
+	tablesEndY := bodyY + bodyCY
+	if hasTables {
+		const (
+			tblMarginX  = 457200
+			tblRowWidth = 9144000 - 2*457200
+			tblGap      = 150000
+		)
+		// Split remaining vertical space between tables evenly. If charts
+		// are also present, cap the table region so charts get at least
+		// 2.8M EMU (~3") at the bottom.
+		tblYStart := bodyY + bodyCY + 150000
+		tblRegionMax := 6858000 - tblYStart - 250000
+		if hasCharts {
+			tblRegionMax -= 2800000
+		}
+		if tblRegionMax < 800000 {
+			tblRegionMax = 800000
+		}
+		nT := len(s.Tables)
+		tblCY := (tblRegionMax - tblGap*(nT-1)) / nT
+		if tblCY < 700000 {
+			tblCY = 700000
+		}
+		for j, t := range s.Tables {
+			y := tblYStart + j*(tblCY+tblGap)
+			tablesXML += buildTableFrame(t, theme, 50+j, tblMarginX, y, tblRowWidth, tblCY)
+		}
+		tablesEndY = tblYStart + nT*tblCY + (nT-1)*tblGap
+	}
+
+	// Lay charts out in a single horizontal row beneath the body/tables.
 	chartsXML := ""
 	if hasCharts {
 		const (
-			rowY     = 3400000
-			rowCY    = 3300000
+			rowCY    = 3000000
 			marginX  = 457200
 			gutter   = 200000
 			rowWidth = 9144000 - 2*457200
 		)
+		rowY := tablesEndY + 200000
+		if rowY+rowCY > 6550000 {
+			rowY = 6550000 - rowCY
+		}
 		n := len(s.Charts)
 		chartCX := (rowWidth - gutter*(n-1)) / n
 		nextID := 100 // shape ids unique within the slide
@@ -481,9 +539,9 @@ func buildContentSlide(s slideContent, chartIDBase int, theme *Theme) string {
           <a:bodyPr wrap="square" anchor="t"/>
           <a:lstStyle/>%s
         </p:txBody>
-      </p:sp>%s
+      </p:sp>%s%s
     </p:spTree>
   </p:cSld>
-</p:sld>`, theme.TitleColor, theme.TitleFont, titleEsc, bodyY, bodyCY, bodyParas, chartsXML)
+</p:sld>`, theme.TitleColor, theme.TitleFont, titleEsc, bodyY, bodyCY, bodyParas, tablesXML, chartsXML)
 }
 
