@@ -6,3 +6,17 @@ This product includes software developed by Kumar Deepankar
 
 Licensed under the Apache License, Version 2.0.
 See the LICENSE file for the full license text.
+
+-------------------------------------------------------------------------------
+
+Acknowledgments
+
+wick_agent's architecture is inspired by langchain-ai/deepagents
+(https://github.com/langchain-ai/deepagents), specifically its approach to
+middleware-style hook points around the agent loop, planning via a todo list,
+sub-agent delegation, and persistent memory injection. wick_agent is an
+independent implementation — no source code has been copied — but credit is
+due for the architectural ideas.
+
+langchain-ai/deepagents is distributed under the MIT License,
+Copyright (c) LangChain, Inc.
