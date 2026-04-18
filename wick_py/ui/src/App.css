@@ -49,9 +49,16 @@
   --user-bubble-muted: rgba(255, 255, 255, 0.75);
   --assistant-bubble: transparent;
   --assistant-bubble-text: #0f172a;
+  /* Legacy shadow aliases (kept for compat) */
   --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.08);
   --shadow-md: 0 2px 8px rgba(15, 23, 42, 0.1);
   --shadow-lg: 0 10px 28px rgba(15, 23, 42, 0.14);
+  /* Semantic elevation scale — Radix-inspired, 5 levels */
+  --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-2: 0 0 0 1px rgba(15, 23, 42, 0.04), 0 2px 4px rgba(15, 23, 42, 0.06);
+  --shadow-3: 0 6px 16px rgba(15, 23, 42, 0.08), 0 2px 4px rgba(15, 23, 42, 0.04);
+  --shadow-4: 0 16px 32px rgba(15, 23, 42, 0.12), 0 4px 8px rgba(15, 23, 42, 0.06);
+  --shadow-5: 0 24px 48px rgba(15, 23, 42, 0.18);
   --radius: 12px;
   --radius-sm: 8px;
   --radius-xs: 6px;
@@ -68,14 +75,23 @@
   --text-xl: clamp(14px, 0.4vw + 12.5px, 16px);
   --text-2xl: clamp(16px, 0.6vw + 14px, 19px);
   --text-3xl: clamp(19px, 0.8vw + 16px, 23px);
-  /* Responsive padding tokens — used by layout rules; scaled in a
-     media query below so small viewports get uniformly tighter spacing. */
+  /* Spacing rhythm — strict 4px grid (industry standard: Tailwind,
+     Material, Radix, Apple HIG). Compressed at narrow viewports below. */
   --pad-xs: 4px;
-  --pad-sm: 6px;
-  --pad-md: 10px;
-  --pad-lg: 14px;
-  --pad-xl: 18px;
-  --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --pad-sm: 8px;
+  --pad-md: 12px;
+  --pad-lg: 16px;
+  --pad-xl: 20px;
+  /* Motion system — tiered timings + purposeful easing.
+     Fast: hover/focus micro-feedback. Base: default. Slow: layout/drawer.
+     ease-out for entering surfaces; ease-in for exiting. */
+  --motion-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-base: 180ms cubic-bezier(0.32, 0.72, 0, 1);
+  --motion-slow: 280ms cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  /* Legacy alias — existing styles use var(--transition) throughout */
+  --transition: var(--motion-base);
   --glass: rgba(251, 251, 252, 0.88);
   --glass-border: rgba(15, 23, 42, 0.06);
   --sidebar-bg: #eff1f4;
@@ -134,6 +150,13 @@
   --sidebar-bg: #121317;
   --sidebar-border: #2a2b30;
   --sidebar-hover: #25262b;
+  /* Dark-mode elevation — pure black with higher alpha so shadows actually
+     register against dark surfaces. */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.35);
+  --shadow-3: 0 6px 16px rgba(0, 0, 0, 0.45), 0 2px 4px rgba(0, 0, 0, 0.3);
+  --shadow-4: 0 16px 32px rgba(0, 0, 0, 0.55), 0 4px 8px rgba(0, 0, 0, 0.35);
+  --shadow-5: 0 24px 48px rgba(0, 0, 0, 0.7);
 }
 
 html,
@@ -151,6 +174,16 @@ body,
   font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   letter-spacing: -0.015em;
   scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Smooth the light/dark theme swap — only animate the outermost surface
+   colors to avoid cascading nested-element flicker. */
+html,
+body {
+  transition:
+    background-color var(--motion-base),
+    color var(--motion-base);
 }
 
 /* ── Small-screen density ── Compress padding tokens below 1280px so the
@@ -158,18 +191,18 @@ body,
 @media (max-width: 1280px) {
   :root {
     --pad-xs: 3px;
-    --pad-sm: 5px;
-    --pad-md: 8px;
-    --pad-lg: 11px;
-    --pad-xl: 14px;
+    --pad-sm: 6px;
+    --pad-md: 10px;
+    --pad-lg: 12px;
+    --pad-xl: 16px;
   }
 }
 @media (max-width: 900px) {
   :root {
     --pad-xs: 2px;
     --pad-sm: 4px;
-    --pad-md: 6px;
-    --pad-lg: 9px;
+    --pad-md: 8px;
+    --pad-lg: 10px;
     --pad-xl: 12px;
   }
 }
@@ -217,11 +250,41 @@ button:active:not(:disabled),
   transform: scale(0.97);
 }
 
-/* Smooth focus ring for keyboard navigation */
+/* Focus ring — Radix-style dual stop: first draws surface-colored gap,
+   then the accent ring. Crisp on rounded elements, matches Linear/Stripe. */
 :focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 4px;
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--bg-primary),
+    0 0 0 4px var(--accent);
+  border-radius: 6px;
+}
+
+/* Reduced motion — accessibility baseline for users with vestibular
+   sensitivity or `prefers-reduced-motion: reduce` set system-wide. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Tabular numerals — keeps timestamps, counts, and IDs from jittering
+   as their values change. Applied only to numeric/monospace contexts. */
+time,
+code,
+.tabular-nums,
+.async-task-id,
+.async-task-time,
+.message-time,
+.trace-pagination,
+.data-page-info {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
 }
 
 /* Disabled state — explicit color, not just opacity */
