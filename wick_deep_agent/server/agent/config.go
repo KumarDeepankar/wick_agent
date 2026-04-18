@@ -16,12 +16,36 @@ type AgentConfig struct {
 }
 
 // SubAgentCfg describes a subagent template.
+//
+// Async and Sync control how the supervisor can invoke this sub-agent:
+//   - Sync=true  → exposed via delegate_to_agent (blocks the supervisor's tool call).
+//   - Async=true → exposed via start_async_task (non-blocking, returns a task_id).
+//
+// When both are false (the default from existing configs), the sub-agent is
+// treated as Sync-only to preserve backwards compatibility.
 type SubAgentCfg struct {
 	Name         string   `yaml:"name" json:"name"`
 	Description  string   `yaml:"description" json:"description"`
 	SystemPrompt string   `yaml:"system_prompt" json:"system_prompt"`
 	Tools        []string `yaml:"tools" json:"tools"`
 	Model        string   `yaml:"model" json:"model"`
+	Async        bool     `yaml:"async" json:"async"`
+	Sync         bool     `yaml:"sync" json:"sync"`
+}
+
+// SyncEnabled reports whether this sub-agent should be invocable via
+// delegate_to_agent. Defaults to true when neither Sync nor Async is set.
+func (s SubAgentCfg) SyncEnabled() bool {
+	if !s.Sync && !s.Async {
+		return true
+	}
+	return s.Sync
+}
+
+// AsyncEnabled reports whether this sub-agent should be invocable via
+// start_async_task.
+func (s SubAgentCfg) AsyncEnabled() bool {
+	return s.Async
 }
 
 // BackendCfg holds backend configuration.

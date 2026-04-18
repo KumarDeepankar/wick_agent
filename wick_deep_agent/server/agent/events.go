@@ -7,4 +7,5 @@ type StreamEvent struct {
 	RunID    string `json:"run_id,omitempty"`
 	Data     any    `json:"data,omitempty"`
 	ThreadID string `json:"thread_id,omitempty"` // set on "done" event
+	TaskID   string `json:"task_id,omitempty"`   // set on on_async_task_* events
 }
