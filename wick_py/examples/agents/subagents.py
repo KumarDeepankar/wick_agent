@@ -42,7 +42,7 @@ def build_report_agent() -> Agent:
         name="Report Generator",
         system_prompt=prompts.load("report_generator"),
         builtin_tools=["read_file", "write_file", "ls", "glob"],
-        mode="async",  # long-running: reads artifacts and writes a slide deck
+        mode="sync",  # final step — supervisor blocks once, returns "report ready"
     )
 
 
