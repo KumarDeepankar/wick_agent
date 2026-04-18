@@ -55,15 +55,24 @@
   --radius-xs: 6px;
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-  /* Typography scale — responsive via clamp(min, preferred, max) */
-  --text-xs: clamp(10px, 0.55vw + 7px, 11px);
-  --text-sm: clamp(11px, 0.6vw + 7.5px, 12px);
-  --text-base: clamp(12.5px, 0.7vw + 8px, 14px);
-  --text-md: clamp(13px, 0.75vw + 8.5px, 15px);
-  --text-lg: clamp(14px, 0.8vw + 9px, 16px);
-  --text-xl: clamp(15px, 0.9vw + 10px, 18px);
-  --text-2xl: clamp(18px, 1.1vw + 12px, 22px);
-  --text-3xl: clamp(22px, 1.4vw + 14px, 28px);
+  /* Typography scale — tight and nearly-flat across viewports so small
+     screens and wide monitors feel equally dense. Tuned against modern dev
+     tools (Linear, VSCode, Cursor) — base sits at ~13px, not 14–15. */
+  --text-xs: clamp(10px, 0.25vw + 9.2px, 11px);
+  --text-sm: clamp(11px, 0.25vw + 10.2px, 12px);
+  --text-base: clamp(12px, 0.3vw + 10.8px, 13px);
+  --text-md: clamp(12.5px, 0.3vw + 11.3px, 13.5px);
+  --text-lg: clamp(13px, 0.35vw + 11.7px, 14.5px);
+  --text-xl: clamp(14px, 0.4vw + 12.5px, 16px);
+  --text-2xl: clamp(16px, 0.6vw + 14px, 19px);
+  --text-3xl: clamp(19px, 0.8vw + 16px, 23px);
+  /* Responsive padding tokens — used by layout rules; scaled in a
+     media query below so small viewports get uniformly tighter spacing. */
+  --pad-xs: 4px;
+  --pad-sm: 6px;
+  --pad-md: 10px;
+  --pad-lg: 14px;
+  --pad-xl: 18px;
   --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   --glass: rgba(255, 255, 255, 0.85);
   --glass-border: rgba(15, 23, 42, 0.06);
@@ -127,14 +136,50 @@ body,
   background: var(--bg-secondary);
   color: var(--text-primary);
   font-family: var(--font-sans);
-  font-size: var(--text-md);
-  line-height: 1.5;
+  font-size: var(--text-base);
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
-  letter-spacing: -0.011em;
+  letter-spacing: -0.015em;
   scroll-behavior: smooth;
+}
+
+/* ── Small-screen density ── Compress padding tokens below 1280px so the
+   same layout fits roughly the same amount of information. */
+@media (max-width: 1280px) {
+  :root {
+    --pad-xs: 3px;
+    --pad-sm: 5px;
+    --pad-md: 8px;
+    --pad-lg: 11px;
+    --pad-xl: 14px;
+  }
+}
+@media (max-width: 900px) {
+  :root {
+    --pad-xs: 2px;
+    --pad-sm: 4px;
+    --pad-md: 6px;
+    --pad-lg: 9px;
+    --pad-xl: 12px;
+  }
+}
+
+/* Tighten chat layout on laptop-sized viewports so small screens don't
+   waste space with big margins. */
+@media (max-width: 1280px) {
+  .chat-container          { padding: 0 clamp(12px, 2vw, 24px); }
+  .chat-messages .chat-container { gap: 12px; padding-top: 16px; padding-bottom: 16px; }
+  .message-row.assistant + .message-row.user { margin-top: 8px; }
+  .message-row.user + .message-row.assistant { margin-top: 6px; }
+  .message-bubble.user     { padding: 8px 14px; }
+}
+@media (max-width: 900px) {
+  .chat-container          { padding: 0 10px; }
+  .chat-messages .chat-container { gap: 10px; padding-top: 10px; padding-bottom: 10px; }
+  .message-bubble.user     { padding: 7px 12px; }
 }
 
 /* ── Custom Scrollbars ── */
@@ -1792,8 +1837,8 @@ a {
 /* ── Message Bubbles ── */
 .message-bubble {
   max-width: 100%;
-  font-size: var(--text-md);
-  line-height: 1.7;
+  font-size: var(--text-base);
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
   font-weight: 400;
@@ -2545,27 +2590,38 @@ a {
 
 /* ── Polling run group (collapsed async-task polling across iterations) ── */
 .polling-run {
-  border: 1px dashed var(--border);
-  border-radius: var(--radius-xs);
-  background: var(--bg-tertiary);
-  margin: 6px 0;
+  margin: 6px 0 3px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.02),
+    0 1px 2px rgba(15, 23, 42, 0.03);
   overflow: hidden;
 }
+[data-theme='dark'] .polling-run {
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.03),
+    0 1px 2px rgba(0, 0, 0, 0.25);
+}
 .polling-run.running {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  box-shadow:
+    0 0 0 1px var(--accent-soft),
+    0 1px 2px rgba(15, 23, 42, 0.04);
 }
 .polling-run-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--pad-sm);
   width: 100%;
-  padding: 7px 12px;
-  background: transparent;
+  padding: var(--pad-sm) var(--pad-md);
+  background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%);
   border: none;
+  border-bottom: 1px solid var(--border-light);
   cursor: pointer;
   text-align: left;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: var(--text-sm);
   transition: color var(--transition), background var(--transition);
 }
@@ -2579,6 +2635,7 @@ a {
 .polling-run-label {
   flex: 1;
   font-weight: 500;
+  letter-spacing: -0.005em;
 }
 .polling-run-caret {
   font-size: var(--text-xs);
@@ -2589,12 +2646,11 @@ a {
   transform: rotate(90deg);
 }
 .polling-run-body {
-  padding: 6px 12px 10px;
-  border-top: 1px solid var(--border-light);
+  padding: var(--pad-sm) var(--pad-md) var(--pad-md);
   background: var(--bg-primary);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--pad-sm);
 }
 
 /* ── Async Task toggle (header button) ── */
@@ -2756,17 +2812,27 @@ a {
 /* ── Card ── */
 .async-task-card {
   background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
-  padding: 12px 14px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: var(--pad-md) var(--pad-lg);
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  transition: border-color var(--transition);
+  gap: var(--pad-sm);
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.02),
+    0 1px 2px rgba(15, 23, 42, 0.03);
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+[data-theme='dark'] .async-task-card {
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.03),
+    0 1px 2px rgba(0, 0, 0, 0.25);
 }
 .async-task-card.running {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  box-shadow:
+    0 0 0 1px var(--accent-soft),
+    0 1px 2px rgba(15, 23, 42, 0.04);
 }
 .async-task-card-head {
   display: flex;
@@ -5216,15 +5282,26 @@ a {
 
 /* ── Parallel Fork View ── */
 .parallel-fork {
-  margin: 8px 0 4px;
+  margin: 6px 0 3px;
   border: 1px solid var(--border-light);
-  border-radius: var(--radius-sm);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.02),
+    0 1px 2px rgba(15, 23, 42, 0.03);
   overflow: hidden;
   animation: iter-in 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
+[data-theme='dark'] .parallel-fork {
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.03),
+    0 1px 2px rgba(0, 0, 0, 0.25);
+}
 .parallel-fork.running {
-  border-color: var(--accent);
-  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  box-shadow:
+    0 0 0 1px var(--accent-soft),
+    0 1px 2px rgba(15, 23, 42, 0.04);
 }
 .parallel-fork.done {
   border-color: var(--border-light);
@@ -5232,10 +5309,11 @@ a {
 .parallel-fork-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: var(--bg-secondary);
+  gap: var(--pad-sm);
+  padding: var(--pad-sm) var(--pad-md);
+  background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%);
   border-bottom: 1px solid var(--border-light);
+  font-size: var(--text-sm);
 }
 .fork-icon {
   color: var(--accent);
@@ -5246,10 +5324,10 @@ a {
 }
 .parallel-fork-label {
   font-size: var(--text-sm);
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-secondary);
-  font-family: var(--font-mono);
-  letter-spacing: -0.01em;
+  font-family: var(--font-sans);
+  letter-spacing: -0.005em;
 }
 .parallel-fork-lanes {
   display: flex;
@@ -5258,8 +5336,8 @@ a {
 }
 .parallel-fork-lane {
   position: relative;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--border-light);
+  padding: var(--pad-xs) var(--pad-sm);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-light) 50%, transparent);
 }
 .parallel-fork-lane:last-child {
   border-bottom: none;
