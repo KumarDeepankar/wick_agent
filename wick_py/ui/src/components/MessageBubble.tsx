@@ -262,27 +262,83 @@ function AsyncTaskInline({ tool }: { tool: ToolCallInfo }) {
   );
 }
 
+function formatDuration(ms: number | undefined): string {
+  if (!ms || ms < 1) return '';
+  if (ms < 1000) return `${ms}ms`;
+  const s = ms / 1000;
+  if (s < 10) return `${s.toFixed(1)}s`;
+  return `${Math.round(s)}s`;
+}
+
 function ToolCallCard({ tool }: { tool: ToolCallInfo }) {
   const isSubAgent = tool.name === 'delegate_to_agent';
   const hasSubAgentState = !!(tool.subIterations || tool.subStatus);
   const isAsyncTask = !!tool.asyncTaskId;
+
+  // Sub-agent + async-task keep the bordered "content card" treatment
+  // because they contain streamed prose the user actually reads. Everything
+  // else demotes to a compact single-line row.
+  if (isSubAgent || isAsyncTask) {
+    return <ToolContentCard
+      tool={tool}
+      isSubAgent={isSubAgent}
+      hasSubAgentState={hasSubAgentState}
+      isAsyncTask={isAsyncTask}
+    />;
+  }
+
+  return <ToolRow tool={tool} />;
+}
+
+function ToolRow({ tool }: { tool: ToolCallInfo }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasOutput = !!tool.output;
+  const duration = formatDuration(tool.durationMs);
+
+  return (
+    <div className={`tool-row ${tool.status} ${expanded ? 'expanded' : ''}`}>
+      <div
+        className="tool-row-line"
+        onClick={() => { if (hasOutput) setExpanded(!expanded); }}
+        role={hasOutput ? 'button' : undefined}
+      >
+        <ToolIcon status={tool.status} />
+        <span className="tool-row-name">{tool.name}</span>
+        {tool.args && (
+          <span className="tool-row-args">{formatArgs(tool.args)}</span>
+        )}
+        <span className="tool-row-meta">
+          {tool.status === 'running' && !duration ? 'running' : duration}
+        </span>
+      </div>
+      {expanded && hasOutput && (
+        <pre className="tool-output-content tool-row-output">{tool.output}</pre>
+      )}
+    </div>
+  );
+}
+
+function ToolContentCard({ tool, isSubAgent, hasSubAgentState, isAsyncTask }: {
+  tool: ToolCallInfo;
+  isSubAgent: boolean;
+  hasSubAgentState: boolean;
+  isAsyncTask: boolean;
+}) {
   const [expanded, setExpanded] = useState(isSubAgent);
   const hasOutput = !!tool.output;
-  // Badge status: async-task card follows task state, sub-agent follows sub
-  // status, otherwise the raw tool call status.
   const iconStatus = isAsyncTask
     ? (tool.asyncTaskStatus ?? 'running')
-    : isSubAgent ? (tool.subStatus ?? tool.status) : tool.status;
+    : (tool.subStatus ?? tool.status);
   const pillClass = isAsyncTask
     ? `tool-call-pill ${iconStatus} async-task-card`
-    : `tool-call-pill ${tool.status} ${isSubAgent ? 'subagent-card' : ''}`;
+    : `tool-call-pill ${tool.status} subagent-card`;
 
   return (
     <div className={pillClass}>
       <div
         className="tool-call-header"
-        onClick={() => { if (hasOutput || isSubAgent || isAsyncTask) setExpanded(!expanded); }}
-        role={(hasOutput || isAsyncTask) ? 'button' : undefined}
+        onClick={() => setExpanded(!expanded)}
+        role="button"
       >
         <ToolIcon status={iconStatus} />
         <span className="tool-call-name">
@@ -292,13 +348,11 @@ function ToolCallCard({ tool }: { tool: ToolCallInfo }) {
         {isAsyncTask && (
           <span className="async-task-status-badge">{iconStatus}</span>
         )}
-        {(hasOutput || isAsyncTask) && (
-          <span className={`tool-call-chevron ${expanded ? 'open' : ''}`}>
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-              <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </span>
-        )}
+        <span className={`tool-call-chevron ${expanded ? 'open' : ''}`}>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </span>
       </div>
       {expanded && isAsyncTask && <AsyncTaskInline tool={tool} />}
       {expanded && !isAsyncTask && isSubAgent && hasSubAgentState && <SubAgentIterations tool={tool} />}
@@ -374,21 +428,21 @@ function ParallelToolGroup({ tools, traceId, onViewPrompt }: { tools: ToolCallIn
     allDone ? 'done' : (runningCount === 0 && doneCount === 0) ? 'initialized' : 'running';
   const label =
     phase === 'done'
-      ? `${tools.length} parallel tools completed`
+      ? `${tools.length} parallel · completed`
       : phase === 'initialized'
-        ? `${tools.length} parallel tools — initialized`
-        : `${doneCount} of ${tools.length} tools complete`;
+        ? `${tools.length} parallel · queued`
+        : `${doneCount}/${tools.length} complete`;
 
   return (
-    <div className={`parallel-fork ${phase}`}>
-      <div className="parallel-fork-header">
+    <div className={`parallel-rail ${phase}`}>
+      <div className="parallel-rail-header">
         <ForkIcon />
-        <span className="parallel-fork-label">{label}</span>
+        <span className="parallel-rail-label">{label}</span>
         <ViewPromptButton traceId={traceId} onViewPrompt={onViewPrompt} />
       </div>
-      <div className="parallel-fork-lanes">
+      <div className="parallel-rail-lanes">
         {tools.map((tc) => (
-          <div key={tc.id} className="parallel-fork-lane">
+          <div key={tc.id} className="parallel-rail-lane">
             <ToolCallCard tool={tc} />
           </div>
         ))}

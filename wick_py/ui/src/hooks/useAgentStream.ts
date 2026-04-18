@@ -350,6 +350,7 @@ export function useAgentStream() {
               const existing = currentIterRef.current.toolCalls.find((t) => t.id === runId);
               if (existing) {
                 existing.status = 'running';
+                existing.startedAt = Date.now();
                 if (inputArgs && !existing.args) existing.args = inputArgs;
                 // Fallback fold — args may not have been available at
                 // pre-seed time, or the on_llm_output event was absent.
@@ -361,6 +362,7 @@ export function useAgentStream() {
                   args: inputArgs,
                   output: null,
                   status: 'running',
+                  startedAt: Date.now(),
                 };
                 maybeFoldLifecycleCall(tc);
                 currentIterRef.current.toolCalls.push(tc);
@@ -447,6 +449,7 @@ export function useAgentStream() {
               if (tc) {
                 tc.status = 'done';
                 tc.output = outputStr;
+                if (tc.startedAt) tc.durationMs = Date.now() - tc.startedAt;
 
                 // start_async_task — the tool returns synchronously with a
                 // task_id, but the background task is still running. Record

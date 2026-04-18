@@ -27,6 +27,8 @@ export interface ToolCallInfo {
   args: Record<string, unknown> | null;    // from on_tool_start data.input
   output: string | null;                   // from on_tool_end data.output
   status: 'pending' | 'running' | 'done' | 'error';
+  startedAt?: number;                           // ms epoch, set on on_tool_start
+  durationMs?: number;                          // set on on_tool_end
   // Sub-agent streaming state (only for delegate_to_agent tool calls)
   subAgentName?: string;
   subIterations?: Iteration[];
