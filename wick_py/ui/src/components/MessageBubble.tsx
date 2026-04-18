@@ -23,6 +23,53 @@ function renderMarkdown(text: string): string {
   return renderer.parse(text, { async: false }) as string;
 }
 
+// Async-lifecycle tools managed by the SubAgentHook. Multiple consecutive
+// iterations that call ONLY these (e.g. the supervisor polling check_async_task
+// repeatedly while a batch runs) collapse into a single PollingRunGroup so
+// the chat doesn't flood with identical "2 parallel tools completed" cards.
+const ASYNC_LIFECYCLE_TOOLS = new Set([
+  'start_async_task',
+  'check_async_task',
+  'update_async_task',
+  'cancel_async_task',
+  'list_async_tasks',
+]);
+
+function isPollingIteration(iter: Iteration): boolean {
+  if (iter.toolCalls.length === 0) return false;
+  return iter.toolCalls.every((tc) => ASYNC_LIFECYCLE_TOOLS.has(tc.name));
+}
+
+type IterationChunk =
+  | { type: 'single'; iter: Iteration }
+  | { type: 'polling-run'; iters: Iteration[] };
+
+function chunkIterations(iters: Iteration[]): IterationChunk[] {
+  const chunks: IterationChunk[] = [];
+  let pollingBuffer: Iteration[] = [];
+  const flush = () => {
+    if (pollingBuffer.length === 0) return;
+    // Only collapse when 2+ polling iterations are consecutive — a single poll
+    // stays as a normal iteration so the user still sees the tool call clearly.
+    if (pollingBuffer.length >= 2) {
+      chunks.push({ type: 'polling-run', iters: pollingBuffer });
+    } else {
+      for (const it of pollingBuffer) chunks.push({ type: 'single', iter: it });
+    }
+    pollingBuffer = [];
+  };
+  for (const it of iters) {
+    if (isPollingIteration(it)) {
+      pollingBuffer.push(it);
+    } else {
+      flush();
+      chunks.push({ type: 'single', iter: it });
+    }
+  }
+  flush();
+  return chunks;
+}
+
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
@@ -254,6 +301,78 @@ function ParallelAgentFork({ tools, traceId, onViewPrompt }: { tools: ToolCallIn
   );
 }
 
+function ClockIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="8" cy="8" r="6" />
+      <polyline points="8,5 8,8 10.5,9.5" />
+    </svg>
+  );
+}
+
+function PollingRunGroup({ iters, onViewPrompt, isStreaming }: {
+  iters: Iteration[];
+  onViewPrompt?: (traceId: string) => void;
+  isStreaming: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  // Count total async lifecycle operations across the run.
+  const ops = iters.reduce((n, it) => n + it.toolCalls.length, 0);
+  const doneOps = iters.reduce(
+    (n, it) => n + it.toolCalls.filter((tc) => tc.status === 'done').length,
+    0,
+  );
+
+  // Count distinct task_ids referenced across calls so the header shows
+  // "Polling 2 tasks" rather than a raw op count alone.
+  const taskIds = new Set<string>();
+  for (const it of iters) {
+    for (const tc of it.toolCalls) {
+      const id = (tc.args as Record<string, unknown> | null)?.task_id as string | undefined;
+      if (id) taskIds.add(id);
+    }
+  }
+
+  const allDone = doneOps === ops && ops > 0;
+  const taskWord = taskIds.size === 1 ? 'task' : 'tasks';
+  const taskSummary = taskIds.size > 0 ? ` ${taskIds.size} ${taskWord}` : '';
+  const headerLabel = allDone
+    ? `Polled background${taskSummary} — ${ops} ops across ${iters.length} turns`
+    : `Polling background${taskSummary} — ${ops} ops across ${iters.length} turns`;
+
+  return (
+    <div className={`polling-run ${allDone ? 'done' : 'running'}`}>
+      <button
+        type="button"
+        className="polling-run-header"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+      >
+        <ClockIcon />
+        <span className="polling-run-label">{headerLabel}</span>
+        <span className={`polling-run-caret ${expanded ? 'open' : ''}`} aria-hidden="true">
+          ▸
+        </span>
+      </button>
+      {expanded && (
+        <div className="polling-run-body">
+          {iters.map((iter, i) => (
+            <IterationGroup
+              key={iter.index}
+              iteration={iter}
+              nextLlmInputTraceId={iters[i + 1]?.llmInputTraceId}
+              isFinal={false}
+              isStreaming={isStreaming && i === iters.length - 1}
+              onViewPrompt={onViewPrompt}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function IterationGroup({ iteration, nextLlmInputTraceId, isFinal, isStreaming, onViewPrompt }: {
   iteration: Iteration;
   nextLlmInputTraceId?: string;
@@ -403,16 +522,33 @@ export function MessageBubble({ message, isStreaming, status, onViewPrompt }: Pr
         <div className="message-content">
           {hasIterations ? (
             <>
-              {iterations.map((iter, i) => {
-                const isFinal = i === iterations.length - 1 && iter.toolCalls.length === 0;
-                const nextTraceId = iterations[i + 1]?.llmInputTraceId;
+              {chunkIterations(iterations).map((chunk, idx, chunks) => {
+                if (chunk.type === 'polling-run') {
+                  return (
+                    <PollingRunGroup
+                      key={`poll-run-${chunk.iters[0]!.index}`}
+                      iters={chunk.iters}
+                      isStreaming={isActiveStream && idx === chunks.length - 1}
+                      onViewPrompt={onViewPrompt}
+                    />
+                  );
+                }
+                const iter = chunk.iter;
+                // Find the next iteration across chunks to get its llm trace id.
+                let nextTraceId: string | undefined;
+                if (idx + 1 < chunks.length) {
+                  const nextChunk = chunks[idx + 1]!;
+                  const nextIter = nextChunk.type === 'single' ? nextChunk.iter : nextChunk.iters[0]!;
+                  nextTraceId = nextIter.llmInputTraceId;
+                }
+                const isFinal = idx === chunks.length - 1 && iter.toolCalls.length === 0;
                 return (
                   <IterationGroup
                     key={iter.index}
                     iteration={iter}
                     nextLlmInputTraceId={nextTraceId}
                     isFinal={isFinal}
-                    isStreaming={isActiveStream}
+                    isStreaming={isActiveStream && idx === chunks.length - 1}
                     onViewPrompt={onViewPrompt}
                   />
                 );

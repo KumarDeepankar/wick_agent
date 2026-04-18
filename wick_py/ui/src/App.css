@@ -2543,6 +2543,60 @@ a {
   border-color: var(--text-muted);
 }
 
+/* ── Polling run group (collapsed async-task polling across iterations) ── */
+.polling-run {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-tertiary);
+  margin: 6px 0;
+  overflow: hidden;
+}
+.polling-run.running {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.polling-run-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 12px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  transition: color var(--transition), background var(--transition);
+}
+.polling-run-header:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.polling-run.running .polling-run-header {
+  color: var(--accent);
+}
+.polling-run-label {
+  flex: 1;
+  font-weight: 500;
+}
+.polling-run-caret {
+  font-size: var(--text-xs);
+  transition: transform 0.15s ease;
+  opacity: 0.6;
+}
+.polling-run-caret.open {
+  transform: rotate(90deg);
+}
+.polling-run-body {
+  padding: 6px 12px 10px;
+  border-top: 1px solid var(--border-light);
+  background: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 /* ── Async Task toggle (header button) ── */
 .async-task-toggle {
   display: flex;
