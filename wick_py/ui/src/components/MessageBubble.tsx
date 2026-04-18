@@ -1,7 +1,7 @@
 import { useMemo, useState, useCallback } from 'react';
 import { Marked } from 'marked';
 import hljs from 'highlight.js';
-import type { ChatMessage, StreamStatus, Iteration, ToolCallInfo } from '../types';
+import type { ChatMessage, StreamStatus, Iteration, ToolCallInfo, AsyncTaskToolCall, AsyncTaskPoll } from '../types';
 
 const renderer = new Marked({
   breaks: true,
@@ -35,9 +35,16 @@ const ASYNC_LIFECYCLE_TOOLS = new Set([
   'list_async_tasks',
 ]);
 
+function visibleToolCalls(iter: Iteration): ToolCallInfo[] {
+  return iter.toolCalls.filter((tc) => !tc.foldedIntoRunId);
+}
+
 function isPollingIteration(iter: Iteration): boolean {
-  if (iter.toolCalls.length === 0) return false;
-  return iter.toolCalls.every((tc) => ASYNC_LIFECYCLE_TOOLS.has(tc.name));
+  const visible = visibleToolCalls(iter);
+  // An iteration whose only lifecycle calls are already attached to inline
+  // async-task cards has nothing left to render as a "polling" turn.
+  if (visible.length === 0) return false;
+  return visible.every((tc) => ASYNC_LIFECYCLE_TOOLS.has(tc.name));
 }
 
 type IterationChunk =
@@ -174,24 +181,118 @@ function SubAgentIterations({ tool }: { tool: ToolCallInfo }) {
   );
 }
 
+function AsyncTaskInline({ tool }: { tool: ToolCallInfo }) {
+  const status = tool.asyncTaskStatus ?? 'running';
+  const streamed = tool.asyncTaskStreamedContent ?? '';
+  const subCalls: AsyncTaskToolCall[] = tool.asyncTaskToolCalls ?? [];
+  const updates = tool.asyncTaskUpdates ?? [];
+  const polls: AsyncTaskPoll[] = tool.asyncTaskPolls ?? [];
+  const finalOutput = tool.asyncTaskFinalOutput ?? '';
+  const err = tool.asyncTaskError;
+  const html = useMemo(() => (streamed ? renderMarkdown(streamed) : ''), [streamed]);
+
+  return (
+    <div className="async-task-inline">
+      {tool.asyncTaskDescription && (
+        <div className="async-task-description">{tool.asyncTaskDescription}</div>
+      )}
+      {updates.length > 0 && (
+        <div className="async-task-updates">
+          {updates.map((u, i) => (
+            <div key={`upd-${i}`} className="async-task-update">
+              <span className="async-task-update-badge">update</span>
+              <span className="async-task-update-text">{u}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {streamed && (
+        <div className="async-task-stream">
+          <span dangerouslySetInnerHTML={{ __html: html }} />
+          {status === 'running' && <span className="streaming-cursor" />}
+        </div>
+      )}
+      {subCalls.length > 0 && (
+        <div className="async-task-subtools">
+          {subCalls.map((sc) => (
+            <div key={sc.id} className={`tool-call-pill ${sc.status}`}>
+              <div className="tool-call-header">
+                <ToolIcon status={sc.status} />
+                <span className="tool-call-name">{sc.name}</span>
+                {sc.input && <span className="tool-call-args">{formatArgs(sc.input)}</span>}
+              </div>
+              {sc.output && <pre className="tool-output-content">{sc.output}</pre>}
+            </div>
+          ))}
+        </div>
+      )}
+      {status === 'running' && streamed === '' && subCalls.length === 0 && (
+        <div className="subagent-activity">
+          <span className="subagent-spinner">
+            <span className="subagent-dot" />
+            <span className="subagent-dot" />
+            <span className="subagent-dot" />
+          </span>
+          <span className="subagent-activity-label">
+            Background task running
+            {tool.asyncTaskAgentName ? ` (${tool.asyncTaskAgentName})` : ''}...
+          </span>
+        </div>
+      )}
+      {status === 'done' && finalOutput && finalOutput !== streamed && (
+        <div className="async-task-final">
+          <div className="async-task-final-label">Final output</div>
+          <pre className="tool-output-content">{finalOutput}</pre>
+        </div>
+      )}
+      {status === 'error' && err && (
+        <div className="async-task-error">Error: {err}</div>
+      )}
+      {polls.length > 0 && (
+        <div className="async-task-polls">
+          {polls.map((p, i) => (
+            <span key={`poll-${i}`} className={`async-task-poll ${p.kind}`} title={p.instruction ?? ''}>
+              {p.kind === 'check' ? '↻ polled' : p.kind === 'update' ? '✎ updated' : '⨯ cancelled'}
+              <span className="async-task-poll-time">{formatTime(p.at)}</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ToolCallCard({ tool }: { tool: ToolCallInfo }) {
   const isSubAgent = tool.name === 'delegate_to_agent';
   const hasSubAgentState = !!(tool.subIterations || tool.subStatus);
-  const [expanded, setExpanded] = useState(isSubAgent);
+  const isAsyncTask = !!tool.asyncTaskId;
+  const [expanded, setExpanded] = useState(isSubAgent || isAsyncTask);
   const hasOutput = !!tool.output;
-  const iconStatus = isSubAgent ? (tool.subStatus ?? tool.status) : tool.status;
+  // Badge status: async-task card follows task state, sub-agent follows sub
+  // status, otherwise the raw tool call status.
+  const iconStatus = isAsyncTask
+    ? (tool.asyncTaskStatus ?? 'running')
+    : isSubAgent ? (tool.subStatus ?? tool.status) : tool.status;
+  const pillClass = isAsyncTask
+    ? `tool-call-pill ${iconStatus} async-task-card`
+    : `tool-call-pill ${tool.status} ${isSubAgent ? 'subagent-card' : ''}`;
 
   return (
-    <div className={`tool-call-pill ${tool.status} ${isSubAgent ? 'subagent-card' : ''}`}>
+    <div className={pillClass}>
       <div
         className="tool-call-header"
-        onClick={() => { if (hasOutput || isSubAgent) setExpanded(!expanded); }}
-        role={hasOutput ? 'button' : undefined}
+        onClick={() => { if (hasOutput || isSubAgent || isAsyncTask) setExpanded(!expanded); }}
+        role={(hasOutput || isAsyncTask) ? 'button' : undefined}
       >
         <ToolIcon status={iconStatus} />
-        <span className="tool-call-name">{tool.name}</span>
-        {tool.args && <span className="tool-call-args">{formatArgs(tool.args)}</span>}
-        {hasOutput && (
+        <span className="tool-call-name">
+          {isAsyncTask ? `async: ${tool.asyncTaskAgentName ?? 'task'}` : tool.name}
+        </span>
+        {!isAsyncTask && tool.args && <span className="tool-call-args">{formatArgs(tool.args)}</span>}
+        {isAsyncTask && (
+          <span className="async-task-status-badge">{iconStatus}</span>
+        )}
+        {(hasOutput || isAsyncTask) && (
           <span className={`tool-call-chevron ${expanded ? 'open' : ''}`}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
               <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -199,13 +300,14 @@ function ToolCallCard({ tool }: { tool: ToolCallInfo }) {
           </span>
         )}
       </div>
-      {expanded && isSubAgent && hasSubAgentState && <SubAgentIterations tool={tool} />}
-      {expanded && isSubAgent && !hasSubAgentState && (
+      {expanded && isAsyncTask && <AsyncTaskInline tool={tool} />}
+      {expanded && !isAsyncTask && isSubAgent && hasSubAgentState && <SubAgentIterations tool={tool} />}
+      {expanded && !isAsyncTask && isSubAgent && !hasSubAgentState && (
         <div className="subagent-activity">
           <span className="subagent-activity-label">Queued...</span>
         </div>
       )}
-      {expanded && !isSubAgent && hasOutput && (
+      {expanded && !isAsyncTask && !isSubAgent && hasOutput && (
         <pre className="tool-output-content">{tool.output}</pre>
       )}
     </div>
@@ -414,7 +516,11 @@ function IterationGroup({ iteration, nextLlmInputTraceId, isFinal, isStreaming, 
     return renderMarkdown(iteration.content);
   }, [iteration.content]);
 
-  const hasTools = iteration.toolCalls.length > 0;
+  // Folded lifecycle calls (check/update/cancel_async_task referencing a
+  // tracked task) are hidden here — they surface on the parent inline
+  // async-task card instead.
+  const visible = visibleToolCalls(iteration);
+  const hasTools = visible.length > 0;
 
   // Separate tool calls into three groups: parallel sub-agents, parallel
   // regular tools, and solo tools. Any group with 2+ calls gets a visual
@@ -427,7 +533,7 @@ function IterationGroup({ iteration, nextLlmInputTraceId, isFinal, isStreaming, 
     const subAgentCalls: ToolCallInfo[] = [];
     const otherCalls: ToolCallInfo[] = [];
 
-    for (const tc of iteration.toolCalls) {
+    for (const tc of visible) {
       // Classify by name only — a pre-seeded 'pending' delegate_to_agent
       // call still belongs in the sub-agent fork, even before its first
       // on_subagent_* event arrives.
@@ -451,6 +557,12 @@ function IterationGroup({ iteration, nextLlmInputTraceId, isFinal, isStreaming, 
     } else {
       soloTools.push(...otherCalls);
     }
+  }
+
+  // All of this iteration's tool calls are folded onto inline async-task
+  // cards AND it has no text — nothing to render, don't emit an empty box.
+  if (!iteration.content && !hasTools && iteration.toolCalls.length > 0) {
+    return null;
   }
 
   return (

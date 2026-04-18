@@ -72,6 +72,18 @@ async function* parseSSE(
 
 let eventCounter = 0;
 
+// Map foldable lifecycle tool names to their poll-marker kind. When a
+// lifecycle call's task_id is tracked on an inline start_async_task card,
+// the call is hidden from the main timeline and recorded as a poll.
+function lifecycleKindFor(toolName: string): 'check' | 'update' | 'cancel' | null {
+  switch (toolName) {
+    case 'check_async_task': return 'check';
+    case 'update_async_task': return 'update';
+    case 'cancel_async_task': return 'cancel';
+    default: return null;
+  }
+}
+
 export function useAgentStream() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
@@ -95,6 +107,15 @@ export function useAgentStream() {
   // Batch streaming tokens via rAF for performance
   const pendingTokensRef = useRef('');
   const rafRef = useRef<number>(0);
+  // Correlation between start_async_task tool calls and background tasks.
+  // Keyed both ways so we can find one from the other regardless of whether
+  // on_tool_end or on_async_task_started arrives first.
+  const taskIdByRunIdRef = useRef<Map<string, string>>(new Map());
+  const runIdByTaskIdRef = useRef<Map<string, string>>(new Map());
+  // Mirror of asyncTasks state so SSE handlers can synchronously read the
+  // latest task snapshot (needed for back-fill when start_async_task's
+  // on_tool_end arrives after on_async_task_* events).
+  const asyncTasksRef = useRef<AsyncTask[]>([]);
 
   // Flush iteration state into the assistant message (both iterations[] and flat content)
   const flushIterationsToMessage = useCallback(() => {
@@ -149,6 +170,58 @@ export function useAgentStream() {
 
       const controller = new AbortController();
       abortRef.current = controller;
+
+      // ── Helpers for inline async-task correlation ─────────────────────
+
+      // Find a tool call by run_id across all iterations.
+      const findToolCallByRunId = (runId: string): ToolCallInfo | undefined => {
+        for (const iter of iterationsRef.current) {
+          const tc = iter.toolCalls.find((t) => t.id === runId);
+          if (tc) return tc;
+        }
+        return undefined;
+      };
+
+      // Find the inline start_async_task tool call for a given task_id.
+      const findAsyncTaskParent = (taskId: string): ToolCallInfo | undefined => {
+        const runId = runIdByTaskIdRef.current.get(taskId);
+        if (!runId) return undefined;
+        return findToolCallByRunId(runId);
+      };
+
+      // Mark a pending/newly-arrived lifecycle tool call as folded if its
+      // task_id is tracked inline on another tool call. Also records the
+      // poll marker on the parent.
+      const maybeFoldLifecycleCall = (tc: ToolCallInfo): boolean => {
+        const kind = lifecycleKindFor(tc.name);
+        if (!kind) return false;
+        const taskId = (tc.args as Record<string, unknown> | null)?.task_id as string | undefined;
+        if (!taskId) return false;
+        const parent = findAsyncTaskParent(taskId);
+        if (!parent) return false;
+        tc.foldedIntoRunId = parent.id;
+        const polls = parent.asyncTaskPolls ?? [];
+        polls.push({
+          at: Date.now(),
+          kind,
+          runId: tc.id,
+          instruction: kind === 'update'
+            ? ((tc.args as Record<string, unknown> | null)?.instructions as string | undefined)
+            : undefined,
+        });
+        parent.asyncTaskPolls = polls;
+        return true;
+      };
+
+      // Synced setter — keeps asyncTasksRef in lockstep with state so
+      // synchronous reads inside SSE handlers see the latest snapshot.
+      const setAsyncTasksSynced = (updater: (prev: AsyncTask[]) => AsyncTask[]) => {
+        setAsyncTasks((prev) => {
+          const next = updater(prev);
+          asyncTasksRef.current = next;
+          return next;
+        });
+      };
 
       const url = agentId ? `/agents/${agentId}/stream` : '/agents/stream';
 
@@ -233,6 +306,11 @@ export function useAgentStream() {
           // BEFORE any on_tool_start arrives, so the parallel-fork group
           // renders immediately with the full set of lanes rather than
           // popping in as each goroutine fires its start event.
+          //
+          // At the same time we detect lifecycle calls (check/update/cancel
+          // _async_task) whose task_id is already tracked on an inline
+          // start_async_task card, mark them folded, and push a poll marker
+          // onto the parent.
           if (sse.event === 'on_llm_output') {
             if (currentIterRef.current) {
               const data = parsed.data as Record<string, unknown> | undefined;
@@ -242,13 +320,17 @@ export function useAgentStream() {
                   const id = raw.id as string | undefined;
                   if (!id) continue;
                   if (currentIterRef.current.toolCalls.find((t) => t.id === id)) continue;
-                  currentIterRef.current.toolCalls.push({
+                  const name = (raw.name as string) ?? 'unknown';
+                  const args = (raw.args as Record<string, unknown>) ?? null;
+                  const newTc: ToolCallInfo = {
                     id,
-                    name: (raw.name as string) ?? 'unknown',
-                    args: (raw.args as Record<string, unknown>) ?? null,
+                    name,
+                    args,
                     output: null,
                     status: 'pending',
-                  });
+                  };
+                  maybeFoldLifecycleCall(newTc);
+                  currentIterRef.current.toolCalls.push(newTc);
                 }
                 currentIterRef.current.status = 'tool_running';
                 flushIterationsToMessage();
@@ -263,19 +345,25 @@ export function useAgentStream() {
             // than pushing a duplicate.
             if (currentIterRef.current) {
               const runId = (parsed.run_id as string) ?? `tool-${Date.now()}`;
+              const toolName = (parsed.name as string) ?? 'unknown';
               const inputArgs = ((parsed.data as Record<string, unknown>)?.input as Record<string, unknown>) ?? null;
               const existing = currentIterRef.current.toolCalls.find((t) => t.id === runId);
               if (existing) {
                 existing.status = 'running';
                 if (inputArgs && !existing.args) existing.args = inputArgs;
+                // Fallback fold — args may not have been available at
+                // pre-seed time, or the on_llm_output event was absent.
+                if (!existing.foldedIntoRunId) maybeFoldLifecycleCall(existing);
               } else {
-                currentIterRef.current.toolCalls.push({
+                const tc: ToolCallInfo = {
                   id: runId,
-                  name: (parsed.name as string) ?? 'unknown',
+                  name: toolName,
                   args: inputArgs,
                   output: null,
                   status: 'running',
-                });
+                };
+                maybeFoldLifecycleCall(tc);
+                currentIterRef.current.toolCalls.push(tc);
               }
               currentIterRef.current.status = 'tool_running';
               flushIterationsToMessage();
@@ -359,6 +447,49 @@ export function useAgentStream() {
               if (tc) {
                 tc.status = 'done';
                 tc.output = outputStr;
+
+                // start_async_task — the tool returns synchronously with a
+                // task_id, but the background task is still running. Record
+                // the run_id↔task_id mapping so subsequent lifecycle calls
+                // can be folded, and seed an inline async-task card on the
+                // tool pill. Back-fill from asyncTasksRef in case on_async_
+                // task_* events already arrived before this tool_end.
+                if (tc.name === 'start_async_task' && outputStr) {
+                  let taskId: string | undefined;
+                  let agentName: string | undefined;
+                  try {
+                    const parsedOut = JSON.parse(outputStr) as Record<string, unknown>;
+                    taskId = parsedOut?.task_id as string | undefined;
+                    agentName = parsedOut?.agent as string | undefined;
+                  } catch {
+                    // Output wasn't JSON — likely an error message. Skip correlation.
+                  }
+                  if (taskId) {
+                    taskIdByRunIdRef.current.set(runId, taskId);
+                    runIdByTaskIdRef.current.set(taskId, runId);
+                    tc.asyncTaskId = taskId;
+                    tc.asyncTaskAgentName = agentName
+                      ?? ((tc.args as Record<string, unknown> | null)?.agent as string | undefined);
+                    tc.asyncTaskDescription = (tc.args as Record<string, unknown> | null)?.task as string | undefined;
+                    tc.asyncTaskStatus = 'running';
+                    tc.asyncTaskStreamedContent = '';
+                    tc.asyncTaskToolCalls = [];
+                    tc.asyncTaskUpdates = [];
+                    tc.asyncTaskPolls = tc.asyncTaskPolls ?? [];
+                    // Back-fill from any asyncTasks state that already accumulated.
+                    const snap = asyncTasksRef.current.find((t) => t.taskId === taskId);
+                    if (snap) {
+                      tc.asyncTaskStatus = snap.status;
+                      tc.asyncTaskStreamedContent = snap.streamedContent;
+                      tc.asyncTaskToolCalls = snap.toolCalls.map((x) => ({ ...x }));
+                      tc.asyncTaskUpdates = [...snap.updates];
+                      if (snap.error) tc.asyncTaskError = snap.error;
+                      if (snap.status === 'done' && snap.streamedContent) {
+                        tc.asyncTaskFinalOutput = snap.streamedContent;
+                      }
+                    }
+                  }
+                }
               }
               // If all tool calls finished, mark iteration as done (next model_start will create new iteration).
               // `pending` tools aren't finished — only 'done' or 'error' counts.
@@ -727,13 +858,23 @@ export function useAgentStream() {
               const now = Date.now();
 
               const mutate = (fn: (t: AsyncTask) => AsyncTask) =>
-                setAsyncTasks((prev) => prev.map((t) => (t.taskId === taskId ? fn(t) : t)));
+                setAsyncTasksSynced((prev) => prev.map((t) => (t.taskId === taskId ? fn(t) : t)));
+
+              // Apply the same shape of update to the inline parent tool call,
+              // when one is tracked. No-op otherwise (side-panel state above
+              // is always authoritative and will back-fill on tool_end).
+              const mutateParent = (fn: (tc: ToolCallInfo) => void) => {
+                const parent = findAsyncTaskParent(taskId);
+                if (!parent) return;
+                fn(parent);
+                flushIterationsToMessage();
+              };
 
               switch (sse.event) {
                 case 'on_async_task_started': {
                   const agentName = (data.agent as string) ?? (parsed.name as string) ?? '';
                   const taskDesc = (data.task as string) ?? '';
-                  setAsyncTasks((prev) => {
+                  setAsyncTasksSynced((prev) => {
                     // Idempotent — if the event is replayed don't dupe.
                     if (prev.some((t) => t.taskId === taskId)) return prev;
                     const task: AsyncTask = {
@@ -750,6 +891,11 @@ export function useAgentStream() {
                     };
                     return [...prev, task];
                   });
+                  mutateParent((tc) => {
+                    tc.asyncTaskStatus = 'running';
+                    if (agentName && !tc.asyncTaskAgentName) tc.asyncTaskAgentName = agentName;
+                    if (taskDesc && !tc.asyncTaskDescription) tc.asyncTaskDescription = taskDesc;
+                  });
                   break;
                 }
 
@@ -758,6 +904,9 @@ export function useAgentStream() {
                   const token = (chunk?.content as string) ?? '';
                   if (token) {
                     mutate((t) => ({ ...t, streamedContent: t.streamedContent + token, updatedAt: now }));
+                    mutateParent((tc) => {
+                      tc.asyncTaskStreamedContent = (tc.asyncTaskStreamedContent ?? '') + token;
+                    });
                   }
                   break;
                 }
@@ -774,6 +923,12 @@ export function useAgentStream() {
                     ],
                     updatedAt: now,
                   }));
+                  mutateParent((tc) => {
+                    tc.asyncTaskToolCalls = [
+                      ...(tc.asyncTaskToolCalls ?? []),
+                      { id: runId, name: toolName, input, output: null, status: 'running' },
+                    ];
+                  });
                   break;
                 }
 
@@ -795,6 +950,20 @@ export function useAgentStream() {
                     updated[idx] = { ...updated[idx]!, output, status: 'done' };
                     return { ...t, toolCalls: updated, updatedAt: now };
                   });
+                  mutateParent((tc) => {
+                    const arr = tc.asyncTaskToolCalls ?? [];
+                    let idx = -1;
+                    for (let i = arr.length - 1; i >= 0; i--) {
+                      const entry = arr[i]!;
+                      if (runId ? entry.id === runId : entry.status === 'running') {
+                        idx = i;
+                        break;
+                      }
+                    }
+                    if (idx < 0) return;
+                    arr[idx] = { ...arr[idx]!, output, status: 'done' };
+                    tc.asyncTaskToolCalls = arr;
+                  });
                   break;
                 }
 
@@ -802,6 +971,9 @@ export function useAgentStream() {
                   const instr = (data.instructions as string) ?? '';
                   if (instr) {
                     mutate((t) => ({ ...t, updates: [...t.updates, instr], updatedAt: now }));
+                    mutateParent((tc) => {
+                      tc.asyncTaskUpdates = [...(tc.asyncTaskUpdates ?? []), instr];
+                    });
                   }
                   break;
                 }
@@ -815,17 +987,28 @@ export function useAgentStream() {
                     streamedContent: finalOutput || t.streamedContent,
                     updatedAt: now,
                   }));
+                  mutateParent((tc) => {
+                    tc.asyncTaskStatus = 'done';
+                    tc.asyncTaskFinalOutput = finalOutput || tc.asyncTaskStreamedContent || '';
+                  });
                   break;
                 }
 
                 case 'on_async_task_error': {
                   const err = (data.error as string) ?? 'unknown error';
                   mutate((t) => ({ ...t, status: 'error' as AsyncTaskStatus, error: err, updatedAt: now }));
+                  mutateParent((tc) => {
+                    tc.asyncTaskStatus = 'error';
+                    tc.asyncTaskError = err;
+                  });
                   break;
                 }
 
                 case 'on_async_task_cancelled': {
                   mutate((t) => ({ ...t, status: 'cancelled' as AsyncTaskStatus, updatedAt: now }));
+                  mutateParent((tc) => {
+                    tc.asyncTaskStatus = 'cancelled';
+                  });
                   break;
                 }
               }
@@ -933,6 +1116,9 @@ export function useAgentStream() {
     turnFileNamesRef.current.clear();
     iterationsRef.current = [];
     currentIterRef.current = null;
+    taskIdByRunIdRef.current.clear();
+    runIdByTaskIdRef.current.clear();
+    asyncTasksRef.current = [];
   }, [stop]);
 
   const restore = useCallback((snapshot: {
