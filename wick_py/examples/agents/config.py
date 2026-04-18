@@ -23,15 +23,16 @@ MAIN_SYSTEM_PROMPT = prompts.load("main")
 
 @dataclass(frozen=True)
 class SharedConfig:
-    """Configuration shared by every main (top-level) agent."""
+    """Configuration shared by every supervisor (top-level) agent.
+
+    Passed to `build_<supervisor>_agent(cfg)` builders; each builder reads
+    `cfg.backend`, `cfg.skills`, `cfg.debug` explicitly so that every argument
+    to `Agent(...)` is visible at the call site.
+    """
 
     backend: dict[str, Any]
     skills: SkillsConfig
     debug: bool
-
-    def as_kwargs(self) -> dict[str, Any]:
-        """Return kwargs for `Agent(**cfg.as_kwargs())`."""
-        return {"backend": self.backend, "skills": self.skills, "debug": self.debug}
 
 
 def load_shared_config() -> SharedConfig:

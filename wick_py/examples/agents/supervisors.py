@@ -36,7 +36,9 @@ def build_claude_agent(cfg: SharedConfig) -> Agent:
             build_batch_processor(),
             build_summarizer(),
         ],
-        **cfg.as_kwargs(),
+        backend=cfg.backend,
+        skills=cfg.skills,
+        debug=cfg.debug,
     )
 
 
@@ -58,5 +60,7 @@ def build_ollama_agent(cfg: SharedConfig) -> Agent:
             build_batch_processor(),
             build_summarizer(),
         ],
-        **cfg.as_kwargs(),
+        backend=cfg.backend,
+        skills=cfg.skills,
+        debug=cfg.debug,
     )
