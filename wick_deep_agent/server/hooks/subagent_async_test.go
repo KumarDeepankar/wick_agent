@@ -179,3 +179,83 @@ func TestModifyRequest_NoInjectionWhenNoSubAgents(t *testing.T) {
 		t.Errorf("expected prompt unchanged, got %q", got)
 	}
 }
+
+func TestModifyRequest_InjectsLiveTaskStatus(t *testing.T) {
+	h := NewSubAgentHook(
+		[]agent.SubAgentCfg{{Name: "worker", Async: true}},
+		&agent.AgentConfig{}, nil, nil,
+	)
+
+	// Point the hook at a dedicated store so we don't pollute the global one.
+	store := agent.NewAsyncTaskStore()
+	defer store.Stop()
+	h.taskStore = store
+
+	threadID := "thread-status-test"
+	running := store.Create(threadID, "worker", "long job")
+	done := store.Create(threadID, "worker", "short job")
+	done.Finish(agent.AsyncTaskDone, "final", "")
+
+	// Task for another thread — must NOT appear in this thread's status.
+	otherRunning := store.Create("thread-other", "worker", "someone else")
+
+	state := &agent.AgentState{ThreadID: threadID}
+	ctx := agent.WithState(context.Background(), state)
+
+	got, _, err := h.ModifyRequest(ctx, "You are helpful.", nil)
+	if err != nil {
+		t.Fatalf("ModifyRequest: %v", err)
+	}
+
+	if !strings.Contains(got, "## Current background task status") {
+		t.Errorf("expected status header; got:\n%s", got)
+	}
+	if !strings.Contains(got, running.ID) {
+		t.Errorf("expected running task ID in status; got:\n%s", got)
+	}
+	if !strings.Contains(got, done.ID) {
+		t.Errorf("expected finished task ID in status; got:\n%s", got)
+	}
+	if strings.Contains(got, otherRunning.ID) {
+		t.Errorf("other-thread task leaked into status block")
+	}
+	if !strings.Contains(got, "Running:") {
+		t.Errorf("expected 'Running:' bucket header")
+	}
+	if !strings.Contains(got, "Recently finished:") {
+		t.Errorf("expected 'Recently finished:' bucket header")
+	}
+}
+
+func TestModifyRequest_NoStatusWhenNoTasks(t *testing.T) {
+	h := NewSubAgentHook(
+		[]agent.SubAgentCfg{{Name: "worker", Async: true}},
+		&agent.AgentConfig{}, nil, nil,
+	)
+	store := agent.NewAsyncTaskStore()
+	defer store.Stop()
+	h.taskStore = store
+
+	state := &agent.AgentState{ThreadID: "empty-thread"}
+	ctx := agent.WithState(context.Background(), state)
+
+	got, _, err := h.ModifyRequest(ctx, "You are helpful.", nil)
+	if err != nil {
+		t.Fatalf("ModifyRequest: %v", err)
+	}
+
+	// Guidance should still be present (hook is async-capable), but the status
+	// block itself (identified by its markdown heading) must be absent because
+	// no tasks exist for this thread. Note the guidance text references the
+	// phrase "Current background task status" in prose — we check for the
+	// actual heading marker to avoid a false positive.
+	if !strings.Contains(got, "Async sub-agent coordination") {
+		t.Errorf("expected guidance header when async sub-agents exist")
+	}
+	if strings.Contains(got, "## Current background task status") {
+		t.Errorf("status block should not appear when no tasks exist; got:\n%s", got)
+	}
+	if strings.Contains(got, "Running:\n-") || strings.Contains(got, "Recently finished:\n-") {
+		t.Errorf("status bucket headers should not appear when no tasks exist")
+	}
+}

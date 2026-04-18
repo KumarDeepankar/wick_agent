@@ -71,24 +71,101 @@ const asyncSubAgentGuidance = `
 Some sub-agents run in the background. start_async_task returns a task_id
 immediately — the sub-agent is NOT yet finished when you receive it.
 
+Passive status: a "Current background task status" section is automatically
+injected into your prompt every turn with the latest status of every task
+for this conversation. Read that section instead of calling list_async_tasks
+just to check progress. Only call list_async_tasks when you need a
+machine-readable snapshot to iterate over.
+
 Rules:
-- Before using a task's result, call check_async_task and confirm status=done.
+- Before using a task's result, call check_async_task to fetch the full
+  output (the status section tells you it's done, but not its content).
 - Before calling a sub-agent whose inputs depend on earlier background tasks
   (for example, a consolidator that reads files written by parallel workers),
-  verify every upstream task shows status=done via list_async_tasks.
+  verify every upstream task has reached status=done in the status section.
 - Use cancel_async_task to abort; use update_async_task to send new
   instructions to a running task instead of launching a new one.
 - Prefer start_async_task for long-running or parallelizable work; prefer
-  delegate_to_agent (when available) for short, strictly sequential steps.`
+  delegate_to_agent (when available) for short, strictly sequential steps.
+- Don't spin-poll. If every active task is still running and you have no
+  other work (user chat, another sub-agent to launch), reply briefly to
+  the user or wait — don't call list_async_tasks or check_async_task
+  repeatedly in tight turns.`
 
-// ModifyRequest appends async coordination guidance to the system prompt
-// whenever this supervisor has at least one async-capable sub-agent. Sync-
-// only supervisors get no injection.
+// ModifyRequest appends async coordination guidance and live task status to
+// the system prompt whenever this supervisor has at least one async-capable
+// sub-agent. Sync-only supervisors get no injection.
+//
+// The live-status block means the LLM sees every running and recently-finished
+// task at every turn without calling list_async_tasks — turning what used to
+// be N polling tool calls into zero. The tool still exists for when a full
+// JSON snapshot is wanted; it just isn't needed for routine visibility.
 func (h *SubAgentHook) ModifyRequest(ctx context.Context, systemPrompt string, msgs []agent.Message) (string, []agent.Message, error) {
 	if !h.hasAsyncSubAgent() {
 		return systemPrompt, msgs, nil
 	}
-	return systemPrompt + asyncSubAgentGuidance, msgs, nil
+	out := systemPrompt + asyncSubAgentGuidance
+	if state := agent.StateFromContext(ctx); state != nil {
+		if block := h.buildTaskStatusBlock(state.ThreadID); block != "" {
+			out += block
+		}
+	}
+	return out, msgs, nil
+}
+
+// maxStatusBlockEntries caps how many tasks appear in the auto-injected
+// status block (per bucket — running and terminal). Keeps the prompt
+// bounded even when a thread has accumulated many tasks.
+const maxStatusBlockEntries = 10
+
+// buildTaskStatusBlock renders a compact status summary of async tasks for
+// the given thread. Returns "" if there are no tasks. Format is tuned for
+// LLM consumption: one line per task, agent name and elapsed time for
+// running tasks, status for terminal ones.
+func (h *SubAgentHook) buildTaskStatusBlock(threadID string) string {
+	tasks := h.taskStore.ListByThread(threadID)
+	if len(tasks) == 0 {
+		return ""
+	}
+
+	var running, terminal []*agent.AsyncTask
+	for _, t := range tasks {
+		if t.IsTerminal() {
+			terminal = append(terminal, t)
+		} else {
+			running = append(running, t)
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("\n\n## Current background task status\n")
+	b.WriteString("Auto-injected every turn. You do NOT need to call list_async_tasks to see status.\n")
+
+	if len(running) > 0 {
+		b.WriteString("\nRunning:\n")
+		for i, t := range running {
+			if i >= maxStatusBlockEntries {
+				b.WriteString(fmt.Sprintf("- ... and %d more running\n", len(running)-maxStatusBlockEntries))
+				break
+			}
+			elapsed := time.Since(t.CreatedAt).Round(time.Second)
+			fmt.Fprintf(&b, "- %s (%s, running, %s elapsed)\n", t.ID, t.AgentName, elapsed)
+		}
+	}
+
+	if len(terminal) > 0 {
+		b.WriteString("\nRecently finished:\n")
+		for i, t := range terminal {
+			if i >= maxStatusBlockEntries {
+				b.WriteString(fmt.Sprintf("- ... and %d more finished\n", len(terminal)-maxStatusBlockEntries))
+				break
+			}
+			fmt.Fprintf(&b, "- %s (%s, %s)\n", t.ID, t.AgentName, t.Status())
+		}
+	}
+
+	b.WriteString("\nCall check_async_task for the full output of a finished task. Call update_async_task to steer a running task.")
+	return b.String()
 }
 
 func (h *SubAgentHook) hasAsyncSubAgent() bool {
@@ -345,10 +422,13 @@ func (h *SubAgentHook) registerAsyncTools(state *agent.AgentState, agents map[st
 		},
 	})
 
-	// list_async_tasks
+	// list_async_tasks — minimal fields only. Status is already auto-injected
+	// into your context every turn via the "Current background task status"
+	// section, so you rarely need this tool. Use it when you want a fresh
+	// JSON snapshot to iterate over programmatically.
 	agent.RegisterToolOnState(state, &agent.FuncTool{
 		ToolName: "list_async_tasks",
-		ToolDesc: "List all async sub-agent tasks for the current conversation with their current statuses.",
+		ToolDesc: "Return a JSON snapshot of async tasks for the current conversation (task_id, agent, status, updated_at). Status is already injected into your prompt every turn as 'Current background task status' — only call this when you need a fresh machine-readable list.",
 		ToolParams: map[string]any{
 			"type":       "object",
 			"properties": map[string]any{},
@@ -360,9 +440,7 @@ func (h *SubAgentHook) registerAsyncTools(state *agent.AgentState, agents map[st
 				out = append(out, map[string]any{
 					"task_id":    t.ID,
 					"agent":      t.AgentName,
-					"task":       t.Task,
 					"status":     string(t.Status()),
-					"created_at": t.CreatedAt.Format(time.RFC3339),
 					"updated_at": t.UpdatedAt().Format(time.RFC3339),
 				})
 			}
