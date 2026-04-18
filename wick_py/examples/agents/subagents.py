@@ -1,8 +1,22 @@
 """Sub-agent catalog — one `build_*` function per sub-agent.
 
 Each factory returns a fresh `Agent` instance so supervisors never share
-mutable sub-agent state. Which sub-agents a given supervisor uses is a
-supervisor-level decision — see `supervisors.py`.
+mutable sub-agent state. Which sub-agents a supervisor uses is a
+supervisor-level decision — see `server.py`.
+
+## Delegation mode
+
+Each sub-agent's `mode` decides how supervisors can invoke it:
+
+    mode="sync"   — via delegate_to_agent (blocks supervisor until done).
+                    Default. Best for short tasks (< 10s).
+    mode="async"  — via start_async_task / check_async_task / ...
+                    Background task, supervisor continues immediately.
+                    Best for long-running or parallelizable work.
+    mode="both"   — both tools available. Supervisor picks per call.
+
+Rule of thumb: if the expected runtime is < 10s, use "sync". If the
+task takes minutes or you want N of them in parallel, use "async".
 """
 
 from __future__ import annotations
@@ -18,6 +32,7 @@ def build_math_agent() -> Agent:
         name="Math Assistant",
         system_prompt=prompts.load("math"),
         builtin_tools=["calculate"],
+        mode="sync",  # fast single-step arithmetic
     )
 
 
@@ -27,6 +42,7 @@ def build_report_agent() -> Agent:
         name="Report Generator",
         system_prompt=prompts.load("report_generator"),
         builtin_tools=["read_file", "write_file", "ls", "glob"],
+        mode="async",  # long-running: reads artifacts and writes a slide deck
     )
 
 
@@ -36,6 +52,7 @@ def build_batch_processor() -> Agent:
         name="Batch Processor",
         system_prompt=prompts.load("batch_processor"),
         builtin_tools=["execute", "read_file", "write_file"],
+        mode="async",  # launched many-at-once to process batches in parallel
     )
 
 
@@ -45,4 +62,5 @@ def build_summarizer() -> Agent:
         name="Summarizer",
         system_prompt=prompts.load("summarizer"),
         builtin_tools=["read_file", "write_file", "glob", "ls"],
+        mode="both",  # short summaries sync, large multi-file runs async
     )

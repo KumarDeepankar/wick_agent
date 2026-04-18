@@ -62,6 +62,9 @@ class _ToolDef:
         self.fn = fn
 
 
+VALID_SUBAGENT_MODES = ("sync", "async", "both")
+
+
 def _to_subagent_dict(s: Any) -> dict[str, Any]:
     """Convert an Agent, SubAgentConfig, or dict to a subagent config dict."""
     if isinstance(s, dict):
@@ -78,6 +81,11 @@ def _to_subagent_dict(s: Any) -> dict[str, Any]:
         if hasattr(s, "_model") and s._model:
             model = s._model
             d["model"] = model if isinstance(model, str) else json.dumps(model)
+        # Delegation mode: controls whether the supervisor sees this sub-agent
+        # via delegate_to_agent (sync), start_async_task (async), or both.
+        mode = getattr(s, "_mode", "sync")
+        d["sync"] = mode in ("sync", "both")
+        d["async"] = mode in ("async", "both")
         return d
     # SubAgentConfig (Pydantic)
     return s.model_dump()
@@ -100,7 +108,14 @@ class Agent:
         subagents: list["Agent | SubAgentConfig | dict[str, Any]"] | None = None,
         debug: bool = False,
         context_window: int = 0,
+        mode: str = "sync",
     ) -> None:
+        if mode not in VALID_SUBAGENT_MODES:
+            raise ValueError(
+                f"mode must be one of {VALID_SUBAGENT_MODES}, got {mode!r}. "
+                f'Use "sync" (blocking delegation), "async" (background task), '
+                f'or "both" (supervisor picks per call).'
+            )
         self.agent_id = agent_id
         self.name = name or agent_id
         self._model = model
@@ -108,6 +123,9 @@ class Agent:
         self.builtin_tools = builtin_tools or []
         self.debug = debug
         self.context_window = context_window
+        # `mode` is only consulted when this Agent is used as a sub-agent.
+        # Top-level (supervisor) agents ignore it.
+        self._mode = mode
 
         # Config objects
         self._backend = (
