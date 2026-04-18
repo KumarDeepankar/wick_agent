@@ -228,18 +228,55 @@ export function useAgentStream() {
             }
           }
 
+          // on_llm_output → the model has finished and (possibly) returned
+          // tool calls. Seed the current iteration's toolCalls as 'pending'
+          // BEFORE any on_tool_start arrives, so the parallel-fork group
+          // renders immediately with the full set of lanes rather than
+          // popping in as each goroutine fires its start event.
+          if (sse.event === 'on_llm_output') {
+            if (currentIterRef.current) {
+              const data = parsed.data as Record<string, unknown> | undefined;
+              const rawCalls = data?.tool_calls as Array<Record<string, unknown>> | undefined;
+              if (rawCalls && rawCalls.length > 0) {
+                for (const raw of rawCalls) {
+                  const id = raw.id as string | undefined;
+                  if (!id) continue;
+                  if (currentIterRef.current.toolCalls.find((t) => t.id === id)) continue;
+                  currentIterRef.current.toolCalls.push({
+                    id,
+                    name: (raw.name as string) ?? 'unknown',
+                    args: (raw.args as Record<string, unknown>) ?? null,
+                    output: null,
+                    status: 'pending',
+                  });
+                }
+                currentIterRef.current.status = 'tool_running';
+                flushIterationsToMessage();
+              }
+            }
+          }
+
           // Detect write_file / edit_file tool calls → canvas artifacts
           if (sse.event === 'on_tool_start') {
-            // Track tool call in current iteration
+            // Track tool call in current iteration. If it was pre-seeded by
+            // on_llm_output as 'pending', transition it to 'running' rather
+            // than pushing a duplicate.
             if (currentIterRef.current) {
-              const toolCall: ToolCallInfo = {
-                id: (parsed.run_id as string) ?? `tool-${Date.now()}`,
-                name: (parsed.name as string) ?? 'unknown',
-                args: ((parsed.data as Record<string, unknown>)?.input as Record<string, unknown>) ?? null,
-                output: null,
-                status: 'running',
-              };
-              currentIterRef.current.toolCalls.push(toolCall);
+              const runId = (parsed.run_id as string) ?? `tool-${Date.now()}`;
+              const inputArgs = ((parsed.data as Record<string, unknown>)?.input as Record<string, unknown>) ?? null;
+              const existing = currentIterRef.current.toolCalls.find((t) => t.id === runId);
+              if (existing) {
+                existing.status = 'running';
+                if (inputArgs && !existing.args) existing.args = inputArgs;
+              } else {
+                currentIterRef.current.toolCalls.push({
+                  id: runId,
+                  name: (parsed.name as string) ?? 'unknown',
+                  args: inputArgs,
+                  output: null,
+                  status: 'running',
+                });
+              }
               currentIterRef.current.status = 'tool_running';
               flushIterationsToMessage();
             }
@@ -323,8 +360,9 @@ export function useAgentStream() {
                 tc.status = 'done';
                 tc.output = outputStr;
               }
-              // If all tool calls done, mark iteration as done (next model_start will create new iteration)
-              if (currentIterRef.current.toolCalls.every((t) => t.status !== 'running')) {
+              // If all tool calls finished, mark iteration as done (next model_start will create new iteration).
+              // `pending` tools aren't finished — only 'done' or 'error' counts.
+              if (currentIterRef.current.toolCalls.every((t) => t.status === 'done' || t.status === 'error')) {
                 currentIterRef.current.status = 'done';
               }
               flushIterationsToMessage();

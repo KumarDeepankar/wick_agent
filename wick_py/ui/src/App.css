@@ -5162,6 +5162,17 @@ a {
   color: var(--accent-red);
 }
 
+.tool-status-icon.pending {
+  color: var(--text-muted);
+  opacity: 0.7;
+  animation: pending-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pending-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.9; }
+}
+
 .tool-call-name {
   font-weight: 600;
   color: var(--text-primary);
@@ -5366,6 +5377,14 @@ a {
   box-shadow:
     0 0 0 1px rgba(255, 255, 255, 0.03),
     0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.parallel-fork.initialized {
+  border-color: color-mix(in srgb, var(--text-muted) 35%, var(--border-light));
+  border-style: dashed;
+}
+.parallel-fork.initialized .fork-icon {
+  color: var(--text-muted);
+  opacity: 0.75;
 }
 .parallel-fork.running {
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));

@@ -75,6 +75,15 @@ function formatTime(ts: number): string {
 }
 
 function ToolIcon({ status }: { status: string }) {
+  if (status === 'pending') {
+    return (
+      <span className="tool-status-icon pending" aria-label="queued">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5" strokeDasharray="2.5 2.5" />
+        </svg>
+      </span>
+    );
+  }
   if (status === 'running') {
     return <span className="tool-spinner" />;
   }
@@ -166,9 +175,11 @@ function SubAgentIterations({ tool }: { tool: ToolCallInfo }) {
 }
 
 function ToolCallCard({ tool }: { tool: ToolCallInfo }) {
-  const isSubAgent = tool.name === 'delegate_to_agent' && (tool.subIterations || tool.subStatus);
-  const [expanded, setExpanded] = useState(!!isSubAgent);
+  const isSubAgent = tool.name === 'delegate_to_agent';
+  const hasSubAgentState = !!(tool.subIterations || tool.subStatus);
+  const [expanded, setExpanded] = useState(isSubAgent);
   const hasOutput = !!tool.output;
+  const iconStatus = isSubAgent ? (tool.subStatus ?? tool.status) : tool.status;
 
   return (
     <div className={`tool-call-pill ${tool.status} ${isSubAgent ? 'subagent-card' : ''}`}>
@@ -177,7 +188,7 @@ function ToolCallCard({ tool }: { tool: ToolCallInfo }) {
         onClick={() => { if (hasOutput || isSubAgent) setExpanded(!expanded); }}
         role={hasOutput ? 'button' : undefined}
       >
-        <ToolIcon status={isSubAgent ? (tool.subStatus ?? 'running') : tool.status} />
+        <ToolIcon status={iconStatus} />
         <span className="tool-call-name">{tool.name}</span>
         {tool.args && <span className="tool-call-args">{formatArgs(tool.args)}</span>}
         {hasOutput && (
@@ -188,7 +199,12 @@ function ToolCallCard({ tool }: { tool: ToolCallInfo }) {
           </span>
         )}
       </div>
-      {expanded && isSubAgent && <SubAgentIterations tool={tool} />}
+      {expanded && isSubAgent && hasSubAgentState && <SubAgentIterations tool={tool} />}
+      {expanded && isSubAgent && !hasSubAgentState && (
+        <div className="subagent-activity">
+          <span className="subagent-activity-label">Queued...</span>
+        </div>
+      )}
       {expanded && !isSubAgent && hasOutput && (
         <pre className="tool-output-content">{tool.output}</pre>
       )}
@@ -249,18 +265,23 @@ function ViewPromptButton({ traceId, onViewPrompt }: { traceId?: string; onViewP
 }
 
 function ParallelToolGroup({ tools, traceId, onViewPrompt }: { tools: ToolCallInfo[]; traceId?: string; onViewPrompt?: (id: string) => void }) {
-  const doneCount = tools.filter(t => t.status === 'done').length;
+  const doneCount = tools.filter(t => t.status === 'done' || t.status === 'error').length;
+  const runningCount = tools.filter(t => t.status === 'running').length;
   const allDone = doneCount === tools.length;
+  const phase: 'initialized' | 'running' | 'done' =
+    allDone ? 'done' : (runningCount === 0 && doneCount === 0) ? 'initialized' : 'running';
+  const label =
+    phase === 'done'
+      ? `${tools.length} parallel tools completed`
+      : phase === 'initialized'
+        ? `${tools.length} parallel tools — initialized`
+        : `${doneCount} of ${tools.length} tools complete`;
 
   return (
-    <div className={`parallel-fork ${allDone ? 'done' : 'running'}`}>
+    <div className={`parallel-fork ${phase}`}>
       <div className="parallel-fork-header">
         <ForkIcon />
-        <span className="parallel-fork-label">
-          {allDone
-            ? `${tools.length} parallel tools completed`
-            : `${doneCount} of ${tools.length} tools running`}
-        </span>
+        <span className="parallel-fork-label">{label}</span>
         <ViewPromptButton traceId={traceId} onViewPrompt={onViewPrompt} />
       </div>
       <div className="parallel-fork-lanes">
@@ -275,19 +296,27 @@ function ParallelToolGroup({ tools, traceId, onViewPrompt }: { tools: ToolCallIn
 }
 
 function ParallelAgentFork({ tools, traceId, onViewPrompt }: { tools: ToolCallInfo[]; traceId?: string; onViewPrompt?: (id: string) => void }) {
-  const runningCount = tools.filter(t => (t.subStatus ?? t.status) === 'running').length;
-  const doneCount = tools.filter(t => (t.subStatus ?? t.status) === 'done').length;
+  // Effective status: subStatus wins once the sub-agent has started
+  // streaming; until then we fall back to the parent tool's status so
+  // 'pending' (pre-seeded from on_llm_output) is surfaced.
+  const effStatus = (t: ToolCallInfo) => t.subStatus ?? t.status;
+  const doneCount = tools.filter(t => effStatus(t) === 'done' || effStatus(t) === 'error').length;
+  const runningCount = tools.filter(t => effStatus(t) === 'running').length;
   const allDone = doneCount === tools.length;
+  const phase: 'initialized' | 'running' | 'done' =
+    allDone ? 'done' : (runningCount === 0 && doneCount === 0) ? 'initialized' : 'running';
+  const label =
+    phase === 'done'
+      ? `${tools.length} parallel agents completed`
+      : phase === 'initialized'
+        ? `${tools.length} parallel agents — initialized`
+        : `${runningCount} running, ${doneCount} of ${tools.length} complete`;
 
   return (
-    <div className={`parallel-fork ${allDone ? 'done' : 'running'}`}>
+    <div className={`parallel-fork ${phase}`}>
       <div className="parallel-fork-header">
         <ForkIcon />
-        <span className="parallel-fork-label">
-          {allDone
-            ? `${tools.length} parallel agents completed`
-            : `${runningCount} of ${tools.length} agents running`}
-        </span>
+        <span className="parallel-fork-label">{label}</span>
         <ViewPromptButton traceId={traceId} onViewPrompt={onViewPrompt} />
       </div>
       <div className="parallel-fork-lanes">
@@ -399,7 +428,10 @@ function IterationGroup({ iteration, nextLlmInputTraceId, isFinal, isStreaming, 
     const otherCalls: ToolCallInfo[] = [];
 
     for (const tc of iteration.toolCalls) {
-      if (tc.name === 'delegate_to_agent' && (tc.subIterations || tc.subStatus)) {
+      // Classify by name only — a pre-seeded 'pending' delegate_to_agent
+      // call still belongs in the sub-agent fork, even before its first
+      // on_subagent_* event arrives.
+      if (tc.name === 'delegate_to_agent') {
         subAgentCalls.push(tc);
       } else {
         otherCalls.push(tc);
