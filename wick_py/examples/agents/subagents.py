@@ -1,8 +1,8 @@
-"""Sub-agent factory functions.
+"""Sub-agent catalog — one `build_*` function per sub-agent.
 
-Each `build_*` returns a fresh `Agent` instance — no shared mutable state
-between main agents. Group bundles (like `common_workflow_subagents()`)
-let main agents compose common sets without copy-pasting lists.
+Each factory returns a fresh `Agent` instance so supervisors never share
+mutable sub-agent state. Which sub-agents a given supervisor uses is a
+supervisor-level decision — see `supervisors.py`.
 """
 
 from __future__ import annotations
@@ -46,8 +46,3 @@ def build_summarizer() -> Agent:
         system_prompt=prompts.load("summarizer"),
         builtin_tools=["read_file", "write_file", "glob", "ls"],
     )
-
-
-def common_workflow_subagents() -> list[Agent]:
-    """Research workflow sub-agents used by every main agent."""
-    return [build_report_agent(), build_batch_processor(), build_summarizer()]
