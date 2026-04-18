@@ -4,7 +4,6 @@ wick_deep_agent/server/bin/
 wick_deep_agent/server/wick-daemon
 wick_deep_agent/server/wick_server
 wick_deep_agent/server/wickfs/wickfs
-wick_go/bin/
 
 # Node
 node_modules/

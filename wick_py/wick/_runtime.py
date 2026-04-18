@@ -25,9 +25,7 @@ logger = logging.getLogger("wick.runtime")
 
 # Relative paths to check when running from the repo
 _KNOWN_BINARIES = [
-    "wick_deep_agent/server/bin/wick_go",
     "wick_deep_agent/server/bin/wick_server",
-    "../wick_deep_agent/server/bin/wick_go",
     "../wick_deep_agent/server/bin/wick_server",
 ]
 
@@ -141,7 +139,7 @@ class GoRuntime:
             return env_bin
 
         # 2. On PATH
-        on_path = shutil.which("wick_server") or shutil.which("wick_go")
+        on_path = shutil.which("wick_server")
         if on_path:
             return on_path
 

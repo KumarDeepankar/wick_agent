@@ -1,5 +1,5 @@
 # agents.local.yaml — Local development config (no Docker required)
-# Usage: ./wick_go -config agents.local.yaml
+# Usage: ./wick_server -config agents.local.yaml
 
 defaults:
   backend:
@@ -22,4 +22,4 @@ agents:
       - current_datetime
     skills:
       paths:
-        - ../../wick_go/skills
+        - ../../wick_py/skills
