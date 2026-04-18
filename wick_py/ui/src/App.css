@@ -9,14 +9,16 @@
 
 /* ── Theme Variables ── */
 :root {
-  /* Light theme (default) — cool layered, sharp contrast */
-  --bg-primary: #ffffff;
-  --bg-secondary: #f6f7f9;
-  --bg-tertiary: #eceef2;
-  --bg-hover: #e1e4ea;
-  --bg-input: #ffffff;
-  --border: #d5d9e0;
-  --border-light: #e4e7ec;
+  /* Light theme — soft off-white surfaces, never pure #fff. Pure white
+     causes eye strain, removes depth between layers, and makes borders
+     look harsh. This scale is close to Linear / Radix `gray` / Vercel. */
+  --bg-primary: #fbfbfc;       /* main surfaces — slight cool off-white */
+  --bg-secondary: #f4f5f7;     /* one layer below — subtle step */
+  --bg-tertiary: #e9ebee;      /* two layers below — form inputs, code blocks */
+  --bg-hover: #dcdfe4;         /* hover target */
+  --bg-input: #fbfbfc;
+  --border: #d6d9de;
+  --border-light: #e4e6ea;
   --text-primary: #0f172a;
   --text-secondary: #334155;
   --text-muted: #5a6270;
@@ -74,21 +76,24 @@
   --pad-lg: 14px;
   --pad-xl: 18px;
   --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  --glass: rgba(255, 255, 255, 0.85);
+  --glass: rgba(251, 251, 252, 0.88);
   --glass-border: rgba(15, 23, 42, 0.06);
-  --sidebar-bg: #f1f3f7;
-  --sidebar-border: #d5d9e0;
-  --sidebar-hover: #e1e4ea;
+  --sidebar-bg: #eff1f4;
+  --sidebar-border: #d6d9de;
+  --sidebar-hover: #dcdfe4;
 }
 
 [data-theme='dark'] {
-  --bg-primary: #0b0d10;
-  --bg-secondary: #15181d;
-  --bg-tertiary: #1f242b;
-  --bg-hover: #2a3038;
-  --bg-input: #15181d;
-  --border: #2a3038;
-  --border-light: #20262d;
+  /* Dark theme — warm charcoal, never pure black. Pure #000 creates harsh
+     contrast against white text, no layering, and text feels "floating".
+     This scale is close to Linear / Cursor / Radix `mauveDark`. */
+  --bg-primary: #17181c;       /* main surfaces */
+  --bg-secondary: #1d1e22;     /* one layer above — cards, panels */
+  --bg-tertiary: #25262b;      /* two layers above — code blocks, inputs */
+  --bg-hover: #2d2f34;
+  --bg-input: #1d1e22;
+  --border: #2e2f34;
+  --border-light: #26272c;
   --text-primary: #f1f5f9;
   --text-secondary: #cbd5e1;
   --text-muted: #94a3b8;
@@ -122,11 +127,13 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 2px 10px rgba(0, 0, 0, 0.45);
   --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.55);
-  --glass: rgba(11, 13, 16, 0.85);
+  --glass: rgba(23, 24, 28, 0.88);
   --glass-border: rgba(255, 255, 255, 0.06);
-  --sidebar-bg: #0b0d10;
-  --sidebar-border: #2a3038;
-  --sidebar-hover: #1f242b;
+  /* Sidebar sits slightly deeper than bg-primary so the main panel reads
+     as the "raised" surface — matches Linear / VSCode layering. */
+  --sidebar-bg: #121317;
+  --sidebar-border: #2a2b30;
+  --sidebar-hover: #25262b;
 }
 
 html,
