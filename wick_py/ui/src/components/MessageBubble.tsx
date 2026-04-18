@@ -266,7 +266,7 @@ function ToolCallCard({ tool }: { tool: ToolCallInfo }) {
   const isSubAgent = tool.name === 'delegate_to_agent';
   const hasSubAgentState = !!(tool.subIterations || tool.subStatus);
   const isAsyncTask = !!tool.asyncTaskId;
-  const [expanded, setExpanded] = useState(isSubAgent || isAsyncTask);
+  const [expanded, setExpanded] = useState(isSubAgent);
   const hasOutput = !!tool.output;
   // Badge status: async-task card follows task state, sub-agent follows sub
   // status, otherwise the raw tool call status.
