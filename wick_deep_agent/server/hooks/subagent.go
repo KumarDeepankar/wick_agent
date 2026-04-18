@@ -57,7 +57,47 @@ func NewSubAgentHook(subagents []agent.SubAgentCfg, parentCfg *agent.AgentConfig
 func (h *SubAgentHook) Name() string { return "subagent" }
 
 func (h *SubAgentHook) Phases() []string {
-	return []string{"before_agent"}
+	return []string{"before_agent", "modify_request"}
+}
+
+// asyncSubAgentGuidance is appended to the system prompt when at least one
+// sub-agent is async-capable. Keeps prompt authors mode-agnostic: the main
+// system prompt describes the agent's mission; async coordination rules
+// appear automatically based on which delegation tools are available.
+const asyncSubAgentGuidance = `
+
+## Async sub-agent coordination
+
+Some sub-agents run in the background. start_async_task returns a task_id
+immediately — the sub-agent is NOT yet finished when you receive it.
+
+Rules:
+- Before using a task's result, call check_async_task and confirm status=done.
+- Before calling a sub-agent whose inputs depend on earlier background tasks
+  (for example, a consolidator that reads files written by parallel workers),
+  verify every upstream task shows status=done via list_async_tasks.
+- Use cancel_async_task to abort; use update_async_task to send new
+  instructions to a running task instead of launching a new one.
+- Prefer start_async_task for long-running or parallelizable work; prefer
+  delegate_to_agent (when available) for short, strictly sequential steps.`
+
+// ModifyRequest appends async coordination guidance to the system prompt
+// whenever this supervisor has at least one async-capable sub-agent. Sync-
+// only supervisors get no injection.
+func (h *SubAgentHook) ModifyRequest(ctx context.Context, systemPrompt string, msgs []agent.Message) (string, []agent.Message, error) {
+	if !h.hasAsyncSubAgent() {
+		return systemPrompt, msgs, nil
+	}
+	return systemPrompt + asyncSubAgentGuidance, msgs, nil
+}
+
+func (h *SubAgentHook) hasAsyncSubAgent() bool {
+	for _, sa := range h.subagents {
+		if sa.AsyncEnabled() {
+			return true
+		}
+	}
+	return false
 }
 
 // BeforeAgent registers the sync and/or async tools based on configured sub-agents.

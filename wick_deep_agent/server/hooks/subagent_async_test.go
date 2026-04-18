@@ -1,6 +1,8 @@
 package hooks
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"wick_server/agent"
@@ -118,5 +120,62 @@ func TestSubAgentCfg_BothModes(t *testing.T) {
 	sa := agent.SubAgentCfg{Name: "x", Sync: true, Async: true}
 	if !sa.SyncEnabled() || !sa.AsyncEnabled() {
 		t.Errorf("Sync+Async should enable both modes (got sync=%v async=%v)", sa.SyncEnabled(), sa.AsyncEnabled())
+	}
+}
+
+func TestModifyRequest_InjectsGuidanceWhenAsyncPresent(t *testing.T) {
+	h := NewSubAgentHook(
+		[]agent.SubAgentCfg{
+			{Name: "fast", Sync: true},
+			{Name: "slow", Async: true},
+		},
+		&agent.AgentConfig{}, nil, nil,
+	)
+
+	base := "You are a helpful assistant."
+	got, _, err := h.ModifyRequest(context.Background(), base, nil)
+	if err != nil {
+		t.Fatalf("ModifyRequest: %v", err)
+	}
+	if !strings.HasPrefix(got, base) {
+		t.Errorf("prefix changed; original prompt must be preserved")
+	}
+	if !strings.Contains(got, "Async sub-agent coordination") {
+		t.Errorf("expected guidance header in injected prompt, got:\n%s", got)
+	}
+	if !strings.Contains(got, "start_async_task") {
+		t.Errorf("guidance should reference start_async_task")
+	}
+}
+
+func TestModifyRequest_NoInjectionWhenAllSync(t *testing.T) {
+	h := NewSubAgentHook(
+		[]agent.SubAgentCfg{
+			{Name: "a", Sync: true},
+			{Name: "b"}, // defaults to sync via SyncEnabled()
+		},
+		&agent.AgentConfig{}, nil, nil,
+	)
+
+	base := "You are a helpful assistant."
+	got, _, err := h.ModifyRequest(context.Background(), base, nil)
+	if err != nil {
+		t.Fatalf("ModifyRequest: %v", err)
+	}
+	if got != base {
+		t.Errorf("sync-only hook mutated prompt; got:\n%s", got)
+	}
+}
+
+func TestModifyRequest_NoInjectionWhenNoSubAgents(t *testing.T) {
+	h := NewSubAgentHook(nil, &agent.AgentConfig{}, nil, nil)
+
+	base := "prompt"
+	got, _, err := h.ModifyRequest(context.Background(), base, nil)
+	if err != nil {
+		t.Fatalf("ModifyRequest: %v", err)
+	}
+	if got != base {
+		t.Errorf("expected prompt unchanged, got %q", got)
 	}
 }
