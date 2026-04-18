@@ -25,6 +25,11 @@ allowed-tools:
   - ls
   - glob
   - delegate_to_agent
+  - start_async_task
+  - check_async_task
+  - list_async_tasks
+  - cancel_async_task
+  - update_async_task
 ---
 
 # OpenSearch Researcher Skill
@@ -334,17 +339,17 @@ This keeps the main agent's context clean regardless of document count.
 8. **Build the filter string** for the CLI command. For example, if filters are
    `year=2024` and `country=India`, the filter string is `-f year=2024 -f country=India`.
 
-9. **Fan out all batches in a single response**. Because `num_batches ≤ 4`, emit
-   all `delegate_to_agent` calls **in the same response** (this is critical — the
-   harness runs tool calls from the same response in parallel). No multi-round
-   logic is needed.
+9. **Fan out all batches in a single response**. `batch-processor` is an
+   **async** sub-agent — launch each batch with `start_async_task` (NOT
+   `delegate_to_agent`, which is not available for batch-processor). Emit
+   every `start_async_task` call in the same response so they run in parallel.
 
    For each batch index `i` in `0 .. num_batches - 1`:
    - `offset = i * batch_size`
    - The last batch may return fewer documents than `batch_size` — that is fine.
 
    ```
-   delegate_to_agent: batch-processor
+   start_async_task: batch-processor
    task: "Execute: `opensearch-cli query --index <index_name> <filter_string> --batch-size <batch_size> --offset <offset>`
    Analyze the output for: key themes and patterns, notable data points and outliers, common value distributions across fields, data quality issues.
    Write structured findings to: research/<index_name>/batches/batch_<NNN>.md
@@ -353,17 +358,33 @@ This keeps the main agent's context clean regardless of document count.
    ```
    Where `<NNN>` is zero-padded (001, 002, 003, 004).
 
+   Each call returns immediately with a `task_id`. The supervisor is free
+   to interleave other work while batches run.
+
    **IMPORTANT**: Use relative paths (no leading `/`) in the task description.
    The sub-agent's write_file resolves relative paths to the correct workspace.
 
-### Phase 3: Verify Batch Files
+### Phase 3: Wait for All Batches, Then Verify Files
 
-10. **Count the batch files on disk**:
+10. **Poll `list_async_tasks` until every batch shows `status=done`**. Do NOT
+    proceed to summarization while any batch is still running. The batch
+    outputs on disk are what the summarizer reads — if you call summarizer
+    too early, it will see missing or partial files.
+
+    ```
+    list_async_tasks: {}
+    ```
+    Repeat once per turn until every batch is `done`. If a batch shows
+    `status=error`, read its `error` via `check_async_task` and decide
+    whether to re-launch (via `start_async_task`) or abort the run.
+
+11. **Count the batch files on disk**:
     ```
     ls: research/<index_name>/batches/
     ```
     Verify the count matches the expected `num_batches`. If a batch file is
-    missing, re-delegate that specific batch before proceeding.
+    missing even though its task reported `done`, re-launch that specific
+    batch before proceeding.
 
 ### Phase 4: Final Report (Single Summarization Pass)
 
@@ -429,7 +450,10 @@ research/<index_name>/
 - Always use `query` with filters when the user specifies criteria — do NOT use `fetch` and filter client-side.
 - Use `count` with the same filters before batching to know exactly how many docs to expect.
 - **ALWAYS use relative paths** (no leading `/`) for write_file, read_file, ls, glob. This applies to you AND to all sub-agent task descriptions.
-- **Parallel sub-agents**: Always emit multiple `delegate_to_agent` calls in the **same response** to run them in parallel. Do NOT emit them one at a time across separate responses.
+- **Sub-agent delegation**:
+  - `batch-processor` is async-only — use `start_async_task`. After launching, poll `list_async_tasks` until every batch is `done` before moving on.
+  - `summarizer` and `report-generator` are synchronous — use `delegate_to_agent`.
+  - For parallel batches, emit all `start_async_task` calls in the **same response** so they run concurrently.
 - **Max batches**: hard cap of 4 batches per research run. `batch_size` is computed as `max(10, ceil(count / 4))` so all batches fan out in one parallel response.
 - Each batch analysis should be substantive (not just restating raw data).
 - The summarizer reduces all batch files in a single pass — focus its task on synthesis (patterns across batches), not concatenation.

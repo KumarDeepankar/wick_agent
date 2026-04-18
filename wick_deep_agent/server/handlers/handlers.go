@@ -594,6 +594,21 @@ func (h *agentHandler) stream(w http.ResponseWriter, r *http.Request, agentID *s
 				"data":   evt.Data,
 			})
 
+		case "on_async_task_started",
+			"on_async_task_stream",
+			"on_async_task_tool_start",
+			"on_async_task_tool_end",
+			"on_async_task_updated",
+			"on_async_task_done",
+			"on_async_task_error",
+			"on_async_task_cancelled":
+			sseWriter.SendEvent(evt.Event, map[string]any{
+				"event":   evt.Event,
+				"name":    evt.Name,
+				"task_id": evt.TaskID,
+				"data":    evt.Data,
+			})
+
 		case "done":
 			trace.Finish(nil)
 			h.deps.TraceStore.Put(trace)
