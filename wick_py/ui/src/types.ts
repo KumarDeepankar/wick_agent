@@ -58,6 +58,31 @@ export interface TraceEvent {
 
 export type StreamStatus = 'idle' | 'connecting' | 'streaming' | 'done' | 'error';
 
+// ── Async sub-agent tasks (started via start_async_task) ─────────────────
+
+export type AsyncTaskStatus = 'running' | 'done' | 'error' | 'cancelled';
+
+export interface AsyncTaskToolCall {
+  id: string;
+  name: string;
+  input: Record<string, unknown> | null;
+  output: string | null;
+  status: 'running' | 'done';
+}
+
+export interface AsyncTask {
+  taskId: string;
+  agentName: string;
+  task: string;
+  status: AsyncTaskStatus;
+  streamedContent: string;
+  toolCalls: AsyncTaskToolCall[];
+  updates: string[];       // mid-flight instructions injected via update_async_task
+  error: string | null;
+  startedAt: number;
+  updatedAt: number;
+}
+
 export type CanvasContentType = 'code' | 'data' | 'document' | 'slides' | 'binary' | 'welcome';
 
 export interface CanvasArtifact {

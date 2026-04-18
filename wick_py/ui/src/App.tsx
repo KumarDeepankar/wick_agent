@@ -3,6 +3,8 @@ import { ChatPanel } from './components/ChatPanel';
 import { LoginPage } from './components/LoginPage';
 import { TraceToggleButton } from './components/TraceToggleButton';
 import { TraceOverlay } from './components/TraceOverlay';
+import { AsyncTaskToggleButton } from './components/AsyncTaskToggleButton';
+import { AsyncTaskOverlay } from './components/AsyncTaskOverlay';
 import { CanvasPanel } from './components/canvas/CanvasPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { TerminalPanel } from './components/TerminalPanel';
@@ -36,6 +38,7 @@ export default function App() {
   const [authChecked, setAuthChecked] = useState(false);
   const [traceOpen, setTraceOpen] = useState(false);
   const [traceHighlightId, setTraceHighlightId] = useState<string | null>(null);
+  const [asyncTasksOpen, setAsyncTasksOpen] = useState(false);
   const [pendingPrompt, setPendingPrompt] = useState<string | undefined>();
   const [canvasWidth, setCanvasWidth] = useState(520);
   const [dragging, setDragging] = useState(false);
@@ -88,7 +91,7 @@ export default function App() {
     setUser(null);
   }, []);
 
-  const { messages, traceEvents, canvasArtifacts, status, threadId, error, send, stop, reset, restore, updateArtifactContent, removeArtifact } =
+  const { messages, traceEvents, canvasArtifacts, asyncTasks, status, threadId, error, send, stop, reset, restore, updateArtifactContent, removeArtifact } =
     useAgentStream();
 
   // Auto-expand canvas when first artifact arrives
@@ -483,6 +486,12 @@ export default function App() {
                 <line x1="9" y1="2" x2="9" y2="14" />
               </svg>
             </button>
+            <AsyncTaskToggleButton
+              totalCount={asyncTasks.length}
+              runningCount={asyncTasks.filter((t) => t.status === 'running').length}
+              isOpen={asyncTasksOpen}
+              onClick={() => setAsyncTasksOpen((o) => !o)}
+            />
             <TraceToggleButton
               eventCount={traceEvents.length}
               isStreaming={isActive}
@@ -617,6 +626,12 @@ export default function App() {
         isOpen={traceOpen}
         onClose={() => { setTraceOpen(false); setTraceHighlightId(null); }}
         highlightEventId={traceHighlightId}
+      />
+
+      <AsyncTaskOverlay
+        tasks={asyncTasks}
+        isOpen={asyncTasksOpen}
+        onClose={() => setAsyncTasksOpen(false)}
       />
 
       {undoToast.visible && (

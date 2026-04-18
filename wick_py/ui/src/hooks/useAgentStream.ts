@@ -1,5 +1,14 @@
 import { useState, useRef, useCallback } from 'react';
-import type { ChatMessage, TraceEvent, StreamStatus, CanvasArtifact, Iteration, ToolCallInfo } from '../types';
+import type {
+  ChatMessage,
+  TraceEvent,
+  StreamStatus,
+  CanvasArtifact,
+  Iteration,
+  ToolCallInfo,
+  AsyncTask,
+  AsyncTaskStatus,
+} from '../types';
 import { extractExtension, extractFileName, resolveContentType, resolveLanguage, isBinaryExtension, isSlideContent } from '../utils/canvasUtils';
 import { fetchFileDownload, getToken } from '../api';
 
@@ -70,6 +79,7 @@ export function useAgentStream() {
   const [status, setStatus] = useState<StreamStatus>('idle');
   const [threadId, setThreadId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [asyncTasks, setAsyncTasks] = useState<AsyncTask[]>([]);
 
   const abortRef = useRef<AbortController | null>(null);
   const assistantIdRef = useRef<string | null>(null);
@@ -669,6 +679,121 @@ export function useAgentStream() {
             }
           }
 
+          // --- Async sub-agent task events (start_async_task lifecycle) ---
+          if (sse.event.startsWith('on_async_task_')) {
+            const taskId = (parsed.task_id as string) ?? '';
+            if (!taskId) {
+              // Malformed event — skip rather than corrupt state.
+            } else {
+              const data = (parsed.data as Record<string, unknown> | undefined) ?? {};
+              const now = Date.now();
+
+              const mutate = (fn: (t: AsyncTask) => AsyncTask) =>
+                setAsyncTasks((prev) => prev.map((t) => (t.taskId === taskId ? fn(t) : t)));
+
+              switch (sse.event) {
+                case 'on_async_task_started': {
+                  const agentName = (data.agent as string) ?? (parsed.name as string) ?? '';
+                  const taskDesc = (data.task as string) ?? '';
+                  setAsyncTasks((prev) => {
+                    // Idempotent — if the event is replayed don't dupe.
+                    if (prev.some((t) => t.taskId === taskId)) return prev;
+                    const task: AsyncTask = {
+                      taskId,
+                      agentName,
+                      task: taskDesc,
+                      status: 'running',
+                      streamedContent: '',
+                      toolCalls: [],
+                      updates: [],
+                      error: null,
+                      startedAt: now,
+                      updatedAt: now,
+                    };
+                    return [...prev, task];
+                  });
+                  break;
+                }
+
+                case 'on_async_task_stream': {
+                  const chunk = data.chunk as Record<string, unknown> | undefined;
+                  const token = (chunk?.content as string) ?? '';
+                  if (token) {
+                    mutate((t) => ({ ...t, streamedContent: t.streamedContent + token, updatedAt: now }));
+                  }
+                  break;
+                }
+
+                case 'on_async_task_tool_start': {
+                  const toolName = (parsed.name as string) ?? 'unknown';
+                  const input = (data.input as Record<string, unknown> | null) ?? null;
+                  const runId = (data.sub_run_id as string) ?? `tc-${now}`;
+                  mutate((t) => ({
+                    ...t,
+                    toolCalls: [
+                      ...t.toolCalls,
+                      { id: runId, name: toolName, input, output: null, status: 'running' },
+                    ],
+                    updatedAt: now,
+                  }));
+                  break;
+                }
+
+                case 'on_async_task_tool_end': {
+                  const runId = (data.sub_run_id as string) ?? '';
+                  const output = (data.output as string) ?? '';
+                  mutate((t) => {
+                    // Match the most recent tool call with this id (falling back to the most recent running one).
+                    let idx = -1;
+                    for (let i = t.toolCalls.length - 1; i >= 0; i--) {
+                      const tc = t.toolCalls[i]!;
+                      if (runId ? tc.id === runId : tc.status === 'running') {
+                        idx = i;
+                        break;
+                      }
+                    }
+                    if (idx < 0) return t;
+                    const updated = [...t.toolCalls];
+                    updated[idx] = { ...updated[idx]!, output, status: 'done' };
+                    return { ...t, toolCalls: updated, updatedAt: now };
+                  });
+                  break;
+                }
+
+                case 'on_async_task_updated': {
+                  const instr = (data.instructions as string) ?? '';
+                  if (instr) {
+                    mutate((t) => ({ ...t, updates: [...t.updates, instr], updatedAt: now }));
+                  }
+                  break;
+                }
+
+                case 'on_async_task_done': {
+                  const finalOutput = (data.output as string) ?? '';
+                  mutate((t) => ({
+                    ...t,
+                    status: 'done' as AsyncTaskStatus,
+                    // Prefer the final consolidated output; fall back to streamed content.
+                    streamedContent: finalOutput || t.streamedContent,
+                    updatedAt: now,
+                  }));
+                  break;
+                }
+
+                case 'on_async_task_error': {
+                  const err = (data.error as string) ?? 'unknown error';
+                  mutate((t) => ({ ...t, status: 'error' as AsyncTaskStatus, error: err, updatedAt: now }));
+                  break;
+                }
+
+                case 'on_async_task_cancelled': {
+                  mutate((t) => ({ ...t, status: 'cancelled' as AsyncTaskStatus, updatedAt: now }));
+                  break;
+                }
+              }
+            }
+          }
+
           // Handle specific event types for chat assembly
           switch (sse.event) {
             case 'on_chat_model_stream': {
@@ -761,6 +886,7 @@ export function useAgentStream() {
     setMessages([]);
     setTraceEvents([]);
     setCanvasArtifacts([]);
+    setAsyncTasks([]);
     setThreadId(null);
     setError(null);
     setStatus('idle');
@@ -789,6 +915,7 @@ export function useAgentStream() {
     messages,
     traceEvents,
     canvasArtifacts,
+    asyncTasks,
     status,
     threadId,
     error,
