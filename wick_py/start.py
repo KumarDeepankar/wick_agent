@@ -187,7 +187,7 @@ def main():
     )
     parser.add_argument(
         "--example", type=str, default=None,
-        help="Example to run (e.g. 'simple_agent' or 'custom_llm'). Default: custom_llm",
+        help="Example to run (e.g. 'simple_agent' or 'server'). Default: server",
     )
     parser.add_argument(
         "--env", "-e", action="append", default=[],
