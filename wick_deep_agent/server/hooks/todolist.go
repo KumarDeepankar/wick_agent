@@ -11,7 +11,7 @@ import (
 )
 
 // System prompt injected on every LLM call to guide todo usage.
-var defaultTodoSystemPrompt = `For multi-step tasks, use write_todos to plan and track progress. Use update_todo to change one task's status. Mark done immediately. For simple questions, respond directly.`
+var defaultTodoSystemPrompt = `For multi-step tasks, use write_todos to plan and track progress. Use update_todo to change one task's status, or update_todos to change several at once. Mark done immediately. For simple questions, respond directly.`
 
 // Tool description for write_todos.
 var defaultTodoToolDescription = `Replace the full todo list. Each item: id, title, status (pending|in_progress|done).`
@@ -30,7 +30,7 @@ func WithTodoToolDescription(desc string) TodoListOption {
 }
 
 // todoTools is the set of tool names managed by this hook.
-var todoTools = map[string]bool{"write_todos": true, "update_todo": true}
+var todoTools = map[string]bool{"write_todos": true, "update_todo": true, "update_todos": true}
 
 // TodoListHook tracks task progress via write_todos and update_todo tools.
 // Uses AfterModel to reject conflicting parallel calls before dispatch.
@@ -136,6 +136,73 @@ func (h *TodoListHook) BeforeAgent(ctx context.Context, state *agent.AgentState)
 		},
 	})
 
+	// update_todos — batch single-status updates by ID, applied sequentially
+	// in one tool call so we don't race state.Todos.
+	agent.RegisterToolOnState(state, &agent.FuncTool{
+		ToolName: "update_todos",
+		ToolDesc: "Update the status of multiple todo items by ID in one call. Prefer this over parallel update_todo calls when you need to change several tasks at once.",
+		ToolParams: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"updates": map[string]any{
+					"type":        "array",
+					"description": "List of {id, status} updates to apply in order.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"id":     map[string]any{"type": "string", "description": "ID of the todo to update"},
+							"status": map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "done"}, "description": "New status"},
+						},
+						"required": []string{"id", "status"},
+					},
+				},
+			},
+			"required": []string{"updates"},
+		},
+		Fn: func(ctx context.Context, args map[string]any) (string, error) {
+			raw, ok := args["updates"]
+			if !ok {
+				return "Error: 'updates' field is required", nil
+			}
+			data, _ := json.Marshal(raw)
+			var updates []struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+			}
+			if err := json.Unmarshal(data, &updates); err != nil {
+				return "Error parsing updates: " + err.Error(), nil
+			}
+			if len(updates) == 0 {
+				return "Error: 'updates' must contain at least one item", nil
+			}
+
+			var missing []string
+			for _, u := range updates {
+				if u.ID == "" || u.Status == "" {
+					missing = append(missing, fmt.Sprintf("%+v", u))
+					continue
+				}
+				found := false
+				for i := range state.Todos {
+					if state.Todos[i].ID == u.ID {
+						state.Todos[i].Status = u.Status
+						found = true
+						break
+					}
+				}
+				if !found {
+					missing = append(missing, u.ID)
+				}
+			}
+
+			out, _ := json.Marshal(state.Todos)
+			if len(missing) > 0 {
+				return fmt.Sprintf("Updated todo list to %s (skipped invalid ids: %v)", string(out), missing), nil
+			}
+			return fmt.Sprintf("Updated todo list to %s", string(out)), nil
+		},
+	})
+
 	return nil
 }
 
@@ -164,16 +231,19 @@ func (h *TodoListHook) WrapModelCall(ctx context.Context, msgs []agent.Message, 
 //
 // Rules:
 //   - 2+ write_todos → reject all (ambiguous which list wins)
-//   - 2+ update_todo → reject all (would race on state.Todos)
-//   - write_todos + update_todo → reject update_todo (redundant)
+//   - 2+ update_todo → reject all (point them at update_todos)
+//   - 2+ update_todos → reject all (would race on state.Todos)
+//   - write_todos + update_todo/update_todos → reject the updates (redundant)
 func (h *TodoListHook) AfterModel(ctx context.Context, state *agent.AgentState, toolCalls []agent.ToolCall) (map[string]agent.ToolResult, error) {
-	var writeCalls, updateCalls []agent.ToolCall
+	var writeCalls, updateCalls, batchCalls []agent.ToolCall
 	for _, tc := range toolCalls {
 		switch tc.Name {
 		case "write_todos":
 			writeCalls = append(writeCalls, tc)
 		case "update_todo":
 			updateCalls = append(updateCalls, tc)
+		case "update_todos":
+			batchCalls = append(batchCalls, tc)
 		}
 	}
 
@@ -196,18 +266,37 @@ func (h *TodoListHook) AfterModel(ctx context.Context, state *agent.AgentState, 
 				ToolCallID: tc.ID,
 				Name:       tc.Name,
 				Error:      "parallel update_todo rejected",
-				Output:     "Error: The update_todo tool should never be called multiple times in parallel. Use write_todos to update multiple tasks at once.",
+				Output:     "Error: update_todo cannot be called multiple times in parallel. Use update_todos with a list of {id, status} updates instead.",
 			}
 		}
 	}
 
-	if len(writeCalls) == 1 && len(updateCalls) > 0 {
+	if len(batchCalls) > 1 {
+		for _, tc := range batchCalls {
+			intercepted[tc.ID] = agent.ToolResult{
+				ToolCallID: tc.ID,
+				Name:       tc.Name,
+				Error:      "parallel update_todos rejected",
+				Output:     "Error: update_todos cannot be called multiple times in parallel. Combine all updates into a single update_todos call.",
+			}
+		}
+	}
+
+	if len(writeCalls) == 1 && (len(updateCalls) > 0 || len(batchCalls) > 0) {
 		for _, tc := range updateCalls {
 			intercepted[tc.ID] = agent.ToolResult{
 				ToolCallID: tc.ID,
 				Name:       tc.Name,
 				Error:      "update_todo rejected (write_todos in same turn)",
 				Output:     "Error: write_todos and update_todo should not be called in the same turn. write_todos replaces the entire list.",
+			}
+		}
+		for _, tc := range batchCalls {
+			intercepted[tc.ID] = agent.ToolResult{
+				ToolCallID: tc.ID,
+				Name:       tc.Name,
+				Error:      "update_todos rejected (write_todos in same turn)",
+				Output:     "Error: write_todos and update_todos should not be called in the same turn. write_todos replaces the entire list.",
 			}
 		}
 	}

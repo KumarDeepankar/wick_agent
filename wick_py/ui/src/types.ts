@@ -52,6 +52,24 @@ export interface ToolCallInfo {
   // from the main iteration flow and surfaces them as polls on the
   // parent card instead.
   foldedIntoRunId?: string;
+  // HITL state (request_user_input / request_user_approval). The tool
+  // call stays in 'running' status while hitlStatus is 'pending'. When
+  // the user responds via the chat box (input) or option buttons
+  // (approval), the SSE on_hitl_response event resolves these fields.
+  hitlId?: string;
+  hitlKind?: 'input' | 'approval';
+  hitlPrompt?: string;
+  hitlOptions?: string[];
+  hitlStatus?: 'pending' | 'answered' | 'denied' | 'cancelled' | 'timeout';
+  hitlResponse?: string;
+}
+
+export interface PendingHITL {
+  id: string;
+  kind: 'input' | 'approval';
+  prompt: string;
+  options: string[];
+  toolRunId: string;
 }
 
 export interface AsyncTaskPoll {

@@ -91,7 +91,7 @@ export default function App() {
     setUser(null);
   }, []);
 
-  const { messages, traceEvents, canvasArtifacts, asyncTasks, status, threadId, error, send, stop, reset, restore, updateArtifactContent, removeArtifact } =
+  const { messages, traceEvents, canvasArtifacts, asyncTasks, status, threadId, error, pendingHITL, send, stop, reset, restore, respondToPending, updateArtifactContent, removeArtifact } =
     useAgentStream();
 
   // Auto-expand canvas when first artifact arrives
@@ -515,6 +515,8 @@ export default function App() {
               onPromptConsumed={handlePromptConsumed}
               onPromptClick={handlePromptClick}
               onViewPrompt={handleViewPrompt}
+              pendingHITL={pendingHITL}
+              onHitlRespond={respondToPending}
             />
           )}
           {!canvasCollapsed && !canvasFullscreen && (
@@ -592,6 +594,8 @@ export default function App() {
                 pendingPrompt={pendingPrompt}
                 onPromptConsumed={handlePromptConsumed}
                 onViewPrompt={handleViewPrompt}
+                pendingHITL={pendingHITL}
+                onHitlRespond={respondToPending}
               />
               <div
                 className="chat-popup-resize-grip"

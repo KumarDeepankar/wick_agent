@@ -8,9 +8,10 @@ import type {
   ToolCallInfo,
   AsyncTask,
   AsyncTaskStatus,
+  PendingHITL,
 } from '../types';
 import { extractExtension, extractFileName, resolveContentType, resolveLanguage, isBinaryExtension, isSlideContent } from '../utils/canvasUtils';
-import { fetchFileDownload, getToken } from '../api';
+import { fetchFileDownload, getToken, respondToHITL } from '../api';
 
 interface SSEEvent {
   event: string;
@@ -92,6 +93,7 @@ export function useAgentStream() {
   const [threadId, setThreadId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [asyncTasks, setAsyncTasks] = useState<AsyncTask[]>([]);
+  const [pendingHITL, setPendingHITL] = useState<PendingHITL | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const assistantIdRef = useRef<string | null>(null);
@@ -851,6 +853,53 @@ export function useAgentStream() {
             }
           }
 
+          // --- HITL events (request_user_input / request_user_approval) ---
+          // The tool stays in 'running' status while the supervisor goroutine
+          // is blocked on the request. We attach hitl* fields to the matching
+          // tool call and surface a chat-level "pending" state so the chat
+          // input can route the user's reply to /agents/hitl/<id>/respond.
+          if (sse.event === 'on_hitl_request') {
+            const data = (parsed.data as Record<string, unknown>) ?? {};
+            const hitlId = String(data.id ?? '');
+            const kind = (String(data.kind ?? 'input') === 'approval' ? 'approval' : 'input') as 'input' | 'approval';
+            const prompt = String(data.prompt ?? '');
+            const options = Array.isArray(data.options) ? (data.options as string[]) : [];
+            const runId = (parsed.run_id as string) ?? '';
+            if (hitlId && currentIterRef.current) {
+              const tc = currentIterRef.current.toolCalls.find((t) => t.id === runId);
+              if (tc) {
+                tc.hitlId = hitlId;
+                tc.hitlKind = kind;
+                tc.hitlPrompt = prompt;
+                tc.hitlOptions = options;
+                tc.hitlStatus = 'pending';
+                flushIterationsToMessage();
+              }
+              setPendingHITL({ id: hitlId, kind, prompt, options, toolRunId: runId });
+            }
+          }
+
+          if (sse.event === 'on_hitl_heartbeat') {
+            // No-op: the event keeps the SSE alive past app.go's 120s
+            // IdleTimeout. The pending card already shows a spinner.
+          }
+
+          if (sse.event === 'on_hitl_response') {
+            const data = (parsed.data as Record<string, unknown>) ?? {};
+            const hitlId = String(data.id ?? '');
+            const newStatus = String(data.status ?? '') as ToolCallInfo['hitlStatus'];
+            const response = String(data.response ?? '');
+            if (currentIterRef.current) {
+              const tc = currentIterRef.current.toolCalls.find((t) => t.hitlId === hitlId);
+              if (tc) {
+                tc.hitlStatus = newStatus;
+                tc.hitlResponse = response;
+                flushIterationsToMessage();
+              }
+            }
+            setPendingHITL((prev) => (prev && prev.id === hitlId ? null : prev));
+          }
+
           // --- Async sub-agent task events (start_async_task lifecycle) ---
           if (sse.event.startsWith('on_async_task_')) {
             const taskId = (parsed.task_id as string) ?? '';
@@ -1114,6 +1163,7 @@ export function useAgentStream() {
     setThreadId(null);
     setError(null);
     setStatus('idle');
+    setPendingHITL(null);
     pendingEditsRef.current.clear();
     pendingWritesRef.current.clear();
     turnFileNamesRef.current.clear();
@@ -1123,6 +1173,24 @@ export function useAgentStream() {
     runIdByTaskIdRef.current.clear();
     asyncTasksRef.current = [];
   }, [stop]);
+
+  // Resolve the currently-pending HITL request with the user's answer.
+  // Status defaults to 'answered'; pass 'denied' for an approval Deny click,
+  // or 'cancelled' if the user dismissed the prompt.
+  const respondToPending = useCallback(
+    async (response: string, status: 'answered' | 'denied' | 'cancelled' = 'answered') => {
+      const pending = pendingHITL;
+      if (!pending) return;
+      try {
+        await respondToHITL(pending.id, status, response);
+        // Optimistic clear — the on_hitl_response SSE will also clear it.
+        setPendingHITL(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [pendingHITL],
+  );
 
   const restore = useCallback((snapshot: {
     messages: ChatMessage[];
@@ -1146,10 +1214,12 @@ export function useAgentStream() {
     status,
     threadId,
     error,
+    pendingHITL,
     send,
     stop,
     reset,
     restore,
+    respondToPending,
     updateArtifactContent,
     removeArtifact,
   };

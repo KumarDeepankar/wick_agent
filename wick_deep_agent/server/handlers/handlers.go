@@ -146,6 +146,28 @@ func RegisterRoutes(mux *http.ServeMux, deps *Deps) {
 			h.traces(w, r, strings.TrimPrefix(path, "traces"))
 			return
 		}
+		if strings.HasPrefix(path, "hitl/") {
+			rest := strings.TrimPrefix(path, "hitl/")
+			parts := strings.SplitN(rest, "/", 2)
+			if len(parts) == 0 || parts[0] == "" {
+				http.NotFound(w, r)
+				return
+			}
+			requestID := parts[0]
+			sub := ""
+			if len(parts) > 1 {
+				sub = parts[1]
+			}
+			switch sub {
+			case "":
+				h.hitlGet(w, r, requestID)
+			case "respond":
+				h.hitlRespond(w, r, requestID)
+			default:
+				http.NotFound(w, r)
+			}
+			return
+		}
 
 		// /agents/{id}/...
 		parts := strings.SplitN(path, "/", 2)
@@ -607,6 +629,16 @@ func (h *agentHandler) stream(w http.ResponseWriter, r *http.Request, agentID *s
 				"name":    evt.Name,
 				"task_id": evt.TaskID,
 				"data":    evt.Data,
+			})
+
+		case "on_hitl_request",
+			"on_hitl_heartbeat",
+			"on_hitl_response":
+			sseWriter.SendEvent(evt.Event, map[string]any{
+				"event":  evt.Event,
+				"name":   evt.Name,
+				"run_id": evt.RunID,
+				"data":   evt.Data,
 			})
 
 		case "done":
@@ -2323,6 +2355,11 @@ func (h *agentHandler) buildAgent(inst *agent.Instance, username string) (*agent
 	// TodoList hook (always active)
 	agentHooks = append(agentHooks, hooks.NewTodoListHook())
 
+	// HITL hook (always active) — exposes request_user_input and
+	// request_user_approval so the supervisor can ask the user mid-turn
+	// without exiting the loop.
+	agentHooks = append(agentHooks, hooks.NewHITLHook())
+
 	// Filesystem hook (when backend is available)
 	if b != nil {
 		agentHooks = append(agentHooks, hooks.NewFilesystemHook(b))
@@ -2457,6 +2494,82 @@ func nilIfEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// hitlGet returns the current state of a HITL request. Useful for the UI to
+// re-attach to a still-pending request after a reload.
+func (h *agentHandler) hitlGet(w http.ResponseWriter, r *http.Request, requestID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	req := agent.GlobalHITLStore.Get(requestID)
+	if req == nil {
+		writeJSONError(w, http.StatusNotFound, "unknown hitl request id")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":         req.ID,
+		"thread_id":  req.ThreadID,
+		"kind":       string(req.Kind),
+		"prompt":     req.Prompt,
+		"options":    req.Options,
+		"status":     string(req.Status()),
+		"response":   req.Response(),
+		"created_at": req.CreatedAt.Format(time.RFC3339),
+		"updated_at": req.UpdatedAt().Format(time.RFC3339),
+	})
+}
+
+// hitlRespond accepts the user's response and resolves the pending request,
+// unblocking the supervisor goroutine waiting on the request's Done channel.
+//
+// Body schema: {"status":"answered|denied|cancelled","response":"...","metadata":{}}
+// Status defaults to "answered" if omitted. "denied" is intended for
+// approval-kind requests; "cancelled" is for the UI dismissing the prompt.
+func (h *agentHandler) hitlRespond(w http.ResponseWriter, r *http.Request, requestID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Status   string         `json:"status"`
+		Response string         `json:"response"`
+		Metadata map[string]any `json:"metadata,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	req := agent.GlobalHITLStore.Get(requestID)
+	if req == nil {
+		writeJSONError(w, http.StatusNotFound, "unknown hitl request id")
+		return
+	}
+
+	var status agent.HITLStatus
+	switch body.Status {
+	case "", "answered":
+		status = agent.HITLAnswered
+	case "denied":
+		status = agent.HITLDenied
+	case "cancelled":
+		status = agent.HITLCancelled
+	default:
+		writeJSONError(w, http.StatusBadRequest, "status must be one of answered/denied/cancelled")
+		return
+	}
+
+	if !req.Resolve(status, body.Response, body.Metadata) {
+		writeJSONError(w, http.StatusConflict, fmt.Sprintf("request already %s", req.Status()))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":     req.ID,
+		"status": string(req.Status()),
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

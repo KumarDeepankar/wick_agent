@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import type { ChatMessage, StreamStatus } from '../types';
+import type { ChatMessage, StreamStatus, PendingHITL } from '../types';
 import { MessageBubble } from './MessageBubble';
 import { WelcomeView } from './canvas/WelcomeView';
 
@@ -15,6 +15,8 @@ interface Props {
   onPromptConsumed?: () => void;
   onPromptClick?: (prompt: string) => void;
   onViewPrompt?: (traceId: string) => void;
+  pendingHITL?: PendingHITL | null;
+  onHitlRespond?: (response: string, status?: 'answered' | 'denied' | 'cancelled') => void;
 }
 
 const SendIcon = () => (
@@ -41,6 +43,8 @@ export function ChatPanel({
   onPromptConsumed,
   onPromptClick,
   onViewPrompt,
+  pendingHITL,
+  onHitlRespond,
 }: Props) {
   const [input, setInput] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
@@ -51,6 +55,11 @@ export function ChatPanel({
 
   const isActive = status === 'connecting' || status === 'streaming';
   const isEmpty = messages.length === 0;
+  // While a HITL request is pending the supervisor is blocked waiting for
+  // the user's reply — the chat input must stay enabled so the user can
+  // answer. Submission is routed to onHitlRespond instead of onSend.
+  const isHitlInputPending = !!pendingHITL && pendingHITL.kind === 'input';
+  const inputDisabled = isActive && !isHitlInputPending;
 
   useEffect(() => {
     if (autoScroll && listRef.current) {
@@ -85,8 +94,14 @@ export function ChatPanel({
   }, []);
 
   const handleSubmit = () => {
-    if (!input.trim() || isActive) return;
-    onSend(input);
+    if (!input.trim()) return;
+    if (isHitlInputPending && onHitlRespond) {
+      onHitlRespond(input, 'answered');
+    } else if (!isActive) {
+      onSend(input);
+    } else {
+      return;
+    }
     setInput('');
     if (inputRef.current) {
       inputRef.current.style.height = 'auto';
@@ -122,33 +137,61 @@ export function ChatPanel({
     [...messages].reverse().find((m) => m.role === 'assistant')?.id ?? null;
 
   // Shared input widget — textarea with icon button inside
+  const showApprovalCard = !!pendingHITL && pendingHITL.kind === 'approval';
+  const inputPlaceholder = isHitlInputPending
+    ? `Reply to: ${pendingHITL!.prompt.slice(0, 80)}${pendingHITL!.prompt.length > 80 ? '…' : ''}`
+    : (isEmpty ? 'Ask anything...' : 'Type a message...');
   const inputWidget = (
-    <div className="chat-input-wrap">
-      <textarea
-        ref={inputRef}
-        className="chat-input"
-        value={input}
-        onChange={handleInputChange}
-        onKeyDown={handleKeyDown}
-        placeholder={isEmpty ? 'Ask anything...' : 'Type a message...'}
-        rows={1}
-        disabled={isActive}
-      />
-      {isActive ? (
-        <button className="btn-input-action btn-stop-icon" onClick={onStop} aria-label="Stop generation">
-          <StopIcon />
-        </button>
-      ) : (
-        <button
-          className="btn-input-action btn-send-icon"
-          onClick={handleSubmit}
-          disabled={!input.trim()}
-          aria-label="Send message"
-        >
-          <SendIcon />
-        </button>
+    <>
+      {showApprovalCard && onHitlRespond && (
+        <div className="hitl-approval-card">
+          <div className="hitl-approval-prompt">{pendingHITL!.prompt}</div>
+          <div className="hitl-approval-options">
+            {(pendingHITL!.options.length > 0
+              ? pendingHITL!.options
+              : ['Approve', 'Deny']
+            ).map((opt) => {
+              const isDeny = /^deny$|^no$|^cancel$/i.test(opt);
+              return (
+                <button
+                  key={opt}
+                  className={`hitl-option-btn ${isDeny ? 'deny' : 'approve'}`}
+                  onClick={() => onHitlRespond(opt, isDeny ? 'denied' : 'answered')}
+                >
+                  {opt}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       )}
-    </div>
+      <div className={`chat-input-wrap ${isHitlInputPending ? 'hitl-pending' : ''}`}>
+        <textarea
+          ref={inputRef}
+          className="chat-input"
+          value={input}
+          onChange={handleInputChange}
+          onKeyDown={handleKeyDown}
+          placeholder={inputPlaceholder}
+          rows={1}
+          disabled={inputDisabled}
+        />
+        {isActive && !isHitlInputPending ? (
+          <button className="btn-input-action btn-stop-icon" onClick={onStop} aria-label="Stop generation">
+            <StopIcon />
+          </button>
+        ) : (
+          <button
+            className="btn-input-action btn-send-icon"
+            onClick={handleSubmit}
+            disabled={!input.trim()}
+            aria-label={isHitlInputPending ? 'Send reply' : 'Send message'}
+          >
+            <SendIcon />
+          </button>
+        )}
+      </div>
+    </>
   );
 
   // ── Empty state: centered input with skill chips below ──

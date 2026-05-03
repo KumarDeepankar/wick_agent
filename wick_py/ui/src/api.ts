@@ -289,6 +289,22 @@ export async function readContainerFile(
   return res.json();
 }
 
+export async function respondToHITL(
+  hitlId: string,
+  status: 'answered' | 'denied' | 'cancelled',
+  response: string,
+): Promise<void> {
+  const res = await authFetch(`/agents/hitl/${hitlId}/respond`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status, response }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || data.detail || `HITL respond failed: ${res.status}`);
+  }
+}
+
 export async function exportSlidesAsPptx(filePath: string, agentId?: string): Promise<Blob> {
   const params = new URLSearchParams({ path: filePath });
   if (agentId) params.set('agent_id', agentId);

@@ -87,10 +87,19 @@ Rules:
   instructions to a running task instead of launching a new one.
 - Prefer start_async_task for long-running or parallelizable work; prefer
   delegate_to_agent (when available) for short, strictly sequential steps.
-- Don't spin-poll. If every active task is still running and you have no
-  other work (user chat, another sub-agent to launch), reply briefly to
-  the user or wait — don't call list_async_tasks or check_async_task
-  repeatedly in tight turns.`
+- Don't spin-poll. Don't call list_async_tasks or check_async_task
+  repeatedly in tight turns just to watch progress — the status section
+  already shows you that.
+- If you are genuinely blocked on async results before you can take the
+  next step, call await_async_tasks(task_ids=[...]) — this keeps the
+  agent loop alive until the tasks finish. NEVER reply with bare "I'll
+  wait" / "let me wait" text while tasks are still running, because that
+  exits the turn and the user has to nudge you to resume.
+- Reply to the user with text only when you have something useful to
+  report, a question to ask, or you have finished. Fire-and-forget is
+  fine: if the user asked you to start something in the background and
+  keep helping with other things, just continue with the other things —
+  no need to await unless you actually need the result.`
 
 // ModifyRequest appends async coordination guidance and live task status to
 // the system prompt whenever this supervisor has at least one async-capable
@@ -445,6 +454,168 @@ func (h *SubAgentHook) registerAsyncTools(state *agent.AgentState, agents map[st
 				})
 			}
 			return jsonResult(map[string]any{"tasks": out, "count": len(out)}), nil
+		},
+	})
+
+	// await_async_tasks — block the supervisor's tool call until the given
+	// async tasks reach terminal status. This is the supervisor's correct
+	// "I'm waiting on results" path: it keeps the agent loop alive instead
+	// of emitting a tool-less reply (which would exit the loop and require
+	// the user to nudge the agent back).
+	agent.RegisterToolOnState(state, &agent.FuncTool{
+		ToolName: "await_async_tasks",
+		ToolDesc: "Block until the listed async tasks reach terminal status (done/error/cancelled). Use this whenever you would otherwise reply with 'I'll wait' — never exit a turn while you are blocked on async results. Returns a JSON summary of which tasks finished, which were still running at timeout, and elapsed seconds. Combine multiple task_ids in one call rather than awaiting them one by one.",
+		ToolParams: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"task_ids": map[string]any{
+					"type":        "array",
+					"description": "Task IDs to wait on. Must belong to the current conversation.",
+					"items":       map[string]any{"type": "string"},
+					"minItems":    1,
+				},
+				"mode": map[string]any{
+					"type":        "string",
+					"enum":        []string{"all", "any"},
+					"description": "'all' (default) returns when every task is terminal. 'any' returns as soon as the first task is terminal.",
+				},
+				"max_wait_seconds": map[string]any{
+					"type":        "integer",
+					"description": "Maximum seconds to block before returning with whatever has finished so far. Default 600, capped at 1800.",
+				},
+			},
+			"required": []string{"task_ids"},
+		},
+		Fn: func(ctx context.Context, args map[string]any) (string, error) {
+			rawIDs, ok := args["task_ids"]
+			if !ok {
+				return "Error: 'task_ids' is required", nil
+			}
+			data, _ := json.Marshal(rawIDs)
+			var ids []string
+			if err := json.Unmarshal(data, &ids); err != nil {
+				return "Error parsing task_ids: " + err.Error(), nil
+			}
+			if len(ids) == 0 {
+				return "Error: 'task_ids' must contain at least one task_id", nil
+			}
+
+			mode := "all"
+			if m, _ := args["mode"].(string); m == "any" || m == "all" {
+				mode = m
+			}
+
+			maxWait := 600
+			if v, ok := args["max_wait_seconds"]; ok {
+				switch n := v.(type) {
+				case float64:
+					maxWait = int(n)
+				case int:
+					maxWait = n
+				}
+			}
+			if maxWait <= 0 {
+				maxWait = 600
+			}
+			if maxWait > 1800 {
+				maxWait = 1800
+			}
+
+			tasks := make([]*agent.AsyncTask, 0, len(ids))
+			var unknown []string
+			for _, id := range ids {
+				t := taskStore.Get(id)
+				if t == nil || t.ThreadID != threadID {
+					unknown = append(unknown, id)
+					continue
+				}
+				tasks = append(tasks, t)
+			}
+			if len(tasks) == 0 {
+				return jsonResult(map[string]any{
+					"error":   "no valid task_ids",
+					"unknown": unknown,
+				}), nil
+			}
+
+			start := time.Now()
+			deadline := time.NewTimer(time.Duration(maxWait) * time.Second)
+			defer deadline.Stop()
+
+			done := func() bool {
+				terminalCount := 0
+				for _, t := range tasks {
+					if t.IsTerminal() {
+						terminalCount++
+					}
+				}
+				if mode == "any" {
+					return terminalCount > 0
+				}
+				return terminalCount == len(tasks)
+			}
+
+			// Fast path: condition already met.
+			if !done() {
+			waitLoop:
+				for {
+					// Build a fresh select each iteration. We pick one
+					// not-yet-terminal task to wait on per iteration; on
+					// transition we re-check the aggregate condition.
+					var pending *agent.AsyncTask
+					for _, t := range tasks {
+						if !t.IsTerminal() {
+							pending = t
+							break
+						}
+					}
+					if pending == nil {
+						break waitLoop
+					}
+
+					select {
+					case <-pending.Done:
+						if done() {
+							break waitLoop
+						}
+					case <-deadline.C:
+						break waitLoop
+					case <-ctx.Done():
+						break waitLoop
+					}
+				}
+			}
+
+			completed := make([]map[string]any, 0)
+			stillRunning := make([]string, 0)
+			for _, t := range tasks {
+				if t.IsTerminal() {
+					completed = append(completed, map[string]any{
+						"task_id": t.ID,
+						"agent":   t.AgentName,
+						"status":  string(t.Status()),
+					})
+				} else {
+					stillRunning = append(stillRunning, t.ID)
+				}
+			}
+
+			result := map[string]any{
+				"completed":       completed,
+				"still_running":   stillRunning,
+				"elapsed_seconds": int(time.Since(start).Seconds()),
+				"mode":            mode,
+			}
+			if len(unknown) > 0 {
+				result["unknown_task_ids"] = unknown
+			}
+			if ctx.Err() != nil {
+				result["cancelled"] = true
+			} else if len(stillRunning) > 0 {
+				result["timed_out"] = true
+				result["hint"] = "Some tasks are still running. Call await_async_tasks again or check_async_task on individual ids."
+			}
+			return jsonResult(result), nil
 		},
 	})
 }

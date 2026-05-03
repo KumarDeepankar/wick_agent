@@ -1829,6 +1829,67 @@ a {
   width: 100%;
 }
 
+/* When a HITL request_user_input is pending the chat input is the reply
+   surface — accent it so the user notices we're routing their text to the
+   blocked tool, not starting a new turn. */
+.chat-input-wrap.hitl-pending .chat-input {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow-sm);
+}
+
+/* HITL approval card — sits above the input, prompt + option buttons. */
+.hitl-approval-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm);
+}
+.hitl-approval-prompt {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.hitl-approval-options {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.hitl-option-btn {
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.hitl-option-btn:hover {
+  background: var(--bg-hover, var(--accent-soft));
+}
+.hitl-option-btn.approve {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.hitl-option-btn.approve:hover {
+  background: var(--accent);
+  color: white;
+}
+.hitl-option-btn.deny {
+  border-color: var(--border-light);
+  color: var(--text-secondary);
+}
+.hitl-option-btn.deny:hover {
+  background: var(--border-light);
+}
+
 .chat-input {
   flex: 1;
   background: var(--bg-input);
