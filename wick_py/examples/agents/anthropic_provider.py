@@ -258,7 +258,20 @@ def _build_messages(messages: list[LLMMessage]) -> list[dict[str, Any]]:
       * wick `tool` messages (one per tool result) are coalesced into a
         single user message with one `tool_result` block per result —
         Anthropic requires consecutive tool_results in one user turn.
+
+    Empty-content invariants (Anthropic returns 400 on any of these):
+      * text content blocks MUST be non-empty;
+      * tool_result content MUST be non-empty;
+      * the messages array MUST NOT be empty.
+    We normalize each input message accordingly — empty assistant turns
+    are dropped (no tool_use to pair, safe to skip), empty user/system
+    content is replaced with a single-space placeholder, and empty
+    tool_result content gets the same placeholder.
     """
+    # Anthropic rejects empty text / tool_result blocks; use a non-empty
+    # placeholder for the rare cases where wick produces them.
+    EMPTY_PLACEHOLDER = " "
+
     out: list[dict[str, Any]] = []
     pending_tool_results: list[dict[str, Any]] = []
 
@@ -272,14 +285,14 @@ def _build_messages(messages: list[LLMMessage]) -> list[dict[str, Any]]:
             pending_tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": msg.tool_call_id or "",
-                "content": msg.content or "",
+                "content": msg.content or EMPTY_PLACEHOLDER,
             })
             continue
 
         flush_tool_results()
 
         if msg.role == "user":
-            out.append({"role": "user", "content": msg.content or ""})
+            out.append({"role": "user", "content": msg.content or EMPTY_PLACEHOLDER})
         elif msg.role == "assistant":
             blocks: list[dict[str, Any]] = []
             if msg.content:
@@ -298,12 +311,16 @@ def _build_messages(messages: list[LLMMessage]) -> list[dict[str, Any]]:
                     "input": args or {},
                 })
             if not blocks:
-                blocks.append({"type": "text", "text": ""})
+                # Wholly empty assistant turn (no text, no tool_use). Drop it
+                # rather than inventing an empty text block — there's nothing
+                # to pair with on the next user turn so ordering is preserved.
+                logger.debug("Skipping empty assistant message in history")
+                continue
             out.append({"role": "assistant", "content": blocks})
         elif msg.role == "system":
             # System messages mid-stream are rare; Anthropic keeps system
             # at the top level. Promote to user as a safety fallback.
-            out.append({"role": "user", "content": msg.content or ""})
+            out.append({"role": "user", "content": msg.content or EMPTY_PLACEHOLDER})
 
     flush_tool_results()
     return out

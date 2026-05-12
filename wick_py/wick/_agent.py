@@ -358,13 +358,23 @@ class Agent:
 
         raise TimeoutError(f"Sidecar not ready after 10s at {host}:{port}")
 
+    # Tools the Go server registers itself when a backend is configured
+    # (see hooks.FilesystemHook in wick_deep_agent). Python has no local
+    # impl for these — naming them in builtin_tools forwards the name to
+    # the Go side, which wires the real implementation. Missing from the
+    # Python registry is expected, not a warning.
+    _SERVER_SIDE_BUILTINS = frozenset({
+        "ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute",
+    })
+
     def _resolve_builtin_tools(self) -> dict[str, _ToolDef]:
         """Resolve builtin_tools names to ToolDefs from the global registry."""
         resolved: dict[str, _ToolDef] = {}
         for name in self.builtin_tools:
             td = _get_global_tool(name)
             if td is None:
-                logger.warning("builtin_tools: '%s' not found in global tool registry — skipped", name)
+                if name not in self._SERVER_SIDE_BUILTINS:
+                    logger.warning("builtin_tools: '%s' not found in global tool registry — skipped", name)
                 continue
             resolved[name] = _ToolDef(td.name, td.description, td.parameters, td.fn)
         return resolved
