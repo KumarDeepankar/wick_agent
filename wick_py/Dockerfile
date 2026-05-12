@@ -48,10 +48,17 @@ COPY wick_py/skills/ /app/skills/
 # Copy OpenSearch CLI
 COPY opensearch_cli/ /app/opensearch_cli/
 
-# Install Python deps + OpenSearch CLI
+# Smart Planner artifacts: product-launch CLI + scheduler CLI + seed data
+COPY product_opensearch_cli/ /app/product_opensearch_cli/
+COPY launch_planner/ /app/launch_planner/
+COPY data/launch_planning/ /app/data/launch_planning/
+
+# Install Python deps + all CLIs
 COPY wick_py/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt \
-    && pip install --no-cache-dir /app/opensearch_cli/
+    && pip install --no-cache-dir /app/opensearch_cli/ \
+    && pip install --no-cache-dir /app/product_opensearch_cli/ \
+    && pip install --no-cache-dir /app/launch_planner/
 
 # Create workspace directory
 RUN mkdir -p /workspace
@@ -65,6 +72,8 @@ ENV OLLAMA_HOST=http://host.docker.internal:11434
 ENV OPENSEARCH_URL=http://host.docker.internal:9200
 ENV OPENSEARCH_USER=
 ENV OPENSEARCH_PASSWORD=
+ENV PRODUCT_LAUNCH_INDEX=product_launch_plans
+ENV LAUNCH_PLAN_NDJSON=/app/data/launch_planning/launch_tasks.ndjson
 ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000 9100

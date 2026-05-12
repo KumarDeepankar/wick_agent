@@ -64,3 +64,16 @@ def build_summarizer() -> Agent:
         builtin_tools=["read_file", "write_file", "glob", "ls"],
         mode="both",  # short summaries sync, large multi-file runs async
     )
+
+
+def build_scenario_modeler() -> Agent:
+    """Sub-agent for the Smart Planner — runs one what-if scenario per
+    invocation by calling the deterministic `launch-planner` CLI. The
+    supervisor fans out N scenarios in parallel via start_async_task."""
+    return Agent(
+        "scenario-modeler",
+        name="Scenario Modeler",
+        system_prompt=prompts.load("scenario_modeler"),
+        builtin_tools=["execute", "write_file", "read_file"],
+        mode="async",  # parallel what-if exploration
+    )

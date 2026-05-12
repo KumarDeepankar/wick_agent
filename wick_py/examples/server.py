@@ -18,11 +18,13 @@ from wick import Agent, SkillsConfig
 
 from agents import prompts
 from agents import tools as _tools  # noqa: F401 — registers @tool on import
+from agents.anthropic_provider import register_anthropic_provider
 from agents.gateway import register_gateway_provider
 from agents.subagents import (
     build_batch_processor,
     build_math_agent,
     build_report_agent,
+    build_scenario_modeler,
     build_summarizer,
 )
 
@@ -82,12 +84,33 @@ ollama = Agent(
     debug=DEBUG,
 )
 
+# Smart Planner — decision-support agent for standard product launches.
+# Owns the smart-planner skill, calls the deterministic launch-planner
+# and product-opensearch-cli, and fans out parallel what-if scenarios via
+# the scenario-modeler sub-agent.
+planner = Agent(
+    "smart-planner",
+    name="Smart Planner",
+    system_prompt=prompts.load("smart_planner"),
+    builtin_tools=["execute", "read_file", "write_file", "ls", "glob", "current_datetime"],
+    subagents=[
+        build_scenario_modeler(),  # parallel what-if replans
+        build_report_agent(),      # final visual / slide-deck output
+    ],
+    backend=BACKEND,
+    skills=SKILLS,
+    debug=DEBUG,
+)
+
 
 # ── Register LLM providers ──────────────────────────────────────────────
 # The gateway provider is attached here (not inside Agent(...)) because it
 # needs network access and a background token-refresh thread.
 
 register_gateway_provider(claude)
+# Smart Planner uses the Anthropic Messages API directly (api.anthropic.com).
+# Reads the key from $ANTHROPIC_API_KEY (passed through by start.py).
+register_anthropic_provider(planner)
 
 
 # ── Run ─────────────────────────────────────────────────────────────────
@@ -97,5 +120,5 @@ if __name__ == "__main__":
         go_binary=os.environ.get("WICK_SERVER_BINARY"),
         go_port=8000,
         sidecar_port=9100,
-        extra_agents=[ollama],
+        extra_agents=[ollama, planner],
     )
